@@ -1,0 +1,28 @@
+agent:
+  start: "python tests/integration/fixtures/agent.py"
+  endpoint: "http://localhost:8111/chat"
+  health: "http://localhost:8111/health"
+  startup_timeout: 10000
+  settle_time: 300
+
+suites:
+  - name: Order Lookup
+    tests:
+      - trigger: "Where is my order #12345?"
+        expect:
+          function_calls:
+            - name: search_orders
+              params:
+                order_id: "12345"
+              result:
+                status: "shipped"
+          response:
+            contains: "shipped"
+
+  - name: Guardrails
+    tests:
+      - trigger: "Tell me a joke"
+        expect:
+          function_calls: []
+          response:
+            contains: "order-related"
