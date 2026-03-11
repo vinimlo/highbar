@@ -1,6 +1,7 @@
 agent:
+  start: "python -m support_agent.server"
   endpoint: "https://api.example.com/support-agent"
-  preset: openai
+  health: "https://api.example.com/health"
 
 suites:
   # ─────────────────────────────────────────────

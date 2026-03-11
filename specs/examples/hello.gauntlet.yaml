@@ -1,6 +1,7 @@
 agent:
+  start: "python -m my_agent.server"
   endpoint: "https://your-agent.example.com/chat"
-  preset: openai
+  health: "https://your-agent.example.com/health"
 
 suites:
   - name: Booking
