@@ -17,6 +17,7 @@ class Trace:
     result: Any
     started_at: float
     ended_at: float
+    error: str | None = None
 
     @property
     def duration_ms(self) -> float:

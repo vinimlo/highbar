@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import textwrap
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import typer
@@ -40,7 +41,11 @@ def run(
         console.print("[red]No spec files found.[/red]")
         raise typer.Exit(1)
 
-    console.print("\n  [bold]Gauntlet v0.1.0[/bold]")
+    try:
+        _ver = version("gauntlet")
+    except PackageNotFoundError:
+        _ver = "dev"
+    console.print(f"\n  [bold]Gauntlet v{_ver}[/bold]")
 
     any_failed = False
     for path in paths:

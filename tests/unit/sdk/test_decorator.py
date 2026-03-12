@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from gauntlet.sdk.core import Gauntlet
 
 
@@ -103,3 +105,47 @@ class TestToolDecorator:
         trace = json.loads(trace_file.read_text().strip())
         assert trace["args"]["query"] == "test"
         assert trace["args"]["limit"] == 5
+
+    def test_exception_still_raises(self, tmp_path: Path) -> None:
+        trace_file = tmp_path / "traces.jsonl"
+        gt = Gauntlet(traces=str(trace_file))
+
+        @gt.tool
+        def failing() -> str:
+            raise ValueError("boom")
+
+        with pytest.raises(ValueError, match="boom"):
+            failing()
+
+    def test_exception_writes_trace(self, tmp_path: Path) -> None:
+        trace_file = tmp_path / "traces.jsonl"
+        gt = Gauntlet(traces=str(trace_file))
+
+        @gt.tool
+        def failing() -> str:
+            raise ValueError("boom")
+
+        with pytest.raises(ValueError):
+            failing()
+
+        lines = trace_file.read_text().strip().split("\n")
+        assert len(lines) == 1
+
+        trace = json.loads(lines[0])
+        assert trace["fn"] == "failing"
+        assert "error" in trace
+        assert trace["error"] == "ValueError: boom"
+
+    def test_exception_trace_has_null_result(self, tmp_path: Path) -> None:
+        trace_file = tmp_path / "traces.jsonl"
+        gt = Gauntlet(traces=str(trace_file))
+
+        @gt.tool
+        def failing() -> str:
+            raise RuntimeError("oops")
+
+        with pytest.raises(RuntimeError):
+            failing()
+
+        trace = json.loads(trace_file.read_text().strip())
+        assert trace["result"] is None

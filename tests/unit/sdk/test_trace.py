@@ -1,6 +1,7 @@
 """Tests for trace writing, fingerprinting, and sequence numbering."""
 
 import json
+import threading
 from pathlib import Path
 
 from gauntlet.sdk.trace import TraceWriter
@@ -74,3 +75,30 @@ class TestTraceWriter:
 
         data = json.loads(trace_path.read_text().strip())
         assert data["ended_at"] >= data["started_at"]
+
+    def test_concurrent_writes(self, tmp_path: Path) -> None:
+        trace_path = tmp_path / "traces.jsonl"
+        writer = TraceWriter(str(trace_path))
+
+        num_threads = 5
+        writes_per_thread = 10
+
+        def write_traces() -> None:
+            for i in range(writes_per_thread):
+                writer.write(fn=f"fn_{i}", args={"i": i}, result=None)
+
+        threads = [threading.Thread(target=write_traces) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        lines = trace_path.read_text().strip().split("\n")
+        assert len(lines) == 50
+
+        seqs: list[int] = []
+        for line in lines:
+            data = json.loads(line)
+            seqs.append(data["seq"])
+
+        assert sorted(seqs) == list(range(50))

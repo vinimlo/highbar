@@ -39,8 +39,6 @@ class AgentAdapter(Protocol):
 
     def stop(self) -> None: ...
 
-    def send(self, trigger: str) -> str: ...
-
 
 class TraceCollector(Protocol):
     """Reads captured trace boxes."""

@@ -78,8 +78,8 @@ class TestRunner:
         if test.turns:
             return self._run_multi_turn(test.turns, start)
 
-        assert test.trigger is not None
-        assert test.expect is not None
+        if test.trigger is None or test.expect is None:
+            raise ValueError("Single-turn test must have both 'trigger' and 'expect'")
         return self._run_single_turn(test.trigger, test.expect, start, [])
 
     def _run_single_turn(

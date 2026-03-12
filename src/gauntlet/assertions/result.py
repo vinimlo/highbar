@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
-
+from gauntlet.assertions._match import subset_match
 from gauntlet.domain.models import AssertionResult, Expect, FunctionCallExpect, Trace
 
 
@@ -37,7 +36,7 @@ def _check_result_for_call(expected: FunctionCallExpect, traces: list[Trace]) ->
         )
 
     for trace in matching:
-        if _subset_match(expected.result, trace.result):
+        if subset_match(expected.result, trace.result):
             return AssertionResult(passed=True, message="")
 
     actual = matching[0].result
@@ -45,11 +44,3 @@ def _check_result_for_call(expected: FunctionCallExpect, traces: list[Trace]) ->
         passed=False,
         message=f"'{expected.name}' result mismatch: expected {expected.result}, got {actual}",
     )
-
-
-def _subset_match(expected: dict[str, Any] | None, actual: Any) -> bool:
-    if expected is None:
-        return True
-    if not isinstance(actual, dict):
-        return False
-    return all(k in actual and actual[k] == v for k, v in expected.items())

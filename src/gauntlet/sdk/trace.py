@@ -28,6 +28,7 @@ class TraceWriter:
         result: object,
         started_at: float | None = None,
         ended_at: float | None = None,
+        error: str | None = None,
     ) -> str:
         """Write a trace box. Returns the fingerprint ID."""
         now = time.time()
@@ -43,19 +44,22 @@ class TraceWriter:
             seq = self._seq
             self._seq += 1
 
-        trace = {
-            "id": fingerprint,
-            "seq": seq,
-            "fn": fn,
-            "args": args,
-            "result": result,
-            "started_at": started_at,
-            "ended_at": ended_at,
-        }
+            trace = {
+                "id": fingerprint,
+                "seq": seq,
+                "fn": fn,
+                "args": args,
+                "result": result,
+                "started_at": started_at,
+                "ended_at": ended_at,
+            }
 
-        line = json.dumps(trace, default=str) + "\n"
-        with open(self._path, "a") as f:
-            f.write(line)
+            if error is not None:
+                trace["error"] = error
+
+            line = json.dumps(trace, default=str) + "\n"
+            with open(self._path, "a") as f:
+                f.write(line)
 
         return fingerprint
 

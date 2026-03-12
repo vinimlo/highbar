@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
-
+from gauntlet.assertions._match import subset_match
 from gauntlet.domain.models import AssertionResult, Expect, FunctionCallExpect, Trace
 
 
@@ -45,8 +44,8 @@ def _match_call(expected: FunctionCallExpect, traces: list[Trace]) -> AssertionR
         )
 
     for trace in matching_traces:
-        params_ok = _check_params(expected.params, trace.args)
-        result_ok = _check_result(expected.result, trace.result)
+        params_ok = subset_match(expected.params, trace.args)
+        result_ok = subset_match(expected.result, trace.result)
 
         if params_ok and result_ok:
             return AssertionResult(passed=True, message="")
@@ -55,28 +54,12 @@ def _match_call(expected: FunctionCallExpect, traces: list[Trace]) -> AssertionR
     errors: list[str] = []
     trace = matching_traces[0]
 
-    if expected.params and not _check_params(expected.params, trace.args):
+    if expected.params and not subset_match(expected.params, trace.args):
         errors.append(f"params: expected {expected.params}, got {trace.args}")
-    if expected.result and not _check_result(expected.result, trace.result):
+    if expected.result and not subset_match(expected.result, trace.result):
         errors.append(f"result: expected {expected.result}, got {trace.result}")
 
     return AssertionResult(
         passed=False,
         message=f"'{expected.name}' was called but didn't match: {'; '.join(errors)}",
     )
-
-
-def _check_params(expected: dict[str, Any] | None, actual: dict[str, Any]) -> bool:
-    """Subset match — all expected keys must be present with matching values."""
-    if expected is None:
-        return True
-    return all(k in actual and actual[k] == v for k, v in expected.items())
-
-
-def _check_result(expected: dict[str, Any] | None, actual: Any) -> bool:
-    """Subset match on result — all expected keys must be present."""
-    if expected is None:
-        return True
-    if not isinstance(actual, dict):
-        return False
-    return all(k in actual and actual[k] == v for k, v in expected.items())

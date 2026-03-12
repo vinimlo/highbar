@@ -44,6 +44,7 @@ class FileTraceCollector:
                         result=data["result"],
                         started_at=data["started_at"],
                         ended_at=data["ended_at"],
+                        error=data.get("error"),
                     )
                 )
 

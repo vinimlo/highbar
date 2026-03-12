@@ -84,16 +84,19 @@ def _parse_expect(raw: dict[str, Any]) -> Expect:
     response = None
     if "response" in raw:
         r = raw["response"]
-        response = ResponseExpect(
-            contains=r.get("contains"),
-            not_contains=r.get("not_contains"),
-            matches=r.get("matches"),
-        )
+        if r is not None:
+            response = ResponseExpect(
+                contains=r.get("contains"),
+                not_contains=r.get("not_contains"),
+                matches=r.get("matches"),
+            )
 
     return Expect(function_calls=function_calls, response=response)
 
 
 def _parse_function_call(raw: dict[str, Any]) -> FunctionCallExpect:
+    if "name" not in raw:
+        raise ValueError("function_call entry must have a 'name' field")
     return FunctionCallExpect(
         name=raw["name"],
         params=raw.get("params"),

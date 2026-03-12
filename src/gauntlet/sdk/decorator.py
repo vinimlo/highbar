@@ -25,16 +25,23 @@ def make_tool_decorator(
         bound_args = _bind_arguments(fn, args, kwargs)
 
         started_at = time.time()
-        result = fn(*args, **kwargs)
-        ended_at = time.time()
-
-        writer.write(
-            fn=fn.__name__,
-            args=bound_args,
-            result=result,
-            started_at=started_at,
-            ended_at=ended_at,
-        )
+        error = None
+        result = None
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            ended_at = time.time()
+            writer.write(
+                fn=fn.__name__,
+                args=bound_args,
+                result=result,
+                started_at=started_at,
+                ended_at=ended_at,
+                error=error,
+            )
 
         return result
 

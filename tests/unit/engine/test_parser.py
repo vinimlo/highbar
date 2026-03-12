@@ -187,6 +187,48 @@ class TestParseSpec:
         with pytest.raises(ValueError, match="endpoint"):
             parse_spec(str(spec_file))
 
+    def test_null_response_block(self, tmp_path: Path) -> None:
+        spec_file = tmp_path / "test.gauntlet.yaml"
+        spec_file.write_text(
+            textwrap.dedent("""\
+            agent:
+              start: "python -m agent"
+              endpoint: "http://localhost:8000/chat"
+            suites:
+              - name: NullResponse
+                tests:
+                  - trigger: "hello"
+                    expect:
+                      response: null
+        """)
+        )
+
+        spec = parse_spec(str(spec_file))
+        test = spec.suites[0].tests[0]
+        assert test.expect is not None
+        assert test.expect.response is None
+
+    def test_function_call_missing_name_raises(self, tmp_path: Path) -> None:
+        spec_file = tmp_path / "test.gauntlet.yaml"
+        spec_file.write_text(
+            textwrap.dedent("""\
+            agent:
+              start: "python -m agent"
+              endpoint: "http://localhost:8000/chat"
+            suites:
+              - name: BadFC
+                tests:
+                  - trigger: "hello"
+                    expect:
+                      function_calls:
+                        - params:
+                            order_id: "123"
+        """)
+        )
+
+        with pytest.raises(ValueError, match="name"):
+            parse_spec(str(spec_file))
+
     def test_missing_start_raises(self, tmp_path: Path) -> None:
         spec_file = tmp_path / "bad.gauntlet.yaml"
         spec_file.write_text(
