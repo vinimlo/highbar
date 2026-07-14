@@ -15,13 +15,23 @@ Gauntlet is an open-source behavior testing framework for AI agents — "Playwri
 ## Commands
 
 ```bash
-uv run pytest -v              # run unit + integration tests
-uv run ruff check src/ tests/ # lint
-uv run ruff format src/ tests/ # format
+make test                     # run unit + integration tests
+make lint                     # lint
+make format                   # format
 uv run gauntlet --help        # CLI help
 uv run gauntlet run specs/    # run all specs
 uv run gauntlet validate <spec> # validate spec syntax
 uv run gauntlet init          # scaffold example spec
+
+# Documentation (local via npm)
+make docs-install             # install site dependencies
+make docs-dev                 # start dev server
+make docs-build               # production build
+make docs-preview             # preview production build
+
+# Documentation (Docker)
+make docs-up                  # start docs container
+make docs-down                # stop docs container
 ```
 
 ## Architecture

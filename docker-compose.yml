@@ -1,0 +1,8 @@
+services:
+  docs:
+    container_name: gauntlet-docs
+    build:
+      context: ./site
+      dockerfile: Dockerfile
+    ports:
+      - "4001:80"
