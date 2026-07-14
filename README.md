@@ -1,8 +1,4 @@
-<!-- Logo placeholder -->
-<p align="center">
-  <img src="https://via.placeholder.com/200x200?text=G" alt="Gauntlet Logo" width="120" />
-</p>
-
+<!-- Logo goes here when we have one -->
 <h1 align="center">Gauntlet</h1>
 
 <p align="center">
