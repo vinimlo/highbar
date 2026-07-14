@@ -29,7 +29,7 @@ def _make_runner(
     client.send.return_value = send_response
 
     collector = MagicMock()
-    collector.checkpoint.return_value = -1
+    collector.checkpoint.return_value = 0
     collector.collect.return_value = traces or []
 
     assertion = MagicMock()
@@ -158,7 +158,7 @@ class TestTestRunner:
         client = MagicMock()
         client.send.return_value = "ok"
         collector = MagicMock()
-        collector.checkpoint.return_value = -1
+        collector.checkpoint.return_value = 0
         collector.collect.return_value = []
         reporter = MagicMock()
 
@@ -171,11 +171,13 @@ class TestTestRunner:
             settle_time=0,
         )
 
-        spec = _make_spec([
-            Test(trigger="t1", expect=Expect()),
-            Test(trigger="t2", expect=Expect()),
-            Test(trigger="t3", expect=Expect()),
-        ])
+        spec = _make_spec(
+            [
+                Test(trigger="t1", expect=Expect()),
+                Test(trigger="t2", expect=Expect()),
+                Test(trigger="t3", expect=Expect()),
+            ]
+        )
 
         summary = runner.run(spec)
 

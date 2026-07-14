@@ -17,14 +17,14 @@ class TestFileTraceCollector:
         trace_file = tmp_path / "traces.jsonl"
         trace_file.write_text("")
         collector = FileTraceCollector(str(trace_file))
-        assert collector.checkpoint() == -1
+        assert collector.checkpoint() == 0
 
     def test_checkpoint_nonexistent_file(self, tmp_path: Path) -> None:
         trace_file = tmp_path / "traces.jsonl"
         collector = FileTraceCollector(str(trace_file))
-        assert collector.checkpoint() == -1
+        assert collector.checkpoint() == 0
 
-    def test_checkpoint_returns_last_seq(self, tmp_path: Path) -> None:
+    def test_checkpoint_returns_line_count(self, tmp_path: Path) -> None:
         trace_file = tmp_path / "traces.jsonl"
         _write_traces(
             trace_file,
@@ -59,7 +59,7 @@ class TestFileTraceCollector:
             ],
         )
         collector = FileTraceCollector(str(trace_file))
-        assert collector.checkpoint() == 2
+        assert collector.checkpoint() == 3
 
     def test_collect_all(self, tmp_path: Path) -> None:
         trace_file = tmp_path / "traces.jsonl"
@@ -87,7 +87,7 @@ class TestFileTraceCollector:
             ],
         )
         collector = FileTraceCollector(str(trace_file))
-        traces = collector.collect(since=-1)
+        traces = collector.collect(since=0)
         assert len(traces) == 2
         assert traces[0].fn == "f1"
         assert traces[1].fn == "f2"
@@ -127,7 +127,7 @@ class TestFileTraceCollector:
             ],
         )
         collector = FileTraceCollector(str(trace_file))
-        traces = collector.collect(since=0)
+        traces = collector.collect(since=1)
         assert len(traces) == 2
         assert traces[0].fn == "new1"
         assert traces[1].fn == "new2"

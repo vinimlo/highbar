@@ -54,7 +54,8 @@ class SubprocessAdapter:
 
     def _wait_for_health(self) -> None:
         """Poll health endpoint until it returns 200."""
-        assert self._health_url is not None
+        if self._health_url is None:
+            return
         deadline = time.time() + self._startup_timeout_s
         interval = 0.2
 

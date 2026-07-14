@@ -19,13 +19,13 @@ class TestResponseAssertion:
         assert any(not r.passed for r in results)
 
     def test_not_contains_pass(self) -> None:
-        expect = Expect(response=ResponseExpect(not_contains="4[0-9]{3}"))
-        results = self.assertion.evaluate([], "No credit card info here", expect)
+        expect = Expect(response=ResponseExpect(not_contains="credit card"))
+        results = self.assertion.evaluate([], "No sensitive info here", expect)
         assert all(r.passed for r in results)
 
-    def test_not_contains_fail_regex(self) -> None:
-        expect = Expect(response=ResponseExpect(not_contains="4[0-9]{3}"))
-        results = self.assertion.evaluate([], "Card: 4123-5678", expect)
+    def test_not_contains_fail(self) -> None:
+        expect = Expect(response=ResponseExpect(not_contains="credit card"))
+        results = self.assertion.evaluate([], "Your credit card is on file", expect)
         assert any(not r.passed for r in results)
 
     def test_matches_pass(self) -> None:
@@ -38,16 +38,16 @@ class TestResponseAssertion:
         results = self.assertion.evaluate([], "not exact match at all", expect)
         assert any(not r.passed for r in results)
 
-    def test_no_response_expect_skips(self) -> None:
+    def test_no_response_expect_returns_empty(self) -> None:
         expect = Expect()
         results = self.assertion.evaluate([], "anything", expect)
-        assert all(r.passed for r in results)
+        assert results == []
 
     def test_combined_contains_and_not_contains(self) -> None:
         expect = Expect(
             response=ResponseExpect(
                 contains="cannot share",
-                not_contains="4[0-9]{3}",
+                not_contains="card number",
             )
         )
         results = self.assertion.evaluate([], "I cannot share that information", expect)
@@ -57,8 +57,8 @@ class TestResponseAssertion:
         expect = Expect(
             response=ResponseExpect(
                 contains="cannot share",
-                not_contains="4[0-9]{3}",
+                not_contains="card number",
             )
         )
-        results = self.assertion.evaluate([], "cannot share, card is 4123", expect)
+        results = self.assertion.evaluate([], "cannot share, card number is 4123", expect)
         assert any(not r.passed for r in results)

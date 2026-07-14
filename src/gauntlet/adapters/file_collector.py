@@ -15,38 +15,33 @@ class FileTraceCollector:
         self._path = Path(path)
 
     def checkpoint(self) -> int:
-        """Return the highest seq number in the trace file, or -1 if empty."""
+        """Return the current line count, or 0 if the file doesn't exist."""
         if not self._path.exists():
-            return -1
+            return 0
 
-        last_seq = -1
-        for line in self._read_lines():
-            data = json.loads(line)
-            last_seq = max(last_seq, data["seq"])
-
-        return last_seq
+        return len(self._read_lines())
 
     def collect(self, since: int) -> list[Trace]:
-        """Read all traces with seq > since, returned as domain Trace objects."""
+        """Read traces written after the checkpoint (skipping first `since` lines)."""
         if not self._path.exists():
             return []
 
+        lines = self._read_lines()
         traces: list[Trace] = []
-        for line in self._read_lines():
+        for line in lines[since:]:
             data = json.loads(line)
-            if data["seq"] > since:
-                traces.append(
-                    Trace(
-                        id=data["id"],
-                        seq=data["seq"],
-                        fn=data["fn"],
-                        args=data["args"],
-                        result=data["result"],
-                        started_at=data["started_at"],
-                        ended_at=data["ended_at"],
-                        error=data.get("error"),
-                    )
+            traces.append(
+                Trace(
+                    id=data["id"],
+                    seq=data["seq"],
+                    fn=data["fn"],
+                    args=data["args"],
+                    result=data["result"],
+                    started_at=data["started_at"],
+                    ended_at=data["ended_at"],
+                    error=data.get("error"),
                 )
+            )
 
         return traces
 

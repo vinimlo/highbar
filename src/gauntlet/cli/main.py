@@ -15,7 +15,6 @@ from gauntlet.adapters.http_client import HTTPClient
 from gauntlet.adapters.subprocess_adapter import SubprocessAdapter
 from gauntlet.assertions.function_calls import FunctionCallsAssertion
 from gauntlet.assertions.response import ResponseAssertion
-from gauntlet.assertions.result import ResultAssertion
 from gauntlet.engine.parser import parse_spec
 from gauntlet.engine.runner import TestRunner
 from gauntlet.reporters.terminal import TerminalReporter
@@ -52,7 +51,10 @@ def run(
         console.print(f"  Running {path}")
         spec = parse_spec(path)
 
-        traces_file = tempfile.mktemp(suffix=".jsonl", prefix="gauntlet-traces-")
+        with tempfile.NamedTemporaryFile(
+            suffix=".jsonl", prefix="gauntlet-traces-", delete=False
+        ) as traces_fd:
+            traces_file = traces_fd.name
 
         adapter = SubprocessAdapter(
             start_cmd=spec.agent.start,
@@ -68,7 +70,7 @@ def run(
             adapter=adapter,
             client=client,
             collector=collector,
-            assertions=[FunctionCallsAssertion(), ResponseAssertion(), ResultAssertion()],
+            assertions=[FunctionCallsAssertion(), ResponseAssertion()],
             reporter=reporter,
             settle_time=spec.agent.settle_time / 1000.0,
         )

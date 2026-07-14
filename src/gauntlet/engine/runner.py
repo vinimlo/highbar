@@ -125,18 +125,13 @@ class TestRunner:
             all_errors.extend(result.errors)
 
             if not result.passed:
-                duration = (time.time() - start) * 1000
-                return TestResult(
-                    passed=False,
-                    errors=all_errors,
-                    duration_ms=duration,
-                    traces=all_traces,
-                )
+                break
 
         duration = (time.time() - start) * 1000
+        failed = len(all_errors) > 0
         return TestResult(
-            passed=True,
-            errors=[],
+            passed=not failed,
+            errors=all_errors,
             duration_ms=duration,
             traces=all_traces,
         )

@@ -11,7 +11,7 @@ class FunctionCallsAssertion:
 
     def evaluate(self, traces: list[Trace], response: str, expect: Expect) -> list[AssertionResult]:
         if expect.function_calls is None:
-            return [AssertionResult(passed=True, message="")]
+            return []
 
         # Guardrail: function_calls: [] means no tools should be called
         if len(expect.function_calls) == 0:

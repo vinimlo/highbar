@@ -101,3 +101,20 @@ class TestFunctionCallsAssertion:
         )
         results = self.assertion.evaluate(traces, "", expect)
         assert any(not r.passed for r in results)
+
+    def test_result_on_non_dict_fails(self) -> None:
+        traces = [_make_trace("search_orders", result="just a string")]
+        expect = Expect(
+            function_calls=[
+                FunctionCallExpect(name="search_orders", result={"status": "shipped"}),
+            ]
+        )
+        results = self.assertion.evaluate(traces, "", expect)
+        assert any(not r.passed for r in results)
+
+    def test_no_function_calls_returns_empty(self) -> None:
+        """When expect.function_calls is None, return empty list (not applicable)."""
+        traces = [_make_trace("whatever")]
+        expect = Expect()
+        results = self.assertion.evaluate(traces, "", expect)
+        assert results == []

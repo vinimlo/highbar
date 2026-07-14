@@ -12,7 +12,7 @@ class ResponseAssertion:
 
     def evaluate(self, traces: list[Trace], response: str, expect: Expect) -> list[AssertionResult]:
         if expect.response is None:
-            return [AssertionResult(passed=True, message="")]
+            return []
 
         results: list[AssertionResult] = []
         resp = expect.response
@@ -29,11 +29,11 @@ class ResponseAssertion:
                 )
 
         if resp.not_contains is not None:
-            if re.search(resp.not_contains, response):
+            if resp.not_contains in response:
                 results.append(
                     AssertionResult(
                         passed=False,
-                        message=f"Response matches forbidden pattern '{resp.not_contains}'",
+                        message=f"Response contains forbidden text '{resp.not_contains}'",
                     )
                 )
             else:
@@ -49,8 +49,5 @@ class ResponseAssertion:
                         message=f"Response does not match pattern '{resp.matches}'",
                     )
                 )
-
-        if not results:
-            results.append(AssertionResult(passed=True, message=""))
 
         return results
