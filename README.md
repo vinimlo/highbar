@@ -125,6 +125,18 @@ expect:
 
 Assert on the exact sequence of function calls, their parameters, and even their results. If your agent should call `search_orders` before `get_order_details`, Gauntlet enforces that order.
 
+When an intent has more than one correct answer, list the tools that satisfy it:
+
+```yaml
+expect:
+  function_calls:
+    - name: [open_catalog, list_categories]  # either one serves the user
+```
+
+"Show me the menu" can be answered by opening a catalog widget or by listing categories as text. Without alternatives you'd have to pick one and fail the agent when it succeeds the other way.
+
+The alternatives share one `params`/`result` block, so "tool A with X, or tool B with Y" can't be expressed.
+
 Parameters compare exactly by default. When the value is written by the model — and its case or wording is the model's whim, not semantics — match loosely instead:
 
 ```yaml

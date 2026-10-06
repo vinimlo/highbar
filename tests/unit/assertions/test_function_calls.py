@@ -118,3 +118,73 @@ class TestFunctionCallsAssertion:
         expect = Expect()
         results = self.assertion.evaluate(traces, "", expect)
         assert results == []
+
+
+class TestFunctionCallAlternatives:
+    """`name` accepting a list: any of the listed tools satisfies the expectation."""
+
+    def setup_method(self) -> None:
+        self.assertion = FunctionCallsAssertion()
+
+    def test_any_listed_tool_satisfies(self) -> None:
+        expect = Expect(
+            function_calls=[FunctionCallExpect(name=["open_catalog", "list_categories"])]
+        )
+
+        for called in ("open_catalog", "list_categories"):
+            results = self.assertion.evaluate([_make_trace(called)], "", expect)
+            assert all(r.passed for r in results), called
+
+    def test_tool_outside_the_list_fails(self) -> None:
+        expect = Expect(
+            function_calls=[FunctionCallExpect(name=["open_catalog", "list_categories"])]
+        )
+
+        results = self.assertion.evaluate([_make_trace("confirm_order")], "", expect)
+
+        assert not results[0].passed
+
+    def test_failure_message_lists_alternatives_and_what_was_called(self) -> None:
+        expect = Expect(
+            function_calls=[FunctionCallExpect(name=["open_catalog", "list_categories"])]
+        )
+
+        results = self.assertion.evaluate([_make_trace("confirm_order")], "", expect)
+
+        assert "open_catalog" in results[0].message
+        assert "list_categories" in results[0].message
+        assert "confirm_order" in results[0].message
+
+    def test_params_are_matched_against_the_alternative_that_fits(self) -> None:
+        """With several candidates, one matching params/result is enough."""
+        expect = Expect(
+            function_calls=[
+                FunctionCallExpect(
+                    name=["search_products", "list_products"], params={"query": "pizza"}
+                )
+            ]
+        )
+        traces = [
+            _make_trace("search_products", {"query": "coke"}, seq=0),
+            _make_trace("list_products", {"query": "pizza"}, seq=1),
+        ]
+
+        results = self.assertion.evaluate(traces, "", expect)
+
+        assert all(r.passed for r in results)
+
+    def test_right_tool_wrong_params_reports_the_tool_that_was_called(self) -> None:
+        expect = Expect(
+            function_calls=[
+                FunctionCallExpect(
+                    name=["search_products", "list_products"], params={"query": "pizza"}
+                )
+            ]
+        )
+
+        results = self.assertion.evaluate(
+            [_make_trace("list_products", {"query": "coke"})], "", expect
+        )
+
+        assert not results[0].passed
+        assert "'list_products' was called but didn't match" in results[0].message

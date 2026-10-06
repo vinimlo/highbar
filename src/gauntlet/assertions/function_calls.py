@@ -34,13 +34,18 @@ class FunctionCallsAssertion:
 
 
 def _match_call(expected: FunctionCallExpect, traces: list[Trace]) -> AssertionResult:
-    """Find a trace that matches the expected function call."""
-    matching_traces = [t for t in traces if t.fn == expected.name]
+    """Find a trace that matches the expected function call.
+
+    When ``name`` lists several tools, any one of them satisfies the expectation.
+    """
+    names = expected.accepted_names
+    matching_traces = [t for t in traces if t.fn in names]
 
     if not matching_traces:
+        called = ", ".join(t.fn for t in traces) or "nothing"
         return AssertionResult(
             passed=False,
-            message=f"Expected call to '{expected.name}', but it was never called",
+            message=f"Expected call to {_describe(names)}, but the agent called: {called}",
         )
 
     for trace in matching_traces:
@@ -50,7 +55,8 @@ def _match_call(expected: FunctionCallExpect, traces: list[Trace]) -> AssertionR
         if params_ok and result_ok:
             return AssertionResult(passed=True, message="")
 
-    # Build detailed error message
+    # Calling the right tool with the wrong payload is a different defect from not
+    # calling it at all, and the message has to say which one happened.
     errors: list[str] = []
     trace = matching_traces[0]
 
@@ -61,5 +67,12 @@ def _match_call(expected: FunctionCallExpect, traces: list[Trace]) -> AssertionR
 
     return AssertionResult(
         passed=False,
-        message=f"'{expected.name}' was called but didn't match: {'; '.join(errors)}",
+        message=f"'{trace.fn}' was called but didn't match: {'; '.join(errors)}",
     )
+
+
+def _describe(names: list[str]) -> str:
+    if len(names) == 1:
+        return f"'{names[0]}'"
+    alternatives = " or ".join(f"'{name}'" for name in names)
+    return f"one of ({alternatives})"

@@ -357,3 +357,102 @@ class TestVariations:
 
         with pytest.raises(ValueError, match="non-empty 'trigger'"):
             parse_spec(str(spec))
+
+
+class TestFunctionCallNameAlternatives:
+    def test_parses_a_list_of_names(self, tmp_path: Path) -> None:
+        spec = _write_spec(
+            tmp_path,
+            """
+            agent:
+              start: "true"
+              endpoint: "http://localhost:8000/chat"
+            suites:
+              - name: Menu
+                tests:
+                  - trigger: "show me the menu"
+                    expect:
+                      function_calls:
+                        - name: [open_catalog, list_categories]
+            """,
+        )
+
+        parsed = parse_spec(str(spec))
+
+        call = parsed.suites[0].tests[0].expect.function_calls[0]
+        assert call.accepted_names == ["open_catalog", "list_categories"]
+
+    def test_plain_string_still_parses(self, tmp_path: Path) -> None:
+        spec = _write_spec(
+            tmp_path,
+            """
+            agent:
+              start: "true"
+              endpoint: "http://localhost:8000/chat"
+            suites:
+              - name: Menu
+                tests:
+                  - trigger: "show me the menu"
+                    expect:
+                      function_calls:
+                        - name: list_categories
+            """,
+        )
+
+        parsed = parse_spec(str(spec))
+
+        call = parsed.suites[0].tests[0].expect.function_calls[0]
+        assert call.accepted_names == ["list_categories"]
+
+    def test_duplicate_names_are_collapsed_in_order(self, tmp_path: Path) -> None:
+        spec = _write_spec(
+            tmp_path,
+            """
+            agent:
+              start: "python agent.py"
+              endpoint: "http://localhost:8000"
+            suites:
+              - name: Menu
+                tests:
+                  - trigger: "show me the menu"
+                    expect:
+                      function_calls:
+                        - name: [open_catalog, list_categories, open_catalog]
+            """,
+        )
+
+        parsed = parse_spec(str(spec))
+
+        call = parsed.suites[0].tests[0].expect.function_calls[0]
+        assert call.accepted_names == ["open_catalog", "list_categories"]
+
+    @pytest.mark.parametrize(
+        "bad_name",
+        ["[]", "[list_categories, 3]", "{a: b}", '""', '"   "', '[list_categories, ""]'],
+    )
+    def test_invalid_name_fails_at_parse_time(self, tmp_path: Path, bad_name: str) -> None:
+        """A malformed spec must fail loudly at `validate`, not silently never match."""
+        spec = _write_spec(
+            tmp_path,
+            f"""
+            agent:
+              start: "true"
+              endpoint: "http://localhost:8000/chat"
+            suites:
+              - name: Menu
+                tests:
+                  - trigger: "show me the menu"
+                    expect:
+                      function_calls:
+                        - name: {bad_name}
+            """,
+        )
+
+        with pytest.raises(ValueError, match="name"):
+            parse_spec(str(spec))
+
+
+def _write_spec(tmp_path: Path, body: str) -> Path:
+    spec_file = tmp_path / "test.gauntlet.yaml"
+    spec_file.write_text(textwrap.dedent(body))
+    return spec_file

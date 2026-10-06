@@ -121,8 +121,36 @@ def _parse_function_call(raw: dict[str, Any]) -> FunctionCallExpect:
     validate_expected(raw.get("result"), "result")
     if "name" not in raw:
         raise ValueError("function_call entry must have a 'name' field")
+
     return FunctionCallExpect(
-        name=raw["name"],
+        name=_parse_call_name(raw["name"]),
         params=raw.get("params"),
         result=raw.get("result"),
     )
+
+
+def _parse_call_name(raw: Any) -> str | list[str]:
+    """Accept a tool name, or a list of tools of which any one satisfies the expectation.
+
+    Validated here rather than left to the assertion: a spec that says
+    ``name: [a, 3]`` or ``name: ""`` should fail loudly at `gauntlet validate`, not
+    silently never match at run time.
+    """
+    if isinstance(raw, str):
+        if not raw.strip():
+            msg = "function_call 'name' cannot be empty"
+            raise ValueError(msg)
+        return raw
+
+    if isinstance(raw, list):
+        if not raw:
+            msg = "function_call 'name' cannot be an empty list"
+            raise ValueError(msg)
+        if not all(isinstance(name, str) and name.strip() for name in raw):
+            msg = f"function_call 'name' list must contain only non-empty strings, got {raw!r}"
+            raise ValueError(msg)
+        # Listing a tool twice adds nothing, and would repeat it in failure messages.
+        return list(dict.fromkeys(raw))
+
+    msg = f"function_call 'name' must be a string or a list of strings, got {type(raw).__name__}"
+    raise ValueError(msg)

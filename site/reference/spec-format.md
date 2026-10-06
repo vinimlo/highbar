@@ -102,7 +102,7 @@ Each entry in `function_calls` describes an expected tool invocation.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | Yes | The function name that should be called |
+| `name` | string \| list of strings | Yes | The function name that should be called. A list means any one of the listed tools satisfies the expectation; `params` and `result` then apply to whichever was called |
 | `params` | dict | No | Expected arguments — uses **subset matching** |
 | `result` | dict | No | Expected return value — uses **subset matching** |
 

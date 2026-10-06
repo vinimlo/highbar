@@ -10,7 +10,7 @@ The `function_calls` field in the `expect` block asserts that specific tools wer
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | Yes | The function name to match against trace records |
+| `name` | Yes | The function name to match against trace records, or a list of names of which any one satisfies the expectation |
 | `params` | No | Expected arguments -- uses subset matching |
 | `result` | No | Expected return value -- uses subset matching |
 
@@ -66,12 +66,26 @@ expect:
 
 Each expected call is matched independently against the collected traces. Order does not matter -- Gauntlet finds any trace with a matching function name, then checks params and result.
 
+### Alternative Tools
+
+Some intents have more than one correct answer. Give `name` a list and any one of the listed tools satisfies the expectation:
+
+```yaml
+expect:
+  function_calls:
+    - name: [open_catalog, list_categories]
+```
+
+`params` and `result` are shared by every alternative: the expectation passes when any listed tool was called with a matching payload. "Tool A with X, or tool B with Y" cannot be expressed -- only list tools together when the same `params`/`result` (or none) apply to all of them.
+
+When none of them was called, the failure reads: `Expected call to one of ('open_catalog' or 'list_categories'), but the agent called: search_products`.
+
 ### Matching Behavior
 
 For each expected function call, Gauntlet:
 
-1. Filters all traces to find those where `trace.fn == expected.name`
-2. If no trace matches the name, the assertion fails with: `Expected call to 'get_order', but it was never called`
+1. Filters all traces to find those where `trace.fn` is `expected.name` (or, when `name` is a list, any of the listed names)
+2. If no trace matches, the assertion fails naming what was expected and what the agent actually called: `Expected call to 'get_order', but the agent called: track_shipment` (or `called: nothing` when no tool ran)
 3. For each matching trace, checks whether `params` and `result` pass subset matching
 4. If any matching trace satisfies both checks, the assertion passes
 

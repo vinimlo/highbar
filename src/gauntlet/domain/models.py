@@ -37,11 +37,26 @@ class AgentConfig:
 
 @dataclass(frozen=True)
 class FunctionCallExpect:
-    """Expected function call assertion."""
+    """Expected function call assertion.
 
-    name: str
+    ``name`` may be a list, in which case ANY of the listed tools satisfies the
+    expectation. Some intents have more than one correct answer — "show me the menu"
+    can be served by opening a catalog widget or by listing categories as text, and
+    both serve the user. Without alternatives the only options are to pick one and
+    accuse the agent of failing when it succeeded another way, or to not test the
+    intent at all.
+    """
+
+    name: str | list[str]
     params: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
+
+    @property
+    def accepted_names(self) -> list[str]:
+        """The tool names that satisfy this expectation."""
+        if isinstance(self.name, list):
+            return self.name
+        return [self.name]
 
 
 @dataclass(frozen=True)
