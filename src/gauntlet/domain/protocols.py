@@ -40,6 +40,12 @@ class AgentAdapter(Protocol):
     def stop(self) -> None: ...
 
 
+class VariationGenerator(Protocol):
+    """Produces N paraphrases of a trigger that keep the same intent."""
+
+    def generate(self, trigger: str, count: int) -> list[str]: ...
+
+
 class TraceCollector(Protocol):
     """Reads captured trace boxes."""
 

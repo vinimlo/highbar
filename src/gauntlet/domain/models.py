@@ -71,11 +71,17 @@ class Turn:
 
 @dataclass(frozen=True)
 class Test:
-    """A single test: either a trigger+expect or a list of turns."""
+    """A single test: either a trigger+expect or a list of turns.
+
+    ``variations`` asks for N paraphrases of ``trigger`` to be generated and run through
+    the same assertions. The agent must route the intent correctly however the user
+    words it — not just for the one phrasing the product team happened to write.
+    """
 
     trigger: str | None = None
     expect: Expect | None = None
     turns: list[Turn] | None = None
+    variations: int = 0
 
 
 @dataclass(frozen=True)
@@ -114,9 +120,14 @@ class TestResult:
 
 @dataclass(frozen=True)
 class RunSummary:
-    """Summary of a complete test run."""
+    """Summary of a complete test run.
+
+    ``variations`` counts the generated paraphrases that were executed. They are extra
+    *executions*, not extra tests: a test with 5 variations still passes or fails as one.
+    """
 
     total: int
     passed: int
     failed: int
     duration_ms: float
+    variations: int = 0

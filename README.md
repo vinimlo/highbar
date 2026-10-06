@@ -88,7 +88,27 @@ tests:
         - name: cancel_subscription
 ```
 
-From a single example, Gauntlet generates N realistic paraphrases ("please end my membership", "how do I unsubscribe?", "stop charging me") and verifies the agent handles all of them correctly.
+From a single example, Gauntlet generates N realistic paraphrases ("please end my membership", "how do I unsubscribe?", "stop charging me") and verifies the agent handles all of them correctly. The test fails if **any** phrasing fails — an agent that handles nine wordings and drops the tenth is broken for whoever typed the tenth.
+
+Generate them once and commit the cache:
+
+```bash
+export GAUNTLET_LLM_API_KEY=sk-...
+gauntlet variations specs/           # writes .gauntlet/variations.json — commit it
+gauntlet run                         # from here on: no key, no network, no spend
+gauntlet run --frozen                # in CI: a cache miss fails the test, never generates
+```
+
+Generating on every run would test a different set of sentences each time, so CI would go red on a commit that changed nothing. A gate that flickers is not a gate. The cache file is written to be **read**: each entry carries its trigger and the model that wrote it, because a model can produce a paraphrase that quietly changes the intent — and the only place to catch that is a human reviewing the diff.
+
+Configure with `GAUNTLET_LLM_MODEL` (default `gpt-4o-mini`) and `GAUNTLET_LLM_BASE_URL` (any OpenAI-compatible endpoint).
+
+A few things to know:
+
+- **The count is what was produced, not what was asked.** Repeated paraphrases (and copies of the trigger itself) are dropped. If the model returns fewer distinct sentences than requested, `gauntlet variations` flags it and the test title reads `(3 of 5 variations)`; `--force` asks again.
+- **A test whose variations can't be obtained fails; the run goes on.** No cache and no key, an LLM error, a cache file left with merge conflict markers — each is reported on that test.
+- **The cache is found from subdirectories.** Gauntlet walks up from the current directory to the nearest `.gauntlet/variations.json`.
+- **All phrasings go to the same running agent, back to back.** That is fine for intents that only read. For one that changes state — like the cancellation above — a later phrasing can fail because of what an earlier one already did, so point the agent at a backend where repeating the action is harmless.
 
 ### Function Call Assertion
 
@@ -241,7 +261,8 @@ From zero-config to full observability — you choose the depth.
 |---------|-------------|
 | `gauntlet init` | Scaffold a `gauntlet.config.yaml` and example spec |
 | `gauntlet run` | Run all specs (alias: `gauntlet test`) |
-| `gauntlet run <path>` | Run a specific spec file |
+| `gauntlet run <path>` | Run a specific spec file, or every spec under a directory (`--frozen` to never generate variations) |
+| `gauntlet variations [path]` | Generate the paraphrases the specs ask for and cache them (`--force` to regenerate) |
 | `gauntlet validate` | Validate spec syntax without running |
 | `gauntlet list` | List all discovered specs |
 | `gauntlet report` | Generate an HTML report from the last run |

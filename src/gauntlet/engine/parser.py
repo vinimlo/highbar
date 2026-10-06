@@ -58,12 +58,32 @@ def _parse_suite(raw: dict[str, Any]) -> Suite:
 
 def _parse_test(raw: dict[str, Any]) -> Test:
     if "turns" in raw:
+        if raw.get("variations"):
+            # Paraphrasing turn 1 would leave the later turns answering a conversation
+            # that no longer happened. Multi-turn variations need a design of their own.
+            msg = "'variations' is not supported on multi-turn tests"
+            raise ValueError(msg)
         turns = [_parse_turn(t) for t in raw["turns"]]
         return Test(turns=turns)
 
     trigger = raw.get("trigger", "")
     expect = _parse_expect(raw.get("expect", {}))
-    return Test(trigger=trigger, expect=expect)
+    variations = _parse_variations(raw.get("variations"))
+    if variations and not (isinstance(trigger, str) and trigger.strip()):
+        # Nothing to paraphrase: `gauntlet variations` would skip it and the run would
+        # then miss the cache for an empty sentence.
+        msg = "A test with 'variations' must have a non-empty 'trigger'"
+        raise ValueError(msg)
+    return Test(trigger=trigger, expect=expect, variations=variations)
+
+
+def _parse_variations(raw: Any) -> int:
+    if raw is None:
+        return 0
+    if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
+        msg = f"'variations' must be a non-negative integer, got {raw!r}"
+        raise ValueError(msg)
+    return raw
 
 
 def _parse_turn(raw: dict[str, Any]) -> Turn:

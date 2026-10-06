@@ -241,3 +241,119 @@ class TestParseSpec:
 
         with pytest.raises(ValueError, match="start"):
             parse_spec(str(spec_file))
+
+
+class TestVariations:
+    def _spec(self, tmp_path: Path, body: str) -> Path:
+        spec_file = tmp_path / "variations.gauntlet.yaml"
+        spec_file.write_text(textwrap.dedent(body))
+        return spec_file
+
+    def test_parses_the_count(self, tmp_path: Path) -> None:
+        spec = self._spec(
+            tmp_path,
+            """\
+            agent:
+              start: "true"
+              endpoint: "http://localhost:8000/chat"
+            suites:
+              - name: Menu
+                tests:
+                  - trigger: "show me the menu"
+                    variations: 5
+                    expect:
+                      response:
+                        contains: "menu"
+            """,
+        )
+
+        parsed = parse_spec(str(spec))
+
+        assert parsed.suites[0].tests[0].variations == 5
+
+    def test_absent_means_zero(self, tmp_path: Path) -> None:
+        spec = self._spec(
+            tmp_path,
+            """\
+            agent:
+              start: "true"
+              endpoint: "http://localhost:8000/chat"
+            suites:
+              - name: Menu
+                tests:
+                  - trigger: "show me the menu"
+                    expect:
+                      response:
+                        contains: "menu"
+            """,
+        )
+
+        assert parse_spec(str(spec)).suites[0].tests[0].variations == 0
+
+    @pytest.mark.parametrize("bad", ["-1", '"five"', "true"])
+    def test_invalid_count_fails_at_parse_time(self, tmp_path: Path, bad: str) -> None:
+        spec = self._spec(
+            tmp_path,
+            f"""\
+            agent:
+              start: "true"
+              endpoint: "http://localhost:8000/chat"
+            suites:
+              - name: Menu
+                tests:
+                  - trigger: "show me the menu"
+                    variations: {bad}
+                    expect:
+                      response:
+                        contains: "menu"
+            """,
+        )
+
+        with pytest.raises(ValueError, match="variations"):
+            parse_spec(str(spec))
+
+    def test_rejected_on_multi_turn(self, tmp_path: Path) -> None:
+        """Paraphrasing turn 1 leaves later turns answering a conversation that never happened."""
+        spec = self._spec(
+            tmp_path,
+            """\
+            agent:
+              start: "true"
+              endpoint: "http://localhost:8000/chat"
+            suites:
+              - name: Refund
+                tests:
+                  - variations: 3
+                    turns:
+                      - trigger: "I want a refund"
+                        expect:
+                          function_calls:
+                            - name: search_orders
+            """,
+        )
+
+        with pytest.raises(ValueError, match="multi-turn"):
+            parse_spec(str(spec))
+
+    @pytest.mark.parametrize("trigger_line", ["", 'trigger: ""', 'trigger: "   "'])
+    def test_rejected_without_a_trigger(self, tmp_path: Path, trigger_line: str) -> None:
+        """Nothing to paraphrase: it would be skipped at generation and miss at run time."""
+        spec = self._spec(
+            tmp_path,
+            f"""\
+            agent:
+              start: "true"
+              endpoint: "http://localhost:8000/chat"
+            suites:
+              - name: Menu
+                tests:
+                  - variations: 3
+                    {trigger_line}
+                    expect:
+                      response:
+                        contains: "menu"
+            """,
+        )
+
+        with pytest.raises(ValueError, match="non-empty 'trigger'"):
+            parse_spec(str(spec))

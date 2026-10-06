@@ -9,6 +9,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from gauntlet.adapters.file_collector import FileTraceCollector
 from gauntlet.adapters.http_client import HTTPClient
@@ -18,6 +19,8 @@ from gauntlet.assertions.response import ResponseAssertion
 from gauntlet.engine.parser import parse_spec
 from gauntlet.engine.runner import TestRunner
 from gauntlet.reporters.terminal import TerminalReporter
+from gauntlet.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
+from gauntlet.variations.generator import VariationError, VariationGenerator
 
 app = typer.Typer(
     name="gauntlet",
@@ -31,7 +34,18 @@ console = Console()
 def run(
     spec_path: str = typer.Argument(
         default="",
-        help="Path to a .gauntlet.yaml spec file. If omitted, discovers all specs in specs/",
+        help=(
+            "Path to a .gauntlet.yaml spec file, or a directory to search. "
+            "If omitted, discovers all specs in specs/"
+        ),
+    ),
+    frozen: bool = typer.Option(
+        False,
+        "--frozen",
+        help=(
+            "Never generate variations: a test whose variations are not in the committed "
+            "cache fails. Use it in CI."
+        ),
     ),
 ) -> None:
     """Run behavior tests against your agent."""
@@ -46,9 +60,13 @@ def run(
         _ver = "dev"
     console.print(f"\n  [bold]Gauntlet v{_ver}[/bold]")
 
+    # One cache for the whole run. It reads its file lazily, so specs that ask for no
+    # variations never touch it.
+    generator = VariationGenerator(VariationCache(find_cache_path()), frozen=frozen)
+
     any_failed = False
     for path in paths:
-        console.print(f"  Running {path}")
+        console.print(f"  Running {escape(path)}")
         spec = parse_spec(path)
 
         with tempfile.NamedTemporaryFile(
@@ -73,6 +91,7 @@ def run(
             assertions=[FunctionCallsAssertion(), ResponseAssertion()],
             reporter=reporter,
             settle_time=spec.agent.settle_time / 1000.0,
+            variations=generator,
         )
 
         summary = runner.run(spec)
@@ -81,6 +100,82 @@ def run(
 
     if any_failed:
         raise typer.Exit(1)
+
+
+@app.command()
+def variations(
+    spec_path: str = typer.Argument(
+        default="",
+        help="Spec file or directory to generate variations for. If omitted, all specs in specs/",
+    ),
+    force: bool = typer.Option(False, "--force", help="Regenerate even if already cached."),
+) -> None:
+    """Generate the paraphrases a spec asks for, and cache them.
+
+    Run this once, commit the cache, and `gauntlet run` is deterministic and offline
+    from then on. Generating on every run would test a different set of sentences each
+    time — CI would go red on a commit that changed nothing.
+    """
+    paths = _discover_specs(spec_path)
+    if not paths:
+        console.print("[red]No spec files found.[/red]")
+        raise typer.Exit(1)
+
+    cache = VariationCache(find_cache_path())
+    generator = VariationGenerator(cache)
+    generated = 0
+    reused = 0
+    short = 0
+
+    for path in paths:
+        spec = parse_spec(path)
+        for suite in spec.suites:
+            for test in suite.tests:
+                if not test.variations or not test.trigger:
+                    continue
+
+                # Triggers and paraphrases are user text: escaped, or Rich would read
+                # anything in square brackets as a style tag and drop it.
+                trigger = escape(test.trigger)
+                key = fingerprint(test.trigger, test.variations)
+                try:
+                    if force:
+                        cache.invalidate(key)
+
+                    cached = cache.get(key)
+                    if cached is not None:
+                        reused += 1
+                        if len(cached) < test.variations:
+                            short += 1
+                            console.print(
+                                f"  [yellow]![/yellow] {trigger} [dim](cached with "
+                                f"{len(cached)} of {test.variations} — --force to retry)[/dim]"
+                            )
+                        continue
+
+                    produced = generator.generate(test.trigger, test.variations)
+                except (VariationError, CacheError) as exc:
+                    console.print(f"  [red]✗[/red] {trigger}\n    {escape(str(exc))}")
+                    raise typer.Exit(1) from exc
+
+                generated += 1
+                if len(produced) < test.variations:
+                    # Fewer distinct paraphrases than requested. Still usable, but the
+                    # count has to be visible or the spec's N reads as coverage it isn't.
+                    short += 1
+                    console.print(
+                        f"  [yellow]![/yellow] {trigger} "
+                        f"[yellow]({len(produced)} of {test.variations} requested)[/yellow]"
+                    )
+                else:
+                    console.print(f"  [green]✓[/green] {trigger} [dim]({len(produced)})[/dim]")
+                for variation in produced:
+                    console.print(f"      [dim]{escape(variation)}[/dim]")
+
+    summary = f"\n  {generated} generated | {reused} already cached"
+    if short:
+        summary += f" | [yellow]{short} with fewer than requested[/yellow]"
+    console.print(f"{summary} [dim]({escape(str(cache.path))} — commit it)[/dim]\n")
 
 
 @app.command()
@@ -134,11 +229,11 @@ def init() -> None:
 
 
 def _discover_specs(spec_path: str) -> list[str]:
-    """Find spec files to run."""
-    if spec_path:
+    """Find spec files to run: the given file, or every spec under the given directory."""
+    if spec_path and not Path(spec_path).is_dir():
         return [spec_path]
 
-    specs_dir = Path("specs")
+    specs_dir = Path(spec_path or "specs")
     if specs_dir.exists():
         return sorted(str(p) for p in specs_dir.rglob("*.gauntlet.yaml"))
 
