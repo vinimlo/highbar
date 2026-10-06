@@ -167,6 +167,62 @@ result:
 
 This passes if the actual result contains an `order` key with a dict that has `status: "shipped"`, regardless of any other keys in the `order` object or the top-level result.
 
+A nested dict is subset-matched too, at every level. To require an exact nested dict, use the `equals` matcher described below.
+
+## Matchers
+
+A plain expected value compares by equality. When the value is written by the model -- and its case or wording is not something the agent should be failed for -- use a **matcher** instead: a dict whose keys are all matcher names.
+
+```yaml
+expect:
+  function_calls:
+    - name: search_products
+      params:
+        product_name: {icontains: "coca"}
+        order_id: {matches: "^[0-9]+$"}
+      result:
+        order:
+          status: {contains: "ship"}       # matchers work at any depth
+```
+
+| Matcher | Passes when |
+|---------|-------------|
+| `equals` | The actual value equals the operand exactly. The operand is always a literal |
+| `contains` | The operand is a substring of the actual text (**case-sensitive**, same as `response: contains`), or an item of the actual list |
+| `icontains` | Same as `contains`, ignoring case |
+| `not_contains` | The actual value was checked and does not contain the operand (case-sensitive) |
+| `not_icontains` | Same as `not_contains`, ignoring case |
+| `matches` | The operand, a regular expression, is found in the actual text (`re.search`) |
+
+Several matchers in one dict must all hold: `{icontains: "coca", not_icontains: "zero"}`.
+
+### What a matcher can be applied to
+
+- **Text and numbers.** Numbers are compared through their text form, so `{contains: "123"}` and `{matches: "123"}` both pass on `12345`.
+- **Lists**, for the `contains` family: membership instead of substring.
+- **`null` and nested objects are never matched by a text matcher.** `matches`, `contains` and `icontains` fail on them -- and so do `not_contains` and `not_icontains`. A negative assertion that could not be evaluated fails rather than passing without having checked anything: `error: {not_contains: "timeout"}` is red when `error` is `null` or an object.
+
+### Literal dicts that look like a matcher
+
+::: warning Behaviour change
+Any dict whose keys are **all** matcher names is read as a matcher. If a tool takes an argument that is literally shaped like one (a Prisma- or Notion-style filter such as `{contains: "shoes"}`), an existing spec that compared it by equality changes meaning. Wrap the literal in `equals`:
+
+```yaml
+params:
+  filter: {equals: {contains: "shoes"}}
+```
+:::
+
+### Validation
+
+`gauntlet validate` (and `gauntlet run`, before starting the agent) rejects:
+
+- an invalid regular expression in `matches`;
+- a dict that mixes matcher names with other keys, such as `{contains: "coca", size: "L"}`;
+- a near miss of a matcher name -- `contain`, `match`, `Contains`, `not-contains` -- which would otherwise be silently compared as a literal dict. If the key really is literal, wrap the dict in `equals`.
+
+Matchers inside a list (`items: [{name: {contains: "x"}}]`) are not supported; a list compares by equality.
+
 ## Combining Function Calls and Response Assertions
 
 You can use both assertion types in the same `expect` block:

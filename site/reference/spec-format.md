@@ -108,6 +108,16 @@ Each entry in `function_calls` describes an expected tool invocation.
 
 **Subset matching** means that the actual arguments or result must contain at least the specified key-value pairs, but may contain additional fields. This allows assertions to focus on the relevant fields without requiring an exact match.
 
+A value may also be a **matcher** instead of a literal — a dict whose keys are all matcher names: `equals`, `contains`, `icontains`, `not_contains`, `not_icontains`, `matches`. See [Matchers](/guides/assertions#matchers).
+
+```yaml
+function_calls:
+  - name: search_products
+    params:
+      product_name: {icontains: "coca"}   # case-insensitive substring
+      order_id: {matches: "^[0-9]+$"}     # regex
+```
+
 ```yaml
 function_calls:
   - name: search_orders

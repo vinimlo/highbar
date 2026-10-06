@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 
+from gauntlet.assertions._match import validate_expected
 from gauntlet.domain.models import (
     AgentConfig,
     Expect,
@@ -115,6 +116,9 @@ def _parse_expect(raw: dict[str, Any]) -> Expect:
 
 
 def _parse_function_call(raw: dict[str, Any]) -> FunctionCallExpect:
+    # A malformed matcher must fail at `gauntlet validate`, not in the middle of a run.
+    validate_expected(raw.get("params"), "params")
+    validate_expected(raw.get("result"), "result")
     if "name" not in raw:
         raise ValueError("function_call entry must have a 'name' field")
     return FunctionCallExpect(

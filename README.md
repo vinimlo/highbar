@@ -125,6 +125,21 @@ expect:
 
 Assert on the exact sequence of function calls, their parameters, and even their results. If your agent should call `search_orders` before `get_order_details`, Gauntlet enforces that order.
 
+Parameters compare exactly by default. When the value is written by the model — and its case or wording is the model's whim, not semantics — match loosely instead:
+
+```yaml
+expect:
+  function_calls:
+    - name: search_products
+      params:
+        product_name: {icontains: "coca"}     # case-insensitive substring
+        order_id: {matches: "^[0-9]+$"}       # regex
+```
+
+The same agent writes `coca-cola` on one run and `Coca-Cola` on the next. Exact equality turns that into a red test with no defect behind it — and red with no defect behind it teaches the team to ignore red.
+
+Available matchers: `contains` / `not_contains` (case-sensitive, like `response:`), `icontains` / `not_icontains`, `matches` and `equals`. They work at any depth of `params` and `result`. A dict whose keys are all matcher names is always read as a matcher — to compare against a literal dict shaped like one, wrap it: `{equals: {contains: "x"}}`. See the [assertions guide](site/guides/assertions.md#matchers) for the details.
+
 ### Multi-Turn Testing
 
 Test complete conversational flows with state tracking between turns.
