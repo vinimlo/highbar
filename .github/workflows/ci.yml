@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Só cancela em PR: em main/develop cada commit de merge precisa do seu próprio
+  # resultado, senão não dá para saber qual deles quebrou a suíte.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --locked --all-extras --dev
+
+      - name: Lint
+        run: uv run ruff check src/ tests/
+
+      - name: Format
+        run: uv run ruff format --check src/ tests/
+
+      # Cobre unit + integration. O teste de integração sobe um agente FastAPI de
+      # verdade e roda a CLI ponta a ponta contra ele, então também exercita o
+      # SubprocessAdapter e o health check.
+      - name: Test
+        run: uv run pytest -v
