@@ -88,14 +88,62 @@ class Window:
 
 
 @dataclass(frozen=True)
-class AgentConfig:
-    """Configuration for the agent under test."""
+class RequestConfig:
+    """How a trigger is sent. Values may hold {{message}}, {{test.*}} and {{session.*}}."""
 
-    start: str
+    method: str = "POST"
+    headers: dict[str, str] = field(default_factory=dict)
+    body: Any = field(default_factory=lambda: {"message": "{{message}}"})
+
+
+@dataclass(frozen=True)
+class CommandHook:
+    """A session hook run as a command; placeholders are resolved per argument."""
+
+    argv: list[str]
+
+
+@dataclass(frozen=True)
+class PythonHook:
+    """A session hook loaded once in highbar's process: ``"module:function"``."""
+
+    target: str
+
+
+Hook = CommandHook | PythonHook
+
+
+@dataclass(frozen=True)
+class SessionConfig:
+    """Clean state per test execution: ``setup`` opens a session, ``teardown`` closes it."""
+
+    setup: Hook | None = None
+    teardown: Hook | None = None
+
+
+@dataclass(frozen=True)
+class AgentConfig:
+    """Configuration for the agent under test.
+
+    With ``start`` highbar starts and stops the agent (managed mode); without it the
+    agent is already running (attach mode), and ``traces`` names the file it writes.
+    """
+
     endpoint: str
+    start: str | None = None
     health: str | None = None
     startup_timeout: int = 15000
     settle_time: int = 500
+    timeout: int = 60000
+    request: RequestConfig = field(default_factory=RequestConfig)
+    response: str | None = None
+    traces: str | None = None
+    session: SessionConfig | None = None
+    correlate: dict[str, Any] = field(default_factory=lambda: {"test": "{{test.id}}"})
+
+    @property
+    def managed(self) -> bool:
+        return self.start is not None
 
 
 @dataclass(frozen=True)
