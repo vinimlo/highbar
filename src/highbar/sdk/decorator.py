@@ -1,4 +1,4 @@
-"""Tool decorator implementation — wraps functions to capture traces."""
+"""Tool decorator — records each call of a sync or async function as a `tool` record."""
 
 from __future__ import annotations
 
@@ -6,46 +6,66 @@ import functools
 import inspect
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from highbar.sdk.trace import TraceWriter
+if TYPE_CHECKING:
+    from highbar.sdk.core import Highbar
 
 
-def make_tool_decorator(
-    fn: Callable[..., Any],
-    writer: TraceWriter | None,
-) -> Callable[..., Any]:
-    """Create a wrapper that captures tool invocations as trace boxes."""
+def make_tool_decorator(fn: Callable[..., Any], hb: Highbar) -> Callable[..., Any]:
+    """Wrap ``fn`` so each call is recorded with its arguments, result and error.
+
+    An ``async def`` gets an async wrapper that records after the ``await``: wrapping
+    it like a plain function would record the coroutine object, with zero duration,
+    and never see its exception (S1).
+
+    Any exception counts as a failure, ``CancelledError`` included: caught as
+    ``Exception`` only, a cancelled call would be recorded as a success returning null.
+    """
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            if not hb.enabled:
+                return await fn(*args, **kwargs)
+            bound = _bind_arguments(fn, args, kwargs)
+            started_at = time.time()
+            result: Any = None
+            error: str | None = None
+            try:
+                result = await fn(*args, **kwargs)
+                return result
+            except BaseException as e:
+                error = _describe(e)
+                raise
+            finally:
+                hb._record_call(fn.__name__, bound, result, error, started_at, time.time())
+
+        return async_wrapper
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        if writer is None:
+        if not hb.enabled:
             return fn(*args, **kwargs)
-
-        bound_args = _bind_arguments(fn, args, kwargs)
-
+        bound = _bind_arguments(fn, args, kwargs)
         started_at = time.time()
-        error = None
-        result = None
+        result: Any = None
+        error: str | None = None
         try:
             result = fn(*args, **kwargs)
-        except Exception as e:
-            error = f"{type(e).__name__}: {e}"
+            return result
+        except BaseException as e:
+            error = _describe(e)
             raise
         finally:
-            ended_at = time.time()
-            writer.write(
-                fn=fn.__name__,
-                args=bound_args,
-                result=result,
-                started_at=started_at,
-                ended_at=ended_at,
-                error=error,
-            )
-
-        return result
+            hb._record_call(fn.__name__, bound, result, error, started_at, time.time())
 
     return wrapper
+
+
+def _describe(error: BaseException) -> str:
+    message = str(error)
+    return f"{type(error).__name__}: {message}" if message else type(error).__name__
 
 
 def _bind_arguments(
