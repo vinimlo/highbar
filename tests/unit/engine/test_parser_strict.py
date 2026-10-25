@@ -100,7 +100,9 @@ class TestUnknownKeys:
                 """),
         )
 
-        with pytest.raises(SpecError, match=r"unknown key 'zzz' \(allowed: expect, name, "):
+        with pytest.raises(
+            SpecError, match=r"unknown key 'zzz' \(allowed: expect, min_pass, name, runs, "
+        ):
             parse_spec(path)
 
     def test_x_extension_keys_are_ignored(self, tmp_path: Path) -> None:

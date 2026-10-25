@@ -33,6 +33,7 @@ from highbar.domain.models import (
 )
 from highbar.engine import placeholders
 from highbar.engine.placeholders import check_placeholders, uses_placeholder
+from highbar.engine.runs import check_runs
 from highbar.engine.schema import SpecError, check_keys, require_type, user_keys
 from highbar.engine.secrets import redact
 
@@ -108,6 +109,14 @@ def _parse_spec(raw: Any) -> Spec:
     require_type(suites_raw, list, "suites", "must be a list of suites")
     suites = [_parse_suite(s, f"suites[{i}]") for i, s in enumerate(suites_raw)]
 
+    default_runs = 1
+    if "defaults" in raw:
+        defaults = raw["defaults"]
+        require_type(defaults, dict, "defaults", "must be a mapping")
+        check_keys(defaults, "defaults", "defaults")
+        if "runs" in defaults:
+            default_runs = _parse_runs(defaults["runs"], "defaults")
+
     if not agent.managed and agent.traces is None:
         for i, suite in enumerate(suites):
             for j, test in enumerate(suite.tests):
@@ -117,7 +126,35 @@ def _parse_spec(raw: Any) -> Spec:
                         f"writes: suites[{i}].tests[{j}] checks function_calls"
                     )
 
-    return Spec(agent=agent, suites=suites)
+    spec = Spec(agent=agent, suites=suites, default_runs=default_runs)
+    check_runs(spec, default_runs)
+    return spec
+
+
+def _parse_runs(raw: Any, where: str) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise SpecError(f"{where}: runs must be a whole number of at least 1")
+    return raw
+
+
+def _parse_min_pass(raw: Any, where: str) -> int | float:
+    whole = isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1
+    fraction = isinstance(raw, float) and 0 < raw <= 1
+    if not (whole or fraction):
+        raise SpecError(
+            f"{where}: min_pass must be a whole number of at least 1 or a fraction "
+            "of runs (0 < f <= 1)"
+        )
+    return raw
+
+
+def _parse_repetition(raw: dict[str, Any], where: str) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    if "runs" in raw:
+        fields["runs"] = _parse_runs(raw["runs"], where)
+    if "min_pass" in raw:
+        fields["min_pass"] = _parse_min_pass(raw["min_pass"], where)
+    return fields
 
 
 def _parse_agent(raw: Any) -> AgentConfig:
@@ -380,7 +417,9 @@ def _parse_test(raw: Any, where: str) -> Test:
             # Paraphrasing turn 1 would leave the later turns answering a conversation
             # that no longer happened. Multi-turn variations need a design of their own.
             raise SpecError(f"{where}: 'variations' is not supported on multi-turn tests")
-        return Test(turns=_parse_turns(raw["turns"], where), name=name)
+        return Test(
+            turns=_parse_turns(raw["turns"], where), name=name, **_parse_repetition(raw, where)
+        )
 
     trigger = _trigger(raw, where)
     if "expect" not in raw:
@@ -390,7 +429,13 @@ def _parse_test(raw: Any, where: str) -> Test:
         )
     expect = _parse_expect(raw["expect"], f"{where}.expect")
     variations = _parse_variations(raw.get("variations"), where)
-    return Test(trigger=trigger, expect=expect, variations=variations, name=name)
+    return Test(
+        trigger=trigger,
+        expect=expect,
+        variations=variations,
+        name=name,
+        **_parse_repetition(raw, where),
+    )
 
 
 def _trigger(raw: dict[str, Any], where: str) -> str:

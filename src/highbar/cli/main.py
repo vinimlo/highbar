@@ -19,6 +19,7 @@ from highbar.domain.models import RunSummary, Spec
 from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.parser import parse_spec
 from highbar.engine.run_spec import load_session_hooks, run_spec
+from highbar.engine.runs import check_runs
 from highbar.engine.schema import SpecError
 from highbar.engine.session import SessionError, SessionHooks
 from highbar.reporters.terminal import format_summary
@@ -99,6 +100,15 @@ def run(
             "cache fails. Use it in CI."
         ),
     ),
+    runs: int | None = typer.Option(
+        None,
+        "--runs",
+        min=1,
+        help=(
+            "Run each phrasing N times, in place of the specs' defaults.runs; a test's own "
+            "runs still wins. With min_pass, a flaky test becomes a gate."
+        ),
+    ),
 ) -> None:
     """Run behavior tests against your agent."""
     paths = _discover_specs(spec_path)
@@ -111,7 +121,7 @@ def run(
     # Every spec is parsed before any agent starts: a typo in the third file must not
     # cost the time of running the first two, nor leave half a run behind.
     specs = _parse_all(paths)
-    if specs is None:
+    if specs is None or not _check_all_runs(specs, runs):
         raise typer.Exit(EXIT_UNRUNNABLE)
     # Python session hooks are imported before any agent starts, like the specs parsed.
     hooks = _load_all_hooks(specs)
@@ -135,6 +145,7 @@ def run(
                         keep_traces=keep_traces,
                         console=console,
                         session=hooks[current],
+                        default_runs=runs,
                     )
                 )
     except AgentStartError as e:
@@ -256,6 +267,18 @@ def validate(
 
     specs = _parse_all(paths, report_valid=True)
     raise typer.Exit(EXIT_UNRUNNABLE if specs is None else EXIT_OK)
+
+
+def _check_all_runs(specs: list[tuple[str, Spec]], runs: int | None) -> bool:
+    """With --runs, a test's min_pass may now be more than its runs: say so for each."""
+    ok = True
+    for path, spec in specs:
+        try:
+            check_runs(spec, spec.default_runs if runs is None else runs)
+        except SpecError as e:
+            console.print(f"  [red]\u2717[/red] {escape(path)}: {escape(str(e))}", soft_wrap=True)
+            ok = False
+    return ok
 
 
 def _load_all_hooks(specs: list[tuple[str, Spec]]) -> dict[str, SessionHooks | None] | None:

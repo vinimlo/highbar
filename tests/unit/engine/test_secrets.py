@@ -132,7 +132,7 @@ class TestOutput:
                         tests=[
                             Case(
                                 trigger="hi",
-                                expect=Expect(response=ResponseExpect(contains="x")),
+                                expect=Expect(response=ResponseExpect(matcher={"contains": "x"})),
                             )
                         ],
                     )

@@ -44,3 +44,25 @@ def test_validate_command() -> None:
     )
     assert result.returncode == 0
     assert "Valid" in result.stdout
+
+
+@pytest.mark.timeout(60)
+def test_cli_runs_3_shows_3_of_3() -> None:
+    """Every test of the fixture spec runs three times, and says so."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "highbar.cli.main",
+            "run",
+            "tests/integration/fixtures/spec.highbar.yaml",
+            "--runs",
+            "3",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "3/3" in result.stdout

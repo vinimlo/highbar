@@ -19,7 +19,8 @@ class SpecError(ValueError):
 
 
 ALLOWED_KEYS: dict[str, frozenset[str]] = {
-    "spec": frozenset({"agent", "suites"}),
+    "spec": frozenset({"agent", "suites", "defaults"}),
+    "defaults": frozenset({"runs"}),
     "agent": frozenset(
         {
             "start",
@@ -39,7 +40,7 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "session": frozenset({"setup", "teardown"}),
     "python_hook": frozenset({"python"}),
     "suite": frozenset({"name", "tests"}),
-    "test": frozenset({"name", "trigger", "expect", "turns", "variations"}),
+    "test": frozenset({"name", "trigger", "expect", "turns", "variations", "runs", "min_pass"}),
     "turn": frozenset({"name", "trigger", "expect"}),
     "expect": frozenset({"function_calls", "response", "ordered", "exclusive", "forbid"}),
     "function_call": frozenset({"name", "params", "result", "error"}),

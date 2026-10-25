@@ -228,6 +228,10 @@ class Test:
     turns: list[Turn] | None = None
     variations: int = 0
     name: str | None = None
+    # How many times each phrasing runs, and how many of those must pass (D9). None
+    # takes the run's default; min_pass may be a fraction of runs.
+    runs: int | None = None
+    min_pass: int | float | None = None
 
     @property
     def requires_observation(self) -> bool:
@@ -250,6 +254,7 @@ class Spec:
 
     agent: AgentConfig
     suites: list[Suite]
+    default_runs: int = 1  # defaults.runs; the CLI's --runs overrides it
 
 
 @dataclass(frozen=True)
@@ -268,6 +273,8 @@ class TestResult:
     errors: list[str]
     duration_ms: float
     traces: list[Trace] = field(default_factory=list)
+    # (passed, runs, min_pass) when a test without variations ran more than once.
+    counts: tuple[int, int, int] | None = None
 
     @property
     def passed(self) -> bool:

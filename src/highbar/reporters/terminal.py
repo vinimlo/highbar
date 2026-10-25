@@ -51,6 +51,9 @@ class TerminalReporter:
         # `[variation: "..."]` prefix. Unescaped, Rich reads anything in square brackets
         # as a style tag and silently drops it from the output.
         test_name = escape(test_name)
+        if result.counts is not None:
+            passed, runs, min_pass = result.counts
+            test_name += f" {passed}/{runs}" + (f" (min {min_pass})" if min_pass != runs else "")
         color, mark = _MARKS[result.status]
         self._console.print(f"    [{color}]{mark}[/{color}] {test_name}  [dim]{duration}[/dim]")
         for error in result.errors:

@@ -37,6 +37,7 @@ from highbar.engine.observation import (
     same_value,
 )
 from highbar.engine.placeholders import PlaceholderError, Values, render
+from highbar.engine.runs import phrasing_status, resolve_runs
 from highbar.engine.secrets import redact
 from highbar.engine.session import SessionContext, SessionError, SessionHooks
 from highbar.engine.templates import TemplateError, resolve_template
@@ -104,6 +105,17 @@ def _names(tools: list[Trace]) -> str:
     return ", ".join(dict.fromkeys(t.fn for t in tools))
 
 
+def _merged_errors(results: list[TestResult]) -> list[str]:
+    """The errors of a phrasing's runs; one that repeats says in how many runs."""
+    if len(results) == 1:
+        return list(results[0].errors)
+    seen: dict[str, int] = {}
+    for result in results:
+        for error in dict.fromkeys(result.errors):
+            seen[error] = seen.get(error, 0) + 1
+    return [f"{error} ({n} of {len(results)} runs)" for error, n in seen.items()]
+
+
 def _with_findings(result: TestResult, findings: list[_Finding]) -> TestResult:
     if not findings:
         return result
@@ -112,6 +124,7 @@ def _with_findings(result: TestResult, findings: list[_Finding]) -> TestResult:
         errors=[*result.errors, *(f.execution.label + f.error for f in findings)],
         duration_ms=result.duration_ms,
         traces=result.traces,
+        counts=result.counts,
     )
 
 
@@ -169,6 +182,7 @@ class TestRunner:
         spec_path: str = "",
         correlate: Mapping[str, Any] | None = None,
         secrets: Mapping[str, str] | None = None,
+        default_runs: int = 1,
     ) -> None:
         self._adapter = adapter
         self._client = client
@@ -183,6 +197,7 @@ class TestRunner:
         self._spec_path = spec_path
         # Which context keys identify a test's records (agent.correlate in the spec).
         self._correlate = dict(correlate) if correlate is not None else {"test": "{{test.id}}"}
+        self._default_runs = default_runs
         self._variations_run = 0
         self._last_variation_count: int | None = None
         self._warned_no_context = False
@@ -400,40 +415,78 @@ class TestRunner:
             time.sleep(0.1)
 
     def _run_test(self, test: Test) -> TestResult:
-        """Run a single test (single-turn, multi-turn, or a trigger plus its variations)."""
+        """Run a single test: each of its phrasings, ``runs`` times each (D9).
+
+        A phrasing is the trigger, one of its variations, or the whole conversation of
+        a multi-turn test. The test passes only if every phrasing reaches ``min_pass``.
+        """
         start = time.time()
-
         name = _plain_name(test)
+        runs, min_pass = resolve_runs(test, self._default_runs)
+
         if test.turns:
-            return self._execute(test.turns, start, labelled=True, name=name)
+            phrasings = [("", test.turns)]
+        else:
+            if test.trigger is None or test.expect is None:
+                raise ValueError("Single-turn test must have both 'trigger' and 'expect'")
+            triggers = [test.trigger]
+            if test.variations:
+                paraphrases = self._paraphrases(test.trigger, test.variations)
+                if isinstance(paraphrases, str):
+                    return TestResult(
+                        status=Status.ERROR,
+                        errors=[paraphrases],
+                        duration_ms=(time.time() - start) * 1000,
+                    )
+                triggers.extend(paraphrases)
+            phrasings = [
+                # The failing phrasing is the whole finding: without it the report says
+                # the intent broke but not which sentence broke it. Index 0 is the
+                # sentence the spec author wrote, not a generated one.
+                (
+                    f'[{"trigger" if index == 0 else "variation"}: "{phrasing}"] '
+                    if test.variations
+                    else "",
+                    [Turn(trigger=phrasing, expect=test.expect)],
+                )
+                for index, phrasing in enumerate(triggers)
+            ]
 
-        if test.trigger is None or test.expect is None:
-            raise ValueError("Single-turn test must have both 'trigger' and 'expect'")
+        statuses: list[Status] = []
+        errors: list[str] = []
+        traces: list[Trace] = []
+        counts: tuple[int, int, int] | None = None
+        # Every phrasing runs even after one fails: three of ten broken is a different
+        # bug from one of ten, and stopping early hides which. They all go to the same
+        # running agent, back to back, with no reset in between.
+        for index, (label, turns) in enumerate(phrasings):
+            results = [
+                # Each run is its own execution, with its own test id and session.
+                self._execute(turns, time.time(), labelled=bool(test.turns), name=name, label=label)
+                for _ in range(runs)
+            ]
+            if index > 0:
+                self._variations_run += 1
+            statuses.append(phrasing_status(results, min_pass))
+            passed = sum(1 for r in results if r.passed)
+            errors.extend(label + error for error in _merged_errors(results))
+            if runs > 1 and test.variations and passed < min_pass:
+                errors.append(f"{label}{passed}/{runs} runs passed (min {min_pass})")
+            for r in results:
+                traces.extend(r.traces)
+            if runs > 1 and not test.variations:
+                counts = (passed, runs, min_pass)
 
-        if test.variations:
-            return self._run_with_variations(
-                test.trigger, test.expect, test.variations, start, name
-            )
-
-        return self._execute(
-            [Turn(trigger=test.trigger, expect=test.expect)], start, labelled=False, name=name
+        return TestResult(
+            status=combine(statuses),
+            errors=errors,
+            duration_ms=(time.time() - start) * 1000,
+            traces=traces,
+            counts=counts,
         )
 
-    def _run_with_variations(
-        self, trigger: str, expect: Expect, count: int, start: float, name: str
-    ) -> TestResult:
-        """Run the trigger and N paraphrases of it through the same assertions.
-
-        The test fails if ANY phrasing fails: an agent that handles nine wordings of a
-        request and drops the tenth is broken for whoever typed the tenth.
-
-        Every phrasing is run even after one fails — knowing that three of ten broke is
-        a different bug from one of ten, and stopping early hides which.
-
-        All phrasings go to the same running agent, back to back, with no reset in
-        between. That is sound for intents that only read; for one that changes state,
-        a later phrasing can fail because of what an earlier one did.
-        """
+    def _paraphrases(self, trigger: str, count: int) -> list[str] | str:
+        """The generated paraphrases, or why there are none."""
         if self._variations is None:
             msg = (
                 f"Test asks for {count} variations but no variation generator is "
@@ -447,47 +500,12 @@ class TestRunner:
             paraphrases = self._variations.generate(trigger, count)
         except Exception as e:
             self._last_variation_count = 0
-            return TestResult(
-                status=Status.ERROR,
-                errors=[f"Could not get variations: {e}"],
-                duration_ms=(time.time() - start) * 1000,
-            )
-
+            return f"Could not get variations: {e}"
         self._last_variation_count = len(paraphrases)
-        triggers = [trigger, *paraphrases]
-
-        errors: list[str] = []
-        traces: list[Trace] = []
-        statuses: list[Status] = []
-
-        for index, phrasing in enumerate(triggers):
-            # The failing phrasing is the whole finding. Without it the report says the
-            # intent broke but not which sentence broke it, and it can't be reproduced.
-            # Index 0 is the sentence the spec author wrote, not a generated one.
-            kind = "trigger" if index == 0 else "variation"
-            label = f'[{kind}: "{phrasing}"] '
-            # Each phrasing is its own execution, with its own test id.
-            result = self._execute(
-                [Turn(trigger=phrasing, expect=expect)],
-                time.time(),
-                labelled=False,
-                name=name,
-                label=label,
-            )
-            traces.extend(result.traces)
-            statuses.append(result.status)
-
-            if index > 0:
-                self._variations_run += 1
-
-            errors.extend(label + error for error in result.errors)
-
-        return TestResult(
-            status=combine(statuses),
-            errors=errors,
-            duration_ms=(time.time() - start) * 1000,
-            traces=traces,
-        )
+        if not paraphrases:
+            # Running only the trigger would report a test of N phrasings that tested one.
+            return f"no variations available (0 of {count})"
+        return paraphrases
 
     def _execute(
         self, turns: list[Turn], start: float, *, labelled: bool, name: str, label: str = ""
