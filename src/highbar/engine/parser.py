@@ -33,16 +33,53 @@ def parse_spec(path: str) -> Spec:
     """
     try:
         with open(path, encoding="utf-8") as f:
-            raw = yaml.safe_load(f)
+            raw = yaml.load(f, Loader=_StrictLoader)  # noqa: S506 — a SafeLoader subclass
     except FileNotFoundError:
         raise SpecError(f"{path}: no such file") from None
+    except UnicodeDecodeError as e:
+        raise SpecError(f"{path}: cannot read: not UTF-8 text (byte {e.start})") from None
+    except OSError as e:
+        raise SpecError(f"{path}: cannot read: {e.strerror or e}") from None
     except yaml.YAMLError as e:
-        raise SpecError(f"{path}: invalid YAML: {e}") from None
+        raise SpecError(f"{path}: invalid YAML: {_one_line(str(e))}") from None
+    except SpecError as e:
+        raise SpecError(f"{path}: {e}") from None
 
     try:
         return _parse_spec(raw)
     except SpecError as e:
         raise SpecError(f"{path}: {e}") from None
+
+
+class _StrictLoader(yaml.SafeLoader):
+    """SafeLoader that rejects a key written twice in the same mapping.
+
+    YAML keeps the last of two equal keys, so a second `expect:` silently replaced
+    the first and its checks never ran. Keys brought in by a `<<` merge can still be
+    overridden: that is what merging is for.
+    """
+
+
+def _mapping_without_duplicates(loader: _StrictLoader, node: yaml.MappingNode) -> dict[Any, Any]:
+    seen: set[Any] = set()
+    for key_node, _ in node.value:
+        if key_node.tag == "tag:yaml.org,2002:merge":
+            continue
+        key = loader.construct_object(key_node, deep=True)
+        if key in seen:
+            line = key_node.start_mark.line + 1
+            raise SpecError(f"line {line}: duplicate key '{key}' — YAML would keep only the last")
+        seen.add(key)
+    return loader.construct_mapping(node, deep=True)
+
+
+_StrictLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping_without_duplicates
+)
+
+
+def _one_line(text: str) -> str:
+    return " ".join(text.split())
 
 
 def _parse_spec(raw: Any) -> Spec:
@@ -214,8 +251,18 @@ def _parse_response(raw: Any, where: str) -> ResponseExpect:
     response_where = f"{where}.response"
     check_keys(raw, "response", response_where)
     for key in ("contains", "not_contains", "matches"):
-        if key in raw:
-            require_type(raw[key], str, response_where, f"{key} must be a string")
+        if key not in raw:
+            continue
+        value = raw[key]
+        require_type(value, str, response_where, f"{key} must be a string")
+        if not value:
+            # "" is in every answer (and matches every answer): a check that cannot fail.
+            raise SpecError(f"{response_where}: {key} cannot be empty")
+        if _has_template(value):
+            raise SpecError(
+                f"{response_where}.{key}: templates are only resolved in triggers; "
+                "here '{{...}}' would be compared as literal text"
+            )
 
     if "matches" in raw:
         try:
@@ -238,6 +285,9 @@ def _parse_function_call(raw: Any, where: str) -> FunctionCallExpect:
 
     for field in ("params", "result"):
         value = raw.get(field)
+        if value is not None:
+            # Matched key by key against the call's arguments or return value.
+            require_type(value, dict, where, f"{field} must be a mapping of expected values")
         if _has_template(value):
             raise SpecError(
                 f"{where}.{field}: templates are only resolved in triggers; "

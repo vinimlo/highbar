@@ -133,3 +133,15 @@ class TestHonestTemplates:
 
         with pytest.raises(TemplateError, match=r"no key 'nope' \(keys: id\)"):
             resolve_template(template, [_trace({"id": 7})])
+
+    def test_nested_indices_resolve(self) -> None:
+        template = "{{previous.function_calls[0].result.m[1][0]}}"
+
+        assert resolve_template(template, [_trace({"m": [[1, 2], [3, 4]]})]) == "3"
+
+    def test_malformed_path_is_an_error(self) -> None:
+        """`m[1]x` used to drop the `x` and resolve to m[1]: a wrong value, silently."""
+        template = "{{previous.function_calls[0].result.m[1]x}}"
+
+        with pytest.raises(TemplateError, match="invalid path"):
+            resolve_template(template, [_trace({"m": [1, 2]})])

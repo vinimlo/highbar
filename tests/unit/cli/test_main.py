@@ -164,6 +164,13 @@ class TestSpecErrors:
 
 
 class TestVariationsCommand:
+    def test_no_specs_found_exits_2(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["variations"])
+
+        assert result.exit_code == 2, result.output
+
     @pytest.mark.parametrize("argument", [["specs/"], [], ["specs/menu/menu.highbar.yaml"]])
     def test_generates_and_writes_the_cache(self, project: Path, argument: list[str]) -> None:
         """`highbar variations specs/` is the command the README documents."""

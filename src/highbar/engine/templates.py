@@ -83,14 +83,20 @@ def _index(current: Any, index: int, name: str, *, top_level: bool) -> Any:
     return current[index]
 
 
+_SEGMENT = re.compile(r"(\w+)((?:\[\d+\])*)")
+
+
 def _tokenize_path(path: str) -> list[str | int]:
-    """Split 'function_calls[0].result.order_id' into tokens."""
+    """Split 'function_calls[0].result.items[1][0]' into tokens.
+
+    A segment that is not a name followed by zero or more [index] is an error: reading
+    past the junk used to resolve `m[1]x` as `m[1]`, a wrong value without a word.
+    """
     tokens: list[str | int] = []
     for segment in path.split("."):
-        bracket_match = re.match(r"(\w+)\[(\d+)\]", segment)
-        if bracket_match:
-            tokens.append(bracket_match.group(1))
-            tokens.append(int(bracket_match.group(2)))
-        else:
-            tokens.append(segment)
+        match = _SEGMENT.fullmatch(segment)
+        if match is None:
+            raise _Missing(f"invalid path segment '{segment}'")
+        tokens.append(match.group(1))
+        tokens.extend(int(index) for index in re.findall(r"\[(\d+)\]", match.group(2)))
     return tokens

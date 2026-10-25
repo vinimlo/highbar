@@ -318,3 +318,119 @@ class TestNames:
         assert single.name == "pedido sem número"
         assert multi.turns is not None
         assert multi.turns[0].name == "pede o pedido"
+
+
+class TestReviewFindings:
+    """Shapes the PR review found still passing green, or crashing, after the schema."""
+
+    @pytest.mark.parametrize("matcher", ["contains", "not_contains", "matches"])
+    def test_template_in_response_matcher_rejected(self, tmp_path: Path, matcher: str) -> None:
+        """`not_contains: "{{...}}"` compared the braces literally and could never fail."""
+        path = _spec(
+            tmp_path,
+            _one_test(f"""\
+                - turns:
+                    - trigger: "find my order"
+                      expect: {{function_calls: []}}
+                    - trigger: "repeat {{{{previous.function_calls[0].result.id}}}}"
+                      expect:
+                        response:
+                          {matcher}: "{{{{previous.function_calls[0].result.id}}}}"
+                """),
+        )
+
+        with pytest.raises(SpecError, match="templates are only resolved in triggers"):
+            parse_spec(path)
+
+    def test_duplicate_key_rejected(self, tmp_path: Path) -> None:
+        """YAML keeps the last of two equal keys: the first check vanished without a word."""
+        path = _spec(
+            tmp_path,
+            _one_test("""\
+                - trigger: "hi"
+                  expect:
+                    function_calls:
+                      - name: must_be_called
+                  expect:
+                    response: {contains: "hello"}
+                """),
+        )
+
+        with pytest.raises(SpecError, match="duplicate key 'expect'"):
+            parse_spec(path)
+
+    def test_merge_key_can_still_be_overridden(self, tmp_path: Path) -> None:
+        path = _spec(
+            tmp_path,
+            """\
+            x-base: &base
+              contains: "a"
+              not_contains: "z"
+            suites:
+              - name: S
+                tests:
+                  - trigger: "hi"
+                    expect:
+                      response:
+                        <<: *base
+                        contains: "b"
+            """,
+        )
+
+        response = parse_spec(path).suites[0].tests[0].expect.response  # type: ignore[union-attr]
+        assert response is not None
+        assert (response.contains, response.not_contains) == ("b", "z")
+
+    @pytest.mark.parametrize(
+        ("field", "value"), [("params", '"order 7"'), ("params", "[1]"), ("result", "5")]
+    )
+    def test_params_and_result_must_be_mappings(
+        self, tmp_path: Path, field: str, value: str
+    ) -> None:
+        """They passed validate and then crashed the run with a traceback."""
+        path = _spec(
+            tmp_path,
+            _one_test(f"""\
+                - trigger: "hi"
+                  expect:
+                    function_calls:
+                      - name: get
+                        {field}: {value}
+                """),
+        )
+
+        with pytest.raises(SpecError, match=f"{field} must be a mapping"):
+            parse_spec(path)
+
+    @pytest.mark.parametrize("matcher", ["contains", "not_contains", "matches"])
+    def test_empty_response_matcher_rejected(self, tmp_path: Path, matcher: str) -> None:
+        """`contains: ""` is true of every answer, so the test could not fail."""
+        path = _spec(
+            tmp_path, _one_test(f'- trigger: "hi"\n  expect: {{response: {{{matcher}: ""}}}}\n')
+        )
+
+        with pytest.raises(SpecError, match=f"{matcher} cannot be empty"):
+            parse_spec(path)
+
+    def test_non_utf8_file_is_a_spec_error(self, tmp_path: Path) -> None:
+        path = tmp_path / "latin.highbar.yaml"
+        path.write_bytes(AGENT.encode() + "suites: [caf\xe9]\n".encode("latin-1"))
+
+        with pytest.raises(SpecError, match=r"latin\.highbar\.yaml: cannot read"):
+            parse_spec(str(path))
+
+    def test_directory_named_like_a_spec_is_a_spec_error(self, tmp_path: Path) -> None:
+        folder = tmp_path / "odd.highbar.yaml"
+        folder.mkdir()
+
+        with pytest.raises(SpecError, match=r"odd\.highbar\.yaml: cannot read"):
+            parse_spec(str(folder))
+
+    def test_invalid_yaml_is_one_line(self, tmp_path: Path) -> None:
+        path = tmp_path / "broken.highbar.yaml"
+        path.write_text("agent: [unclosed\n", encoding="utf-8")
+
+        with pytest.raises(SpecError, match="invalid YAML") as raised:
+            parse_spec(str(path))
+
+        assert "\n" not in str(raised.value)

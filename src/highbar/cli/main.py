@@ -167,7 +167,7 @@ def variations(
     paths = _discover_specs(spec_path)
     if not paths:
         console.print("[red]No spec files found.[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_UNRUNNABLE)
 
     cache = VariationCache(find_cache_path())
     generator = VariationGenerator(cache)
