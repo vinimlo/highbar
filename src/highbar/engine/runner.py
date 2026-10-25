@@ -18,7 +18,7 @@ from highbar.domain.models import (
     combine,
 )
 from highbar.domain.protocols import Assertion, Reporter, TraceCollector, VariationGenerator
-from highbar.engine.templates import resolve_template
+from highbar.engine.templates import TemplateError, resolve_template
 
 
 def _test_name(test: Test, variations_run: int | None = None) -> str:
@@ -172,7 +172,13 @@ class TestRunner:
         self, trigger: str, expect: Expect, start: float, previous_traces: list[Trace]
     ) -> TestResult:
         """Run a single trigger-expect pair."""
-        resolved_trigger = resolve_template(trigger, previous_traces)
+        try:
+            resolved_trigger = resolve_template(trigger, previous_traces)
+        except TemplateError as e:
+            # Sending the raw "{{...}}" would test a message nobody meant to write; the
+            # turn is unverified, and the rest of the run goes on.
+            duration = (time.time() - start) * 1000
+            return TestResult(status=Status.ERROR, errors=[str(e)], duration_ms=duration)
 
         checkpoint = self._collector.checkpoint()
 

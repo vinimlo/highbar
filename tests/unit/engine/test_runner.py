@@ -240,6 +240,28 @@ class TestTestRunner:
 
         assert (summary.total, summary.passed, summary.failed, summary.errored) == (3, 1, 1, 1)
 
+    def test_a5_template_error_is_error_and_run_continues(self) -> None:
+        """A turn that refers to a call that never happened was not tested: error, not crash."""
+        runner, _, client, _, reporter = _make_runner()
+        broken = Test(
+            turns=[
+                Turn(trigger="find my order", expect=Expect()),
+                Turn(trigger="cancel {{previous.function_calls[0].result.id}}", expect=Expect()),
+            ]
+        )
+        spec = _make_spec([broken, Test(trigger="hello", expect=Expect())])
+
+        summary = runner.run(spec)
+
+        (_, first), (_, second) = [c[0] for c in reporter.on_test_result.call_args_list]
+        assert first.status is Status.ERROR
+        assert "function_calls[0]" in first.errors[0]
+        assert "only 0 calls" in first.errors[0]
+        assert second.status is Status.PASSED
+        assert summary.errored == 1
+        # The unresolvable message is never sent: turn 1 and the second test only.
+        assert client.send.call_count == 2
+
     def test_reporter_methods_called(self) -> None:
         runner, _, _, _, reporter = _make_runner()
         spec = _make_spec([Test(trigger="hello", expect=Expect())])
