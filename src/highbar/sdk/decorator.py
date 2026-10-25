@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from gauntlet.sdk.trace import TraceWriter
+from highbar.sdk.trace import TraceWriter
 
 
 def make_tool_decorator(

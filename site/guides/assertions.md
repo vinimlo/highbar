@@ -1,6 +1,6 @@
 # Assertions
 
-Gauntlet provides two categories of assertions: **function call assertions** that validate tool invocations, and **response assertions** that validate the agent's text output.
+Highbar provides two categories of assertions: **function call assertions** that validate tool invocations, and **response assertions** that validate the agent's text output.
 
 ## Function Call Assertions
 
@@ -64,7 +64,7 @@ expect:
     - name: track_shipment
 ```
 
-Each expected call is matched independently against the collected traces. Order does not matter -- Gauntlet finds any trace with a matching function name, then checks params and result.
+Each expected call is matched independently against the collected traces. Order does not matter -- Highbar finds any trace with a matching function name, then checks params and result.
 
 ### Alternative Tools
 
@@ -82,7 +82,7 @@ When none of them was called, the failure reads: `Expected call to one of ('open
 
 ### Matching Behavior
 
-For each expected function call, Gauntlet:
+For each expected function call, Highbar:
 
 1. Filters all traces to find those where `trace.fn` is `expected.name` (or, when `name` is a list, any of the listed names)
 2. If no trace matches, the assertion fails naming what was expected and what the agent actually called: `Expected call to 'get_order', but the agent called: track_shipment` (or `called: nothing` when no tool ran)
@@ -229,7 +229,7 @@ params:
 
 ### Validation
 
-`gauntlet validate` (and `gauntlet run`, before starting the agent) rejects:
+`highbar validate` (and `highbar run`, before starting the agent) rejects:
 
 - an invalid regular expression in `matches`;
 - a dict that mixes matcher names with other keys, such as `{contains: "coca", size: "L"}`;

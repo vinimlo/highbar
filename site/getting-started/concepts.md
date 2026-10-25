@@ -4,7 +4,7 @@
 
 ### Spec
 
-A `.gauntlet.yaml` file that contains the full definition of a test run: agent configuration and one or more test suites. Each spec targets a single agent.
+A `.highbar.yaml` file that contains the full definition of a test run: agent configuration and one or more test suites. Each spec targets a single agent.
 
 ```yaml
 agent:
@@ -71,7 +71,7 @@ One exchange in a multi-turn test. Each turn has its own trigger and expectation
 
 ### Trigger
 
-The message sent to the agent's HTTP endpoint. Gauntlet sends it as a POST request with a JSON body:
+The message sent to the agent's HTTP endpoint. Highbar sends it as a POST request with a JSON body:
 
 ```json
 {"message": "Where is my order #12345?"}
@@ -114,7 +114,7 @@ An atomic record capturing a single tool invocation. Each trace contains:
 
 ### Trace Box
 
-The JSONL record written by `@gt.tool` to disk. Each line in the trace file is one JSON object representing a single tool invocation. The trace file path is controlled by the `GAUNTLET_TRACES_URL` environment variable, which Gauntlet injects automatically when starting the agent subprocess.
+The JSONL record written by `@hb.tool` to disk. Each line in the trace file is one JSON object representing a single tool invocation. The trace file path is controlled by the `HIGHBAR_TRACES_URL` environment variable, which Highbar injects automatically when starting the agent subprocess.
 
 Example trace box (one line in the JSONL file):
 
@@ -132,24 +132,24 @@ graph LR
     D --> E[Reporter]
     C --> F[SubprocessAdapter]
     F -->|starts| G[Agent]
-    G -->|"@gt.tool writes"| H[JSONL Traces]
+    G -->|"@hb.tool writes"| H[JSONL Traces]
     H --> I[FileTraceCollector]
     I -->|reads| D
 ```
 
 ## Execution Flow
 
-Here is what happens when you run `gauntlet run specs/my-agent.gauntlet.yaml`:
+Here is what happens when you run `highbar run specs/my-agent.highbar.yaml`:
 
 1. **Parse** — The Parser reads the YAML spec file, validates the schema, and produces domain model objects (`Spec`, `Suite`, `Test`, `Expect`).
 
-2. **Start Agent** — The `SubprocessAdapter` launches the agent command (e.g., `python agent.py`) as a child process. It injects the `GAUNTLET_TRACES_URL` environment variable pointing to a temporary JSONL file.
+2. **Start Agent** — The `SubprocessAdapter` launches the agent command (e.g., `python agent.py`) as a child process. It injects the `HIGHBAR_TRACES_URL` environment variable pointing to a temporary JSONL file.
 
-3. **Health Check** — If a `health` URL is configured, Gauntlet polls it with GET requests until it receives a successful response, up to `startup_timeout` milliseconds.
+3. **Health Check** — If a `health` URL is configured, Highbar polls it with GET requests until it receives a successful response, up to `startup_timeout` milliseconds.
 
 4. **Send Trigger** — For each test, the `HTTPClient` sends a POST request to the agent's `endpoint` with the trigger message.
 
-5. **Settle** — Gauntlet waits for `settle_time` milliseconds after receiving the response. This gives the agent time to complete any asynchronous tool calls that happen after the HTTP response is sent.
+5. **Settle** — Highbar waits for `settle_time` milliseconds after receiving the response. This gives the agent time to complete any asynchronous tool calls that happen after the HTTP response is sent.
 
 6. **Collect Traces** — The `FileTraceCollector` reads the JSONL trace file and parses each line into a `Trace` object. It returns all traces written since the last collection.
 
@@ -161,15 +161,15 @@ Here is what happens when you run `gauntlet run specs/my-agent.gauntlet.yaml`:
 
 ## Key Design Decisions
 
-**Test the agent, not the LLM.** Gauntlet does not evaluate prompt quality or model accuracy. It asserts that given an input, the agent calls the right tools with the right parameters and produces the right output.
+**Test the agent, not the LLM.** Highbar does not evaluate prompt quality or model accuracy. It asserts that given an input, the agent calls the right tools with the right parameters and produces the right output.
 
 **Subset matching by default.** When asserting function call parameters, you only specify the fields that matter. If the tool receives additional parameters, the assertion still passes. This keeps specs resilient to implementation changes.
 
-**Zero overhead in production.** The `@gt.tool` decorator checks for the `GAUNTLET_TRACES_URL` environment variable at initialization time. When the variable is not set, the decorator returns the original function unwrapped — no trace writing, no performance impact, no extra dependencies with the `[sdk]` install.
+**Zero overhead in production.** The `@hb.tool` decorator checks for the `HIGHBAR_TRACES_URL` environment variable at initialization time. When the variable is not set, the decorator returns the original function unwrapped — no trace writing, no performance impact, no extra dependencies with the `[sdk]` install.
 
 **YAML over code.** Specs are declarative YAML files, not Python test code. This makes them readable by anyone on the team, diffable in pull requests, and easy to generate from documentation or conversation logs.
 
 ## Next Steps
 
 - [Quickstart](/getting-started/quickstart) — build and test your first agent in 5 minutes
-- [Installation](/getting-started/installation) — install Gauntlet via pip or uv
+- [Installation](/getting-started/installation) — install Highbar via pip or uv

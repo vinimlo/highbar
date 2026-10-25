@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from gauntlet.domain.models import (
+from highbar.domain.models import (
     AgentConfig,
     AssertionResult,
     Expect,
@@ -14,7 +14,7 @@ from gauntlet.domain.models import (
     Trace,
     Turn,
 )
-from gauntlet.engine.runner import TestRunner
+from highbar.engine.runner import TestRunner
 
 
 def _make_runner(

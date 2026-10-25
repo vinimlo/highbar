@@ -1,6 +1,6 @@
 # Trace Boxes
 
-A **trace box** is the atomic unit of data captured by the `@gt.tool` decorator. Each tool invocation produces exactly one trace box, written as a single line in a JSONL file.
+A **trace box** is the atomic unit of data captured by the `@hb.tool` decorator. Each tool invocation produces exactly one trace box, written as a single line in a JSONL file.
 
 ## Format
 
@@ -68,7 +68,7 @@ JSONL is chosen because:
 
 ## Checkpoint-Based Correlation
 
-Gauntlet does not inject request IDs into traces. Instead, it uses line counting to correlate traces to tests:
+Highbar does not inject request IDs into traces. Instead, it uses line counting to correlate traces to tests:
 
 ```
 Before test:  file has 5 lines    → checkpoint = 5
@@ -84,7 +84,7 @@ This approach works because:
 
 ## Error Traces
 
-If a `@gt.tool`-decorated function raises an exception, the trace box includes the `error` field with the exception message. The exception is then re-raised, allowing the agent to handle it normally.
+If a `@hb.tool`-decorated function raises an exception, the trace box includes the `error` field with the exception message. The exception is then re-raised, allowing the agent to handle it normally.
 
 ```json
 {
@@ -104,5 +104,5 @@ If a `@gt.tool`-decorated function raises an exception, the trace box includes t
 The `TraceWriter` serializes all writes through a `threading.Lock`. This ensures:
 
 - The sequence counter increments atomically.
-- File writes do not interleave when multiple threads call `@gt.tool` functions concurrently.
+- File writes do not interleave when multiple threads call `@hb.tool` functions concurrently.
 - Each trace box is a complete, well-formed JSON line.

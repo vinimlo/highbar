@@ -1,6 +1,6 @@
 # Roadmap
 
-Features planned for future releases of Gauntlet. These are not in the current MVP.
+Features planned for future releases of Highbar. These are not in the current MVP.
 
 ## Assertions
 
@@ -49,7 +49,7 @@ expect:
     - name: get_shipping_details
 ```
 
-Enforce that function calls happen in exactly the specified sequence. Currently, Gauntlet only checks that all expected calls are present. Strict ordering adds sequence verification for workflows where order matters (e.g., authenticate before querying).
+Enforce that function calls happen in exactly the specified sequence. Currently, Highbar only checks that all expected calls are present. Strict ordering adds sequence verification for workflows where order matters (e.g., authenticate before querying).
 
 ### `result_not_contains`
 
@@ -116,11 +116,11 @@ Machine-readable JSON output for integration with CI/CD pipelines, dashboards, a
 
 ### HTTP Sidecar
 
-An HTTP-based trace transport for remote agents that cannot share a local filesystem with the test runner. The sidecar runs as a lightweight HTTP server alongside the test runner, and the agent's `@gt.tool` decorator posts traces to it over HTTP instead of writing to a file.
+An HTTP-based trace transport for remote agents that cannot share a local filesystem with the test runner. The sidecar runs as a lightweight HTTP server alongside the test runner, and the agent's `@hb.tool` decorator posts traces to it over HTTP instead of writing to a file.
 
 ```yaml
 agent:
-  start: "docker run -e GAUNTLET_TRACES_URL=http://host:9090/traces my-agent"
+  start: "docker run -e HIGHBAR_TRACES_URL=http://host:9090/traces my-agent"
   endpoint: "http://localhost:8080/chat"
   trace_transport: http
   trace_port: 9090
@@ -132,10 +132,10 @@ This enables testing agents running in Docker containers, Kubernetes pods, or re
 
 ### Mocks
 
-Mocking tool functions or LLM responses was considered and rejected. Gauntlet tests real agent behavior end-to-end. Mocking any component in the chain (tools, LLM, orchestration) defeats the purpose of the framework.
+Mocking tool functions or LLM responses was considered and rejected. Highbar tests real agent behavior end-to-end. Mocking any component in the chain (tools, LLM, orchestration) defeats the purpose of the framework.
 
 If your tools have side effects, configure a test environment with sandboxed services -- the same approach used for integration testing in web applications.
 
 ### LLM Evaluation Metrics
 
-Gauntlet does not plan to add quality scoring, hallucination detection, or faithfulness metrics. These are well-served by existing tools like Promptfoo and DeepEval. Gauntlet focuses on behavior assertions, not output quality measurement.
+Highbar does not plan to add quality scoring, hallucination detection, or faithfulness metrics. These are well-served by existing tools like Promptfoo and DeepEval. Highbar focuses on behavior assertions, not output quality measurement.

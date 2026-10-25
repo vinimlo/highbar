@@ -1,6 +1,6 @@
 # Guardrail Testing Patterns
 
-Guardrail tests verify that an AI agent maintains safety boundaries under adversarial or edge-case inputs. In Gauntlet, guardrail tests use two key mechanisms:
+Guardrail tests verify that an AI agent maintains safety boundaries under adversarial or edge-case inputs. In Highbar, guardrail tests use two key mechanisms:
 
 - `function_calls: []` -- asserts that **no** tools are called.
 - `response` assertions -- verify the agent responds appropriately without leaking information.

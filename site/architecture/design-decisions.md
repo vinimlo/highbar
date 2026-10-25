@@ -1,21 +1,21 @@
 # Design Decisions
 
-This page explains the key design choices in Gauntlet and the reasoning behind them.
+This page explains the key design choices in Highbar and the reasoning behind them.
 
 ## 1. Why Python (Not TypeScript)
 
-The original concept for Gauntlet considered TypeScript, but the implementation uses Python for a pragmatic reason: the SDK lives inside the agent's code, and the vast majority of AI agents are written in Python (LangChain, LlamaIndex, CrewAI, custom agents using the Anthropic/OpenAI SDKs).
+The original concept for Highbar considered TypeScript, but the implementation uses Python for a pragmatic reason: the SDK lives inside the agent's code, and the vast majority of AI agents are written in Python (LangChain, LlamaIndex, CrewAI, custom agents using the Anthropic/OpenAI SDKs).
 
 Using Python for both the CLI and the SDK means:
 
 - One language for the entire toolchain.
 - No cross-language serialization or IPC between the test runner and the SDK.
 - Agent developers do not need to add a Node.js dependency to their Python project.
-- The decorator (`@gt.tool`) feels native and idiomatic.
+- The decorator (`@hb.tool`) feels native and idiomatic.
 
 ## 2. Why a Decorator (Not Monkey-Patching)
 
-Gauntlet uses an explicit `@gt.tool` decorator rather than monkey-patching agent framework internals or intercepting function calls at runtime.
+Highbar uses an explicit `@hb.tool` decorator rather than monkey-patching agent framework internals or intercepting function calls at runtime.
 
 **Advantages:**
 
@@ -24,7 +24,7 @@ Gauntlet uses an explicit `@gt.tool` decorator rather than monkey-patching agent
 - **Explicit and visible**: Developers can see exactly which functions are instrumented by looking at the code.
 - **One-time setup**: Add the decorator once; it works in all environments. No per-test configuration.
 
-**Tradeoff:** The developer must add `@gt.tool` to each tool function. This is a deliberate choice -- Gauntlet instruments the functions you choose, not everything.
+**Tradeoff:** The developer must add `@hb.tool` to each tool function. This is a deliberate choice -- Highbar instruments the functions you choose, not everything.
 
 ## 3. Why File Transport (Not HTTP)
 
@@ -33,7 +33,7 @@ Trace boxes are written to a local JSONL file rather than sent to an HTTP endpoi
 **Why file-based for MVP:**
 
 - **Simpler**: No HTTP server to run alongside the test runner. No network configuration, ports, or firewall issues.
-- **No middleware**: The `@gt.tool` decorator writes directly to the filesystem. No need for a sidecar process or HTTP client in the SDK.
+- **No middleware**: The `@hb.tool` decorator writes directly to the filesystem. No need for a sidecar process or HTTP client in the SDK.
 - **Reliable**: File I/O is synchronous and straightforward. No retry logic, connection timeouts, or buffering concerns.
 - **Debuggable**: The trace file is a plain text file that can be inspected with `cat`, `jq`, or any text editor.
 
@@ -41,15 +41,15 @@ Trace boxes are written to a local JSONL file rather than sent to an HTTP endpoi
 
 ## 4. Why No Mocks
 
-Gauntlet deliberately does not provide mocking capabilities for tool functions or LLM responses.
+Highbar deliberately does not provide mocking capabilities for tool functions or LLM responses.
 
-**Rationale:** Gauntlet tests the real agent end-to-end. The entire point is to verify that the agent -- with its actual LLM, actual tools, and actual orchestration logic -- behaves correctly. Mocking any of these components defeats the purpose.
+**Rationale:** Highbar tests the real agent end-to-end. The entire point is to verify that the agent -- with its actual LLM, actual tools, and actual orchestration logic -- behaves correctly. Mocking any of these components defeats the purpose.
 
 If a tool has side effects (sending emails, charging credit cards), the developer is responsible for configuring a test environment with sandboxed services. This is the same approach used in integration testing for web applications -- you use a test database, not a mocked one.
 
 ## 5. Why Checkpoint + Settle Time (Not Request IDs)
 
-Most distributed tracing systems use correlation IDs to link requests to their traces. Gauntlet instead uses a simpler mechanism: line counting in the trace file plus a configurable settle time.
+Most distributed tracing systems use correlation IDs to link requests to their traces. Highbar instead uses a simpler mechanism: line counting in the trace file plus a configurable settle time.
 
 **Why this works:**
 
@@ -57,7 +57,7 @@ Most distributed tracing systems use correlation IDs to link requests to their t
 - The trace file is append-only, so new traces always appear at the end.
 - The settle time provides a buffer for traces written after the HTTP response returns.
 
-**Why this is better for Gauntlet's use case:**
+**Why this is better for Highbar's use case:**
 
 - **No middleware required**: The decorator is the only instrumentation. No need to thread request IDs through the agent's middleware stack, which would require changes to the agent's HTTP handler.
 - **Framework-independent**: Works regardless of how the agent handles requests internally (sync, async, queued, etc.).

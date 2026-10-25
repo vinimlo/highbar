@@ -1,6 +1,6 @@
 # CI/CD Integration
 
-Gauntlet is designed to run in continuous integration pipelines. It uses standard exit codes and produces terminal output compatible with CI log viewers.
+Highbar is designed to run in continuous integration pipelines. It uses standard exit codes and produces terminal output compatible with CI log viewers.
 
 ## Exit Codes
 
@@ -21,7 +21,7 @@ on:
   pull_request:
 
 jobs:
-  gauntlet:
+  highbar:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,9 +30,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install gauntlet
+      - run: pip install highbar
 
-      - run: gauntlet run
+      - run: highbar run
 ```
 
 This workflow triggers on changes to prompt templates or spec files, ensuring behavior tests run whenever the agent's instructions or expected behaviors change.
@@ -49,7 +49,7 @@ on:
   pull_request:
 
 jobs:
-  gauntlet:
+  highbar:
     runs-on: ubuntu-latest
     env:
       ANTHROPIC_API_KEY: $&#123;&#123; secrets.ANTHROPIC_API_KEY &#125;&#125;
@@ -65,14 +65,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install gauntlet
+          pip install highbar
           pip install -r requirements.txt
 
       - name: Run behavior tests
-        run: gauntlet run
+        run: highbar run
 
       - name: Run guardrail tests only
-        run: gauntlet run specs/guardrails.gauntlet.yaml
+        run: highbar run specs/guardrails.highbar.yaml
 ```
 
 ### With uv
@@ -81,7 +81,7 @@ If your project uses `uv` for dependency management:
 
 ```yaml
 jobs:
-  gauntlet:
+  highbar:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -97,19 +97,19 @@ jobs:
         run: uv sync
 
       - name: Run behavior tests
-        run: uv run gauntlet run
+        run: uv run highbar run
 ```
 
 ## GitLab CI
 
 ```yaml
-gauntlet:
+highbar:
   image: python:3.12
   stage: test
   script:
-    - pip install gauntlet
+    - pip install highbar
     - pip install -r requirements.txt
-    - gauntlet run
+    - highbar run
   rules:
     - changes:
         - prompts/**
@@ -119,14 +119,14 @@ gauntlet:
 
 ## Running Specific Specs
 
-You can run a single spec file or let Gauntlet discover all specs in the `specs/` directory:
+You can run a single spec file or let Highbar discover all specs in the `specs/` directory:
 
 ```bash
-# Run all specs (discovers *.gauntlet.yaml in specs/)
-gauntlet run
+# Run all specs (discovers *.highbar.yaml in specs/)
+highbar run
 
 # Run a specific spec file
-gauntlet run specs/orders.gauntlet.yaml
+highbar run specs/orders.highbar.yaml
 ```
 
 This lets you split your CI pipeline into separate jobs for different spec files, or run guardrail tests separately from functional tests.
@@ -166,12 +166,12 @@ Add a validation step to catch YAML syntax errors before attempting to run tests
 ```yaml
 - name: Validate specs
   run: |
-    for spec in specs/*.gauntlet.yaml; do
-      gauntlet validate "$spec"
+    for spec in specs/*.highbar.yaml; do
+      highbar validate "$spec"
     done
 
 - name: Run behavior tests
-  run: gauntlet run
+  run: highbar run
 ```
 
 ### Separate Functional and Guardrail Tests
@@ -187,8 +187,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install gauntlet && pip install -r requirements.txt
-      - run: gauntlet run specs/guardrails.gauntlet.yaml
+      - run: pip install highbar && pip install -r requirements.txt
+      - run: highbar run specs/guardrails.highbar.yaml
 
   functional:
     if: github.event_name == 'pull_request'
@@ -198,6 +198,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install gauntlet && pip install -r requirements.txt
-      - run: gauntlet run specs/functional.gauntlet.yaml
+      - run: pip install highbar && pip install -r requirements.txt
+      - run: highbar run specs/functional.highbar.yaml
 ```

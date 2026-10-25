@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from gauntlet.adapters.file_collector import FileTraceCollector
+from highbar.adapters.file_collector import FileTraceCollector
 
 
 def _write_traces(path: Path, traces: list[dict]) -> None:

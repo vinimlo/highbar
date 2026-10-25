@@ -1,10 +1,10 @@
 # Comparison
 
-How Gauntlet compares to existing AI testing and evaluation tools.
+How Highbar compares to existing AI testing and evaluation tools.
 
 ## Feature Comparison
 
-| Feature | Gauntlet | Promptfoo | DeepEval | Braintrust | Manual Testing |
+| Feature | Highbar | Promptfoo | DeepEval | Braintrust | Manual Testing |
 |---------|----------|-----------|----------|------------|----------------|
 | Tests the agent (not just the LLM) | Yes | No | No | No | Sort of |
 | Function call assertions | Native | Partial | No | No | Manual |
@@ -18,7 +18,7 @@ How Gauntlet compares to existing AI testing and evaluation tools.
 
 ## The Key Differentiator
 
-Existing tools evaluate **the model** -- they test prompts, measure output quality, and benchmark LLM performance. Gauntlet tests **the agent** -- it verifies that the complete system (LLM + tools + orchestration logic) produces the correct behavior.
+Existing tools evaluate **the model** -- they test prompts, measure output quality, and benchmark LLM performance. Highbar tests **the agent** -- it verifies that the complete system (LLM + tools + orchestration logic) produces the correct behavior.
 
 Consider an order support agent. Existing tools can tell you:
 
@@ -26,7 +26,7 @@ Consider an order support agent. Existing tools can tell you:
 - "The response is factually accurate" (DeepEval)
 - "The output quality score is 0.87" (Braintrust)
 
-Gauntlet tells you:
+Highbar tells you:
 
 - "The agent called `search_orders` with `order_id: '12345'`"
 - "The agent did NOT call any tools when given a prompt injection"
@@ -42,12 +42,12 @@ Promptfoo is an LLM evaluation framework focused on testing prompts and model ou
 
 **Where Promptfoo fits:** Evaluating prompt templates, comparing model providers, measuring response quality metrics.
 
-**Where Gauntlet fits:** Testing that an agent calls the right tools with the right arguments, validating multi-turn workflows, enforcing guardrails against prompt injection and PII leakage.
+**Where Highbar fits:** Testing that an agent calls the right tools with the right arguments, validating multi-turn workflows, enforcing guardrails against prompt injection and PII leakage.
 
 **Key differences:**
-- Promptfoo sends prompts directly to LLM APIs. Gauntlet sends triggers to the agent's HTTP endpoint.
-- Promptfoo evaluates text output. Gauntlet asserts on function calls AND text output.
-- Promptfoo does not have native multi-turn support. Gauntlet threads data between turns using <code v-pre>{{previous.*}}</code> templates.
+- Promptfoo sends prompts directly to LLM APIs. Highbar sends triggers to the agent's HTTP endpoint.
+- Promptfoo evaluates text output. Highbar asserts on function calls AND text output.
+- Promptfoo does not have native multi-turn support. Highbar threads data between turns using <code v-pre>{{previous.*}}</code> templates.
 
 ### vs. DeepEval
 
@@ -55,11 +55,11 @@ DeepEval is a Python testing framework for LLM applications, with built-in metri
 
 **Where DeepEval fits:** Measuring output quality with statistical metrics, evaluating RAG pipelines, checking for hallucinations.
 
-**Where Gauntlet fits:** Behavior testing -- did the agent do the right thing? Not just "was the output good?" but "did it call the right tool with the right arguments?"
+**Where Highbar fits:** Behavior testing -- did the agent do the right thing? Not just "was the output good?" but "did it call the right tool with the right arguments?"
 
 **Key differences:**
-- DeepEval uses Python test functions. Gauntlet uses YAML specs.
-- DeepEval focuses on output metrics. Gauntlet focuses on behavior assertions.
+- DeepEval uses Python test functions. Highbar uses YAML specs.
+- DeepEval focuses on output metrics. Highbar focuses on behavior assertions.
 - DeepEval does not capture or assert on tool calls.
 
 ### vs. Braintrust
@@ -68,12 +68,12 @@ Braintrust is a proprietary platform for evaluating and monitoring AI applicatio
 
 **Where Braintrust fits:** Production monitoring, A/B testing model configurations, tracking quality over time.
 
-**Where Gauntlet fits:** Pre-deployment behavior testing in CI/CD pipelines.
+**Where Highbar fits:** Pre-deployment behavior testing in CI/CD pipelines.
 
 **Key differences:**
-- Braintrust is a hosted platform. Gauntlet is a local CLI tool.
-- Braintrust focuses on observability and scoring. Gauntlet focuses on pass/fail behavior assertions.
-- Braintrust is proprietary. Gauntlet is open source (MIT).
+- Braintrust is a hosted platform. Highbar is a local CLI tool.
+- Braintrust focuses on observability and scoring. Highbar focuses on pass/fail behavior assertions.
+- Braintrust is proprietary. Highbar is open source (MIT).
 
 ### vs. Manual Testing
 
@@ -81,20 +81,20 @@ Manual testing means running the agent and checking outputs by hand, often using
 
 **Where manual testing fits:** Exploratory testing, edge case discovery, UX evaluation.
 
-**Where Gauntlet fits:** Regression testing, CI/CD integration, systematic guardrail validation.
+**Where Highbar fits:** Regression testing, CI/CD integration, systematic guardrail validation.
 
 **Key differences:**
 - Manual testing does not scale and cannot run in CI.
 - Manual testing cannot reliably verify function call arguments.
-- Manual testing is good for discovering new test cases; Gauntlet is good for automating them.
+- Manual testing is good for discovering new test cases; Highbar is good for automating them.
 
-## When to Use Gauntlet
+## When to Use Highbar
 
-Gauntlet is the right tool when you need to verify:
+Highbar is the right tool when you need to verify:
 
 - An agent calls specific tools with specific arguments.
 - Multi-turn workflows complete correctly with data flowing between turns.
 - Guardrails hold against prompt injection, PII leakage, and scope violations.
 - Agent behavior does not regress as you update prompts, models, or tool implementations.
 
-Gauntlet is **not** a replacement for LLM evaluation tools. Use Promptfoo or DeepEval to evaluate your model, and Gauntlet to test your agent. They are complementary.
+Highbar is **not** a replacement for LLM evaluation tools. Use Promptfoo or DeepEval to evaluate your model, and Highbar to test your agent. They are complementary.

@@ -1,30 +1,30 @@
 # SDK Integration
 
-The Gauntlet SDK provides the `@gt.tool` decorator that instruments your agent's tool functions for behavior testing. When tests are running, the decorator captures every tool invocation as a trace. In production, it adds zero overhead.
+The Highbar SDK provides the `@hb.tool` decorator that instruments your agent's tool functions for behavior testing. When tests are running, the decorator captures every tool invocation as a trace. In production, it adds zero overhead.
 
 ## Quick Start
 
 ```python
-from gauntlet import Gauntlet
+from highbar import Highbar
 
-gt = Gauntlet()
+hb = Highbar()
 
-@gt.tool
+@hb.tool
 def search_orders(customer_id: str, status: str = "all") -> dict:
     # your implementation here
     return {"orders": [...]}
 ```
 
-That is all. Your tool functions work exactly as before, and Gauntlet captures their invocations only when tests are running.
+That is all. Your tool functions work exactly as before, and Highbar captures their invocations only when tests are running.
 
 ## How It Works
 
-The `Gauntlet` class checks for the `GAUNTLET_TRACES_URL` environment variable on instantiation:
+The `Highbar` class checks for the `HIGHBAR_TRACES_URL` environment variable on instantiation:
 
 - **Variable is set**: The decorator wraps each tool function to capture traces and write them to a JSONL file at the specified path.
 - **Variable is not set**: The decorator returns the original function completely untouched. There is no wrapper, no conditional check at call time, and no performance impact whatsoever.
 
-When you run `gauntlet run`, the CLI automatically sets `GAUNTLET_TRACES_URL` to a temporary file path before starting your agent subprocess. You do not need to configure this yourself.
+When you run `highbar run`, the CLI automatically sets `HIGHBAR_TRACES_URL` to a temporary file path before starting your agent subprocess. You do not need to configure this yourself.
 
 ## What Gets Captured
 
@@ -47,20 +47,20 @@ The trace writer uses a `threading.Lock` to protect the sequence counter and fil
 
 ## Full Example: FastAPI Agent
 
-Here is a complete agent with two decorated tools, ready for Gauntlet testing:
+Here is a complete agent with two decorated tools, ready for Highbar testing:
 
 ```python
 from fastapi import FastAPI
 from pydantic import BaseModel
-from gauntlet import Gauntlet
+from highbar import Highbar
 
 app = FastAPI()
-gt = Gauntlet()
+hb = Highbar()
 
 
 # --- Tools ---
 
-@gt.tool
+@hb.tool
 def search_orders(customer_id: str, status: str = "active") -> dict:
     """Search orders by customer ID and optional status filter."""
     # In a real agent, this would query a database
@@ -72,7 +72,7 @@ def search_orders(customer_id: str, status: str = "active") -> dict:
     }
 
 
-@gt.tool
+@hb.tool
 def initiate_refund(order_id: str, reason: str = "customer_request") -> dict:
     """Start a refund for the given order."""
     return {
@@ -132,12 +132,12 @@ suites:
 
 ## Production Safety
 
-The decorator is designed for production use. When `GAUNTLET_TRACES_URL` is not set:
+The decorator is designed for production use. When `HIGHBAR_TRACES_URL` is not set:
 
 - No `TraceWriter` is created
 - `make_tool_decorator` receives `writer=None` and returns the original function directly
 - There is no wrapper function, no conditional branch at call time, and no overhead
-- The `@gt.tool` line is functionally equivalent to a no-op
+- The `@hb.tool` line is functionally equivalent to a no-op
 
 This means you can ship the decorator in your production code without any performance concerns.
 
@@ -146,10 +146,10 @@ This means you can ship the decorator in your production code without any perfor
 For testing or development, you can pass a trace file path directly instead of relying on the environment variable:
 
 ```python
-gt = Gauntlet(traces="/tmp/my-traces.jsonl")
+hb = Highbar(traces="/tmp/my-traces.jsonl")
 ```
 
 This is useful for:
 - Unit testing the SDK itself
 - Debugging trace output
-- Running traces outside of the Gauntlet CLI
+- Running traces outside of the Highbar CLI

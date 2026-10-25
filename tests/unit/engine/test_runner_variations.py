@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 from rich.console import Console
 
-from gauntlet.domain.models import (
+from highbar.domain.models import (
     AssertionResult,
     Expect,
     FunctionCallExpect,
@@ -17,8 +17,8 @@ from gauntlet.domain.models import (
     Test,
     Trace,
 )
-from gauntlet.engine.runner import TestRunner
-from gauntlet.reporters.terminal import TerminalReporter
+from highbar.engine.runner import TestRunner
+from highbar.reporters.terminal import TerminalReporter
 
 
 class _Collector:
@@ -215,7 +215,7 @@ class TestVariationExpansion:
 
 class _FailingGenerator:
     def generate(self, trigger: str, count: int) -> list[str]:
-        raise RuntimeError("No cached variations and GAUNTLET_LLM_API_KEY is not set")
+        raise RuntimeError("No cached variations and HIGHBAR_LLM_API_KEY is not set")
 
 
 class TestGeneratorFailure:
@@ -247,7 +247,7 @@ class TestGeneratorFailure:
         assert (summary.total, summary.passed, summary.failed) == (2, 1, 1)
         _, failed = reporter.on_test_result.call_args_list[0][0]
         assert "Could not get variations" in failed.errors[0]
-        assert "GAUNTLET_LLM_API_KEY" in failed.errors[0]
+        assert "HIGHBAR_LLM_API_KEY" in failed.errors[0]
         # The agent is not sent a phrasing for a test whose variations are unavailable.
         assert client.sent == ["what's on the menu"]
 

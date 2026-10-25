@@ -1,9 +1,9 @@
 <!-- Logo goes here when we have one -->
-<h1 align="center">Gauntlet</h1>
+<h1 align="center">Highbar</h1>
 
 <p align="center">
   <strong>Behavior testing framework for AI agents</strong><br>
-  <em>Run your AI agents through the gauntlet.</em>
+  <em>Evals for AI agents that behave like tests.</em>
 </p>
 
 <p align="center">
@@ -11,7 +11,7 @@
   <a href="#features">Features</a> &middot;
   <a href="#real-world-example">Examples</a> &middot;
   <a href="#cli-reference">CLI</a> &middot;
-  <a href="#how-gauntlet-compares">Comparison</a> &middot;
+  <a href="#how-highbar-compares">Comparison</a> &middot;
   <a href="#roadmap">Roadmap</a>
 </p>
 
@@ -24,21 +24,21 @@
 
 ---
 
-## Why Gauntlet?
+## Why Highbar?
 
 AI agents are shipping to production without structured testing. Teams test manually — they chat with the bot, eyeball the responses, and hope for the best. **73% of teams test agents by talking to them.** 40% of production failures are incorrect tool calls.
 
 Existing evaluation tools like Promptfoo, DeepEval, and Braintrust were built to evaluate **language models** — comparing prompt A vs. prompt B, measuring response quality scores. But when you put an agent in production, the model is an implementation detail. What matters is: **does my agent behave as specified?**
 
-Nobody uses Cypress to test which browser is better. You use it to test that your **application works** in the browser. Gauntlet applies the same philosophy to AI agents: test the agent, not the LLM. Define expected behaviors in YAML. Run them in CI. Ship with confidence.
+Nobody uses Cypress to test which browser is better. You use it to test that your **application works** in the browser. Highbar applies the same philosophy to AI agents: test the agent, not the LLM. Define expected behaviors in YAML. Run them in CI. Ship with confidence.
 
 ## Quick Start
 
 ```bash
-npm install -g gauntlet
+npm install -g highbar
 ```
 
-Create your first spec at `specs/hello.gauntlet.yaml`:
+Create your first spec at `specs/hello.highbar.yaml`:
 
 ```yaml
 agent:
@@ -60,12 +60,12 @@ suites:
 Run it:
 
 ```bash
-gauntlet run
+highbar run
 ```
 
 ```
-  Gauntlet v0.1.0
-  Running specs/hello.gauntlet.yaml
+  Highbar v0.1.0
+  Running specs/hello.highbar.yaml
 
   Booking
     ✓ "I need to book a flight to Tokyo next Friday" (5 variations, all passed)   312ms
@@ -88,26 +88,26 @@ tests:
         - name: cancel_subscription
 ```
 
-From a single example, Gauntlet generates N realistic paraphrases ("please end my membership", "how do I unsubscribe?", "stop charging me") and verifies the agent handles all of them correctly. The test fails if **any** phrasing fails — an agent that handles nine wordings and drops the tenth is broken for whoever typed the tenth.
+From a single example, Highbar generates N realistic paraphrases ("please end my membership", "how do I unsubscribe?", "stop charging me") and verifies the agent handles all of them correctly. The test fails if **any** phrasing fails — an agent that handles nine wordings and drops the tenth is broken for whoever typed the tenth.
 
 Generate them once and commit the cache:
 
 ```bash
-export GAUNTLET_LLM_API_KEY=sk-...
-gauntlet variations specs/           # writes .gauntlet/variations.json — commit it
-gauntlet run                         # from here on: no key, no network, no spend
-gauntlet run --frozen                # in CI: a cache miss fails the test, never generates
+export HIGHBAR_LLM_API_KEY=sk-...
+highbar variations specs/           # writes .highbar/variations.json — commit it
+highbar run                         # from here on: no key, no network, no spend
+highbar run --frozen                # in CI: a cache miss fails the test, never generates
 ```
 
 Generating on every run would test a different set of sentences each time, so CI would go red on a commit that changed nothing. A gate that flickers is not a gate. The cache file is written to be **read**: each entry carries its trigger and the model that wrote it, because a model can produce a paraphrase that quietly changes the intent — and the only place to catch that is a human reviewing the diff.
 
-Configure with `GAUNTLET_LLM_MODEL` (default `gpt-4o-mini`) and `GAUNTLET_LLM_BASE_URL` (any OpenAI-compatible endpoint).
+Configure with `HIGHBAR_LLM_MODEL` (default `gpt-4o-mini`) and `HIGHBAR_LLM_BASE_URL` (any OpenAI-compatible endpoint).
 
 A few things to know:
 
-- **The count is what was produced, not what was asked.** Repeated paraphrases (and copies of the trigger itself) are dropped. If the model returns fewer distinct sentences than requested, `gauntlet variations` flags it and the test title reads `(3 of 5 variations)`; `--force` asks again.
+- **The count is what was produced, not what was asked.** Repeated paraphrases (and copies of the trigger itself) are dropped. If the model returns fewer distinct sentences than requested, `highbar variations` flags it and the test title reads `(3 of 5 variations)`; `--force` asks again.
 - **A test whose variations can't be obtained fails; the run goes on.** No cache and no key, an LLM error, a cache file left with merge conflict markers — each is reported on that test.
-- **The cache is found from subdirectories.** Gauntlet walks up from the current directory to the nearest `.gauntlet/variations.json`.
+- **The cache is found from subdirectories.** Highbar walks up from the current directory to the nearest `.highbar/variations.json`.
 - **All phrasings go to the same running agent, back to back.** That is fine for intents that only read. For one that changes state — like the cancellation above — a later phrasing can fail because of what an earlier one already did, so point the agent at a backend where repeating the action is harmless.
 
 ### Function Call Assertion
@@ -123,7 +123,7 @@ expect:
     - name: get_order_details  # must be called second
 ```
 
-Assert on the exact sequence of function calls, their parameters, and even their results. If your agent should call `search_orders` before `get_order_details`, Gauntlet enforces that order.
+Assert on the exact sequence of function calls, their parameters, and even their results. If your agent should call `search_orders` before `get_order_details`, Highbar enforces that order.
 
 When an intent has more than one correct answer, list the tools that satisfy it:
 
@@ -194,11 +194,11 @@ tests:
         not_contains: "4[0-9]{3}"
 ```
 
-Test prompt injection resistance, PII leakage prevention, and scope enforcement. With `variations: 10`, Gauntlet throws 10 different injection attempts at your agent.
+Test prompt injection resistance, PII leakage prevention, and scope enforcement. With `variations: 10`, Highbar throws 10 different injection attempts at your agent.
 
 ## Real-World Example
 
-A full spec for an e-commerce support agent — [`specs/examples/order-support.gauntlet.yaml`](specs/examples/order-support.gauntlet.yaml):
+A full spec for an e-commerce support agent — [`specs/examples/order-support.highbar.yaml`](specs/examples/order-support.highbar.yaml):
 
 ```yaml
 agent:
@@ -253,10 +253,10 @@ suites:
 ```
 
 ```
-$ gauntlet run
+$ highbar run
 
-  Gauntlet v0.1.0
-  Running specs/order-support.gauntlet.yaml
+  Highbar v0.1.0
+  Running specs/order-support.highbar.yaml
 
   Order Lookup
     ✓ "Where is my order #12345?" (5 variations, all passed)      312ms
@@ -280,21 +280,21 @@ From zero-config to full observability — you choose the depth.
 |-------|------|-------------|-------|
 | **1** | Response Only | Validates response text only. Works with any agent. | Zero config |
 | **2** | Structured Response | Parses `tool_calls` from response JSON. Presets for OpenAI, Anthropic, LangChain. | One-line `preset:` |
-| **3** | SDK Wrapper | 1-line wrapper in your code. Captures full traces, latency, tokens, errors. | `import { wrap } from 'gauntlet'` |
+| **3** | SDK Wrapper | 1-line wrapper in your code. Captures full traces, latency, tokens, errors. | `import { wrap } from 'highbar'` |
 
 ## CLI Reference
 
 | Command | Description |
 |---------|-------------|
-| `gauntlet init` | Scaffold a `gauntlet.config.yaml` and example spec |
-| `gauntlet run` | Run all specs (alias: `gauntlet test`) |
-| `gauntlet run <path>` | Run a specific spec file, or every spec under a directory (`--frozen` to never generate variations) |
-| `gauntlet variations [path]` | Generate the paraphrases the specs ask for and cache them (`--force` to regenerate) |
-| `gauntlet validate` | Validate spec syntax without running |
-| `gauntlet list` | List all discovered specs |
-| `gauntlet report` | Generate an HTML report from the last run |
+| `highbar init` | Scaffold a `highbar.config.yaml` and example spec |
+| `highbar run` | Run all specs (alias: `highbar test`) |
+| `highbar run <path>` | Run a specific spec file, or every spec under a directory (`--frozen` to never generate variations) |
+| `highbar variations [path]` | Generate the paraphrases the specs ask for and cache them (`--force` to regenerate) |
+| `highbar validate` | Validate spec syntax without running |
+| `highbar list` | List all discovered specs |
+| `highbar report` | Generate an HTML report from the last run |
 
-Configuration lives in `gauntlet.config.yaml`:
+Configuration lives in `highbar.config.yaml`:
 
 ```yaml
 specsDir: specs/
@@ -307,7 +307,7 @@ timeout: 30000      # ms per test
 ## CI Integration
 
 ```yaml
-# .github/workflows/gauntlet.yml
+# .github/workflows/highbar.yml
 name: Agent Behavior Tests
 
 on:
@@ -315,30 +315,30 @@ on:
     paths:
       - "prompts/**"
       - "specs/**"
-      - "gauntlet.config.yaml"
+      - "highbar.config.yaml"
   pull_request:
 
 jobs:
-  gauntlet:
+  highbar:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install -g gauntlet
-      - run: gauntlet run --reporter json --output results.json
+      - run: npm install -g highbar
+      - run: highbar run --reporter json --output results.json
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gauntlet-results
+          name: highbar-results
           path: results.json
 ```
 
-## How Gauntlet Compares
+## How Highbar Compares
 
-| Feature | Gauntlet | Promptfoo | DeepEval | Braintrust | Manual |
+| Feature | Highbar | Promptfoo | DeepEval | Braintrust | Manual |
 |---------|----------|-----------|----------|------------|--------|
 | **Tests the agent** (not just the LLM) | Yes | No | No | No | Sort of |
 | Function call assertions | Native | Partial | No | No | Manual |
@@ -349,7 +349,7 @@ jobs:
 | CI/CD integration | GitHub Action | Yes | Yes | Yes | No |
 | Open source | MIT | MIT | Apache 2 | Proprietary | N/A |
 
-**Key differentiator:** Existing tools evaluate the model — Gauntlet tests the agent. The LLM is an implementation detail. Your agent's endpoint is the subject under test, regardless of which model, framework, or hosting you use.
+**Key differentiator:** Existing tools evaluate the model — Highbar tests the agent. The LLM is an implementation detail. Your agent's endpoint is the subject under test, regardless of which model, framework, or hosting you use.
 
 ## Roadmap
 

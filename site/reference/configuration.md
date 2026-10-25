@@ -1,37 +1,37 @@
 # Configuration Reference
 
-Gauntlet is configured through spec files and environment variables. There is no global configuration file -- all settings live in the spec YAML or are injected automatically.
+Highbar is configured through spec files and environment variables. There is no global configuration file -- all settings live in the spec YAML or are injected automatically.
 
 ## Environment Variables
 
-### `GAUNTLET_TRACES_URL`
+### `HIGHBAR_TRACES_URL`
 
 The path to the JSONL trace file used by the SDK to write trace boxes.
 
 | Detail | Value |
 |--------|-------|
-| **Set by** | Gauntlet CLI (automatically injected into the agent subprocess) |
-| **Read by** | `Gauntlet()` SDK constructor |
-| **Format** | Absolute file path (e.g., `/tmp/gauntlet-traces-abc123.jsonl`) |
+| **Set by** | Highbar CLI (automatically injected into the agent subprocess) |
+| **Read by** | `Highbar()` SDK constructor |
+| **Format** | Absolute file path (e.g., `/tmp/highbar-traces-abc123.jsonl`) |
 
-When `GAUNTLET_TRACES_URL` is not set, the `@gt.tool` decorator passes through with zero overhead. This means the same agent code runs in production and under test without any conditional logic.
+When `HIGHBAR_TRACES_URL` is not set, the `@hb.tool` decorator passes through with zero overhead. This means the same agent code runs in production and under test without any conditional logic.
 
 You can also pass the trace path explicitly:
 
 ```python
-gt = Gauntlet(traces="/tmp/my-traces.jsonl")
+hb = Highbar(traces="/tmp/my-traces.jsonl")
 ```
 
 ## Default Spec Directory
 
-When running `gauntlet run` without arguments, Gauntlet discovers spec files by recursively searching the `specs/` directory (relative to the current working directory) for files matching `*.gauntlet.yaml`.
+When running `highbar run` without arguments, Highbar discovers spec files by recursively searching the `specs/` directory (relative to the current working directory) for files matching `*.highbar.yaml`.
 
 ```
 project/
   specs/
-    order-support.gauntlet.yaml    # discovered
+    order-support.highbar.yaml    # discovered
     auth/
-      login-flow.gauntlet.yaml     # discovered (recursive)
+      login-flow.highbar.yaml     # discovered (recursive)
   src/
     agent.py
 ```
@@ -68,7 +68,7 @@ agent:
 
 ## Agent Shutdown
 
-When tests complete (or an error occurs), Gauntlet shuts down the agent subprocess using a two-phase approach:
+When tests complete (or an error occurs), Highbar shuts down the agent subprocess using a two-phase approach:
 
 1. **Terminate** (`SIGTERM`): sends a graceful termination signal.
 2. **Wait** (5 seconds): waits for the process to exit.
@@ -78,13 +78,13 @@ This ensures that agents with cleanup logic (closing database connections, flush
 
 ## HTTP Trigger Format
 
-Gauntlet sends triggers to the agent endpoint as POST requests with a JSON body:
+Highbar sends triggers to the agent endpoint as POST requests with a JSON body:
 
 ```json
 {"message": "user trigger text here"}
 ```
 
-The agent's response is parsed from JSON. Gauntlet checks for these fields in order: `response`, `message`, `content`, `text`, `reply`. The first match is used as the response text for assertions.
+The agent's response is parsed from JSON. Highbar checks for these fields in order: `response`, `message`, `content`, `text`, `reply`. The first match is used as the response text for assertions.
 
 ```json
 // Any of these response formats work:

@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from gauntlet.engine.parser import parse_spec
+from highbar.engine.parser import parse_spec
 
 
 def _spec_with_params(tmp_path: Path, params: str) -> str:
-    spec = tmp_path / "test.gauntlet.yaml"
+    spec = tmp_path / "test.highbar.yaml"
     spec.write_text(
         textwrap.dedent(
             f"""

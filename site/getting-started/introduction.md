@@ -8,21 +8,21 @@ The result: agents ship to production with no automated coverage on the behavior
 
 ## Philosophy
 
-Nobody uses Cypress to test which browser is better — they test that the **application** works. Gauntlet applies the same philosophy to AI agents: test the **agent**, not the LLM.
+Nobody uses Cypress to test which browser is better — they test that the **application** works. Highbar applies the same philosophy to AI agents: test the **agent**, not the LLM.
 
-Your agent is software. It receives inputs, calls tools, and produces outputs. Those behaviors are observable and deterministic enough to assert against. Gauntlet gives you the framework to do exactly that.
+Your agent is software. It receives inputs, calls tools, and produces outputs. Those behaviors are observable and deterministic enough to assert against. Highbar gives you the framework to do exactly that.
 
-## What Gauntlet Does
+## What Highbar Does
 
 1. **You define expected behaviors in YAML specs.** Each spec declares which tools should be called, with what parameters, and what the response should contain.
 
-2. **You instrument your agent's tools with a one-line decorator.** The `@gt.tool` decorator captures every tool invocation — function name, arguments, return value, timing — and writes it to a trace file.
+2. **You instrument your agent's tools with a one-line decorator.** The `@hb.tool` decorator captures every tool invocation — function name, arguments, return value, timing — and writes it to a trace file.
 
-3. **Gauntlet starts your agent, sends triggers, captures traces, and validates assertions.** The framework handles the full lifecycle: subprocess management, health checks, HTTP triggers, trace collection, and rich terminal reporting.
+3. **Highbar starts your agent, sends triggers, captures traces, and validates assertions.** The framework handles the full lifecycle: subprocess management, health checks, HTTP triggers, trace collection, and rich terminal reporting.
 
 ## What It Looks Like
 
-A spec file (`specs/orders.gauntlet.yaml`):
+A spec file (`specs/orders.highbar.yaml`):
 
 ```yaml
 agent:
@@ -52,14 +52,14 @@ suites:
 Running it:
 
 ```bash
-gauntlet run specs/orders.gauntlet.yaml
+highbar run specs/orders.highbar.yaml
 ```
 
 Terminal output:
 
 ```
-  Gauntlet v0.1.0
-  Running specs/orders.gauntlet.yaml
+  Highbar v0.1.0
+  Running specs/orders.highbar.yaml
 
   Order Lookup
     ✓ Where is my order #12345?
@@ -72,6 +72,6 @@ Two tests, two different concerns. The first validates that the agent calls the 
 
 ## Next Steps
 
-- [Installation](/getting-started/installation) — install Gauntlet via pip or uv
+- [Installation](/getting-started/installation) — install Highbar via pip or uv
 - [Quickstart](/getting-started/quickstart) — build and test your first agent in 5 minutes
 - [Core Concepts](/getting-started/concepts) — understand specs, traces, and the execution model

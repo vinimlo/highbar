@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from gauntlet.assertions._match import subset_match, validate_expected
+from highbar.assertions._match import subset_match, validate_expected
 
 
 class TestSubsetMatch:

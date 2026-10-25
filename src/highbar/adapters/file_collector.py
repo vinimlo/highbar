@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from gauntlet.domain.models import Trace
+from highbar.domain.models import Trace
 
 
 class FileTraceCollector:

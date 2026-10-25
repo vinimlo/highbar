@@ -1,6 +1,6 @@
 # Writing Spec Files
 
-Gauntlet specs are YAML files with the `.gauntlet.yaml` extension that define how your agent should behave. Each spec describes the agent to test and the expected behaviors organized into suites.
+Highbar specs are YAML files with the `.highbar.yaml` extension that define how your agent should behave. Each spec describes the agent to test and the expected behaviors organized into suites.
 
 ## File Structure
 
@@ -28,12 +28,12 @@ suites:
 
 ## The Agent Block
 
-The `agent` block tells Gauntlet how to start and communicate with your agent.
+The `agent` block tells Highbar how to start and communicate with your agent.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `start` | Yes | -- | Shell command to start the agent process |
-| `endpoint` | Yes | -- | HTTP URL where Gauntlet sends POST requests |
+| `endpoint` | Yes | -- | HTTP URL where Highbar sends POST requests |
 | `health` | No | -- | URL polled until HTTP 200 before tests begin |
 | `startup_timeout` | No | `15000` | Max milliseconds to wait for the health check |
 | `settle_time` | No | `500` | Milliseconds to wait after a response before reading traces |
@@ -225,4 +225,4 @@ suites:
 - **Use YAML comments.** Add `#` comments to explain non-obvious test expectations.
 - **Start simple.** Begin with response assertions, then add function call checks as your test suite matures.
 - **One behavior per test.** Each test should verify a single behavior. If you find yourself checking too many things, split it into multiple tests.
-- **Place specs in `specs/`.** Running `gauntlet run` with no arguments discovers all `.gauntlet.yaml` files in the `specs/` directory.
+- **Place specs in `specs/`.** Running `highbar run` with no arguments discovers all `.highbar.yaml` files in the `specs/` directory.

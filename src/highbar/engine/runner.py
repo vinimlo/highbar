@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import time
 
-from gauntlet.adapters.http_client import HTTPClient
-from gauntlet.adapters.subprocess_adapter import SubprocessAdapter
-from gauntlet.domain.models import (
+from highbar.adapters.http_client import HTTPClient
+from highbar.adapters.subprocess_adapter import SubprocessAdapter
+from highbar.domain.models import (
     Expect,
     RunSummary,
     Spec,
@@ -15,8 +15,8 @@ from gauntlet.domain.models import (
     Trace,
     Turn,
 )
-from gauntlet.domain.protocols import Assertion, Reporter, TraceCollector, VariationGenerator
-from gauntlet.engine.templates import resolve_template
+from highbar.domain.protocols import Assertion, Reporter, TraceCollector, VariationGenerator
+from highbar.engine.templates import resolve_template
 
 
 def _test_name(test: Test, variations_run: int | None = None) -> str:
@@ -127,7 +127,7 @@ class TestRunner:
         if self._variations is None:
             msg = (
                 f"Test asks for {count} variations but no variation generator is "
-                "configured. See `gauntlet variations <spec>`."
+                "configured. See `highbar variations <spec>`."
             )
             raise ValueError(msg)
 

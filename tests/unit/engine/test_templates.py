@@ -2,8 +2,8 @@
 
 import pytest
 
-from gauntlet.domain.models import Trace
-from gauntlet.engine.templates import resolve_template
+from highbar.domain.models import Trace
+from highbar.engine.templates import resolve_template
 
 
 class TestResolveTemplate:

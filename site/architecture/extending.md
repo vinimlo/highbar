@@ -1,6 +1,6 @@
-# Extending Gauntlet
+# Extending Highbar
 
-Gauntlet uses Python `Protocol` classes for its extension points. You can add custom assertions, reporters, and trace collectors without modifying any existing code -- just implement the required methods.
+Highbar uses Python `Protocol` classes for its extension points. You can add custom assertions, reporters, and trace collectors without modifying any existing code -- just implement the required methods.
 
 ## Custom Assertions
 
@@ -11,7 +11,7 @@ Create a class that implements the `Assertion` protocol to add new validation lo
 This assertion fails if any tool invocation takes longer than a specified threshold:
 
 ```python
-from gauntlet.domain.models import AssertionResult, Expect, Trace
+from highbar.domain.models import AssertionResult, Expect, Trace
 
 
 class MaxDurationAssertion:
@@ -40,7 +40,7 @@ class MaxDurationAssertion:
 This assertion checks that the response is within a reasonable length range:
 
 ```python
-from gauntlet.domain.models import AssertionResult, Expect, Trace
+from highbar.domain.models import AssertionResult, Expect, Trace
 
 
 class ResponseLengthAssertion:
@@ -81,7 +81,7 @@ Create a class that implements the `Reporter` protocol to customize output forma
 import json
 import sys
 
-from gauntlet.domain.models import RunSummary, Suite, TestResult
+from highbar.domain.models import RunSummary, Suite, TestResult
 
 
 class JSONReporter:
@@ -128,7 +128,7 @@ For agents running on remote machines where file access is not available:
 ```python
 import httpx
 
-from gauntlet.domain.models import Trace
+from highbar.domain.models import Trace
 
 
 class HTTPTraceCollector:
@@ -163,12 +163,12 @@ class HTTPTraceCollector:
 
 ## Registering Custom Extensions
 
-The composition root is `gauntlet/cli/main.py`. To use your custom implementations, modify the `run` command to include them in the `TestRunner` setup.
+The composition root is `highbar/cli/main.py`. To use your custom implementations, modify the `run` command to include them in the `TestRunner` setup.
 
 ### Adding a Custom Assertion
 
 ```python
-# In gauntlet/cli/main.py, inside the run() function:
+# In highbar/cli/main.py, inside the run() function:
 
 from my_extensions import MaxDurationAssertion
 

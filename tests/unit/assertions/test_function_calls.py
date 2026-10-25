@@ -1,7 +1,7 @@
 """Tests for function_calls assertion."""
 
-from gauntlet.assertions.function_calls import FunctionCallsAssertion
-from gauntlet.domain.models import Expect, FunctionCallExpect, Trace
+from highbar.assertions.function_calls import FunctionCallsAssertion
+from highbar.domain.models import Expect, FunctionCallExpect, Trace
 
 
 def _make_trace(fn: str, args: dict | None = None, result: object = None, seq: int = 0) -> Trace:

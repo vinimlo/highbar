@@ -1,4 +1,4 @@
-"""Tests for @gt.tool decorator behavior."""
+"""Tests for @hb.tool decorator behavior."""
 
 import json
 from pathlib import Path
@@ -6,32 +6,32 @@ from unittest.mock import patch
 
 import pytest
 
-from gauntlet.sdk.core import Gauntlet
+from highbar.sdk.core import Highbar
 
 
 class TestToolDecorator:
     def test_decorated_function_still_works(self) -> None:
-        gt = Gauntlet()
+        hb = Highbar()
 
-        @gt.tool
+        @hb.tool
         def add(a: int, b: int) -> int:
             return a + b
 
         assert add(2, 3) == 5
 
     def test_decorator_preserves_function_name(self) -> None:
-        gt = Gauntlet()
+        hb = Highbar()
 
-        @gt.tool
+        @hb.tool
         def my_function() -> str:
             return "hello"
 
         assert my_function.__name__ == "my_function"
 
     def test_noop_without_traces_url(self) -> None:
-        gt = Gauntlet()
+        hb = Highbar()
 
-        @gt.tool
+        @hb.tool
         def search(q: str) -> str:
             return f"results for {q}"
 
@@ -40,9 +40,9 @@ class TestToolDecorator:
 
     def test_writes_trace_when_enabled(self, tmp_path: Path) -> None:
         trace_file = tmp_path / "traces.jsonl"
-        gt = Gauntlet(traces=str(trace_file))
+        hb = Highbar(traces=str(trace_file))
 
-        @gt.tool
+        @hb.tool
         def search_orders(order_id: str) -> dict[str, str]:
             return {"order_id": order_id, "status": "shipped"}
 
@@ -59,10 +59,10 @@ class TestToolDecorator:
 
     def test_reads_traces_from_env(self, tmp_path: Path) -> None:
         trace_file = tmp_path / "traces.jsonl"
-        with patch.dict("os.environ", {"GAUNTLET_TRACES_URL": str(trace_file)}):
-            gt = Gauntlet()
+        with patch.dict("os.environ", {"HIGHBAR_TRACES_URL": str(trace_file)}):
+            hb = Highbar()
 
-            @gt.tool
+            @hb.tool
             def ping() -> str:
                 return "pong"
 
@@ -73,13 +73,13 @@ class TestToolDecorator:
 
     def test_multiple_tools_same_instance(self, tmp_path: Path) -> None:
         trace_file = tmp_path / "traces.jsonl"
-        gt = Gauntlet(traces=str(trace_file))
+        hb = Highbar(traces=str(trace_file))
 
-        @gt.tool
+        @hb.tool
         def tool_a() -> str:
             return "a"
 
-        @gt.tool
+        @hb.tool
         def tool_b() -> str:
             return "b"
 
@@ -94,9 +94,9 @@ class TestToolDecorator:
 
     def test_captures_kwargs(self, tmp_path: Path) -> None:
         trace_file = tmp_path / "traces.jsonl"
-        gt = Gauntlet(traces=str(trace_file))
+        hb = Highbar(traces=str(trace_file))
 
-        @gt.tool
+        @hb.tool
         def search(query: str, limit: int = 10) -> list[str]:
             return ["result"]
 
@@ -108,9 +108,9 @@ class TestToolDecorator:
 
     def test_exception_still_raises(self, tmp_path: Path) -> None:
         trace_file = tmp_path / "traces.jsonl"
-        gt = Gauntlet(traces=str(trace_file))
+        hb = Highbar(traces=str(trace_file))
 
-        @gt.tool
+        @hb.tool
         def failing() -> str:
             raise ValueError("boom")
 
@@ -119,9 +119,9 @@ class TestToolDecorator:
 
     def test_exception_writes_trace(self, tmp_path: Path) -> None:
         trace_file = tmp_path / "traces.jsonl"
-        gt = Gauntlet(traces=str(trace_file))
+        hb = Highbar(traces=str(trace_file))
 
-        @gt.tool
+        @hb.tool
         def failing() -> str:
             raise ValueError("boom")
 
@@ -138,9 +138,9 @@ class TestToolDecorator:
 
     def test_exception_trace_has_null_result(self, tmp_path: Path) -> None:
         trace_file = tmp_path / "traces.jsonl"
-        gt = Gauntlet(traces=str(trace_file))
+        hb = Highbar(traces=str(trace_file))
 
-        @gt.tool
+        @hb.tool
         def failing() -> str:
             raise RuntimeError("oops")
 

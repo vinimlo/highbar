@@ -5,7 +5,7 @@ from __future__ import annotations
 from rich.console import Console
 from rich.markup import escape
 
-from gauntlet.domain.models import RunSummary, Suite, TestResult
+from highbar.domain.models import RunSummary, Suite, TestResult
 
 
 class TerminalReporter:

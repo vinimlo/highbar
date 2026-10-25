@@ -1,6 +1,6 @@
 # Spec Format Reference
 
-Gauntlet specs are YAML files with the `.gauntlet.yaml` extension. Each spec defines an agent configuration and one or more test suites.
+Highbar specs are YAML files with the `.highbar.yaml` extension. Each spec defines an agent configuration and one or more test suites.
 
 ## Top-Level Structure
 
@@ -25,21 +25,21 @@ suites:
 
 ## Agent Block
 
-The `agent` block configures how Gauntlet starts and communicates with the agent under test.
+The `agent` block configures how Highbar starts and communicates with the agent under test.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `start` | string | Yes | - | Shell command to start the agent process |
-| `endpoint` | string | Yes | - | HTTP URL where Gauntlet sends POST triggers |
+| `endpoint` | string | Yes | - | HTTP URL where Highbar sends POST triggers |
 | `health` | string | No | `null` | Health check URL, polled until it returns HTTP 200 |
 | `startup_timeout` | int | No | `15000` | Maximum milliseconds to wait for the health check |
 | `settle_time` | int | No | `500` | Milliseconds to wait after receiving a response before reading traces |
 
 **Notes:**
 
-- The `start` command is executed as a subprocess with `GAUNTLET_TRACES_URL` injected into its environment.
-- If `health` is not specified, Gauntlet sends the first trigger immediately after starting the process.
-- `settle_time` gives the agent time to finish writing all trace records before Gauntlet reads them.
+- The `start` command is executed as a subprocess with `HIGHBAR_TRACES_URL` injected into its environment.
+- If `health` is not specified, Highbar sends the first trigger immediately after starting the process.
+- `settle_time` gives the agent time to finish writing all trace records before Highbar reads them.
 
 ## Test Block
 
@@ -76,7 +76,7 @@ tests:
 
 ## Expect Block
 
-The `expect` block defines what Gauntlet asserts after the agent responds.
+The `expect` block defines what Highbar asserts after the agent responds.
 
 | Field | Type | Description |
 |-------|------|-------------|

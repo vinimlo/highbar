@@ -1,4 +1,4 @@
-"""Core domain models for Gauntlet specs, traces, and results."""
+"""Core domain models for Highbar specs, traces, and results."""
 
 from __future__ import annotations
 

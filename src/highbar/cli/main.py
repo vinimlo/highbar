@@ -1,4 +1,4 @@
-"""Gauntlet CLI — typer application with run, validate, and init commands."""
+"""Highbar CLI — typer application with run, validate, and init commands."""
 
 from __future__ import annotations
 
@@ -11,19 +11,19 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
-from gauntlet.adapters.file_collector import FileTraceCollector
-from gauntlet.adapters.http_client import HTTPClient
-from gauntlet.adapters.subprocess_adapter import SubprocessAdapter
-from gauntlet.assertions.function_calls import FunctionCallsAssertion
-from gauntlet.assertions.response import ResponseAssertion
-from gauntlet.engine.parser import parse_spec
-from gauntlet.engine.runner import TestRunner
-from gauntlet.reporters.terminal import TerminalReporter
-from gauntlet.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
-from gauntlet.variations.generator import VariationError, VariationGenerator
+from highbar.adapters.file_collector import FileTraceCollector
+from highbar.adapters.http_client import HTTPClient
+from highbar.adapters.subprocess_adapter import SubprocessAdapter
+from highbar.assertions.function_calls import FunctionCallsAssertion
+from highbar.assertions.response import ResponseAssertion
+from highbar.engine.parser import parse_spec
+from highbar.engine.runner import TestRunner
+from highbar.reporters.terminal import TerminalReporter
+from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
+from highbar.variations.generator import VariationError, VariationGenerator
 
 app = typer.Typer(
-    name="gauntlet",
+    name="highbar",
     help="Behavior testing framework for AI agents.",
     no_args_is_help=True,
 )
@@ -35,7 +35,7 @@ def run(
     spec_path: str = typer.Argument(
         default="",
         help=(
-            "Path to a .gauntlet.yaml spec file, or a directory to search. "
+            "Path to a .highbar.yaml spec file, or a directory to search. "
             "If omitted, discovers all specs in specs/"
         ),
     ),
@@ -55,10 +55,10 @@ def run(
         raise typer.Exit(1)
 
     try:
-        _ver = version("gauntlet")
+        _ver = version("highbar")
     except PackageNotFoundError:
         _ver = "dev"
-    console.print(f"\n  [bold]Gauntlet v{_ver}[/bold]")
+    console.print(f"\n  [bold]Highbar v{_ver}[/bold]")
 
     # One cache for the whole run. It reads its file lazily, so specs that ask for no
     # variations never touch it.
@@ -70,7 +70,7 @@ def run(
         spec = parse_spec(path)
 
         with tempfile.NamedTemporaryFile(
-            suffix=".jsonl", prefix="gauntlet-traces-", delete=False
+            suffix=".jsonl", prefix="highbar-traces-", delete=False
         ) as traces_fd:
             traces_file = traces_fd.name
 
@@ -78,7 +78,7 @@ def run(
             start_cmd=spec.agent.start,
             health_url=spec.agent.health,
             startup_timeout=spec.agent.startup_timeout,
-            env={"GAUNTLET_TRACES_URL": traces_file},
+            env={"HIGHBAR_TRACES_URL": traces_file},
         )
         client = HTTPClient(endpoint=spec.agent.endpoint)
         collector = FileTraceCollector(traces_file)
@@ -112,7 +112,7 @@ def variations(
 ) -> None:
     """Generate the paraphrases a spec asks for, and cache them.
 
-    Run this once, commit the cache, and `gauntlet run` is deterministic and offline
+    Run this once, commit the cache, and `highbar run` is deterministic and offline
     from then on. Generating on every run would test a different set of sentences each
     time — CI would go red on a commit that changed nothing.
     """
@@ -180,7 +180,7 @@ def variations(
 
 @app.command()
 def validate(
-    spec_path: str = typer.Argument(help="Path to a .gauntlet.yaml spec file"),
+    spec_path: str = typer.Argument(help="Path to a .highbar.yaml spec file"),
 ) -> None:
     """Validate spec syntax without running tests."""
     try:
@@ -197,11 +197,11 @@ def validate(
 
 @app.command()
 def init() -> None:
-    """Scaffold a gauntlet.config.yaml and example spec."""
+    """Scaffold a highbar.config.yaml and example spec."""
     specs_dir = Path("specs")
     specs_dir.mkdir(exist_ok=True)
 
-    example = specs_dir / "example.gauntlet.yaml"
+    example = specs_dir / "example.highbar.yaml"
     if example.exists():
         console.print(f"  [yellow]Skipped[/yellow] {example} already exists")
     else:
@@ -223,9 +223,7 @@ def init() -> None:
         )
         console.print(f"  [green]Created[/green] {example}")
 
-    console.print(
-        "\n  Edit the spec and run: [bold]gauntlet run specs/example.gauntlet.yaml[/bold]"
-    )
+    console.print("\n  Edit the spec and run: [bold]highbar run specs/example.highbar.yaml[/bold]")
 
 
 def _discover_specs(spec_path: str) -> list[str]:
@@ -235,7 +233,7 @@ def _discover_specs(spec_path: str) -> list[str]:
 
     specs_dir = Path(spec_path or "specs")
     if specs_dir.exists():
-        return sorted(str(p) for p in specs_dir.rglob("*.gauntlet.yaml"))
+        return sorted(str(p) for p in specs_dir.rglob("*.highbar.yaml"))
 
     return []
 

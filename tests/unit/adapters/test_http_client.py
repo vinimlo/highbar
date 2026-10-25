@@ -7,13 +7,13 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from gauntlet.adapters.http_client import HTTPClient
+from highbar.adapters.http_client import HTTPClient
 
 
 @pytest.fixture
 def mock_httpx():
     """Set up httpx mock with context manager support."""
-    with patch("gauntlet.adapters.http_client.httpx.Client") as mock_cls:
+    with patch("highbar.adapters.http_client.httpx.Client") as mock_cls:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)

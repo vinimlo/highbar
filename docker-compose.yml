@@ -1,6 +1,6 @@
 services:
   docs:
-    container_name: gauntlet-docs
+    container_name: highbar-docs
     build:
       context: ./site
       dockerfile: Dockerfile

@@ -1,7 +1,7 @@
 """Tests for response text assertion."""
 
-from gauntlet.assertions.response import ResponseAssertion
-from gauntlet.domain.models import Expect, ResponseExpect
+from highbar.assertions.response import ResponseAssertion
+from highbar.domain.models import Expect, ResponseExpect
 
 
 class TestResponseAssertion:

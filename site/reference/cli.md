@@ -1,43 +1,43 @@
 # CLI Reference
 
-Gauntlet provides three commands for running tests, validating specs, and scaffolding new projects.
+Highbar provides three commands for running tests, validating specs, and scaffolding new projects.
 
 ## Installation
 
 ```bash
-pip install gauntlet
+pip install highbar
 ```
 
-Once installed, the `gauntlet` CLI is available globally.
+Once installed, the `highbar` CLI is available globally.
 
 ## Commands
 
-### `gauntlet run [spec_path]`
+### `highbar run [spec_path]`
 
 Run behavior tests against your agent.
 
 ```bash
 # Run a specific spec file
-gauntlet run specs/order-support.gauntlet.yaml
+highbar run specs/order-support.highbar.yaml
 
 # Discover and run all specs in the default directory
-gauntlet run
+highbar run
 ```
 
 **Arguments:**
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `spec_path` | No | - | Path to a `.gauntlet.yaml` spec file |
+| `spec_path` | No | - | Path to a `.highbar.yaml` spec file |
 
 **Behavior:**
 
-1. If `spec_path` is provided, Gauntlet runs that specific file.
-2. If omitted, Gauntlet discovers all `*.gauntlet.yaml` files recursively in the `specs/` directory.
+1. If `spec_path` is provided, Highbar runs that specific file.
+2. If omitted, Highbar discovers all `*.highbar.yaml` files recursively in the `specs/` directory.
 3. For each spec file:
    - Parses the YAML into domain models.
    - Creates a temporary JSONL trace file.
-   - Starts the agent subprocess with `GAUNTLET_TRACES_URL` injected into its environment.
+   - Starts the agent subprocess with `HIGHBAR_TRACES_URL` injected into its environment.
    - Runs all suites and tests sequentially.
    - Reports results via the terminal reporter.
 4. After all specs complete, exits with the appropriate code.
@@ -52,8 +52,8 @@ gauntlet run
 **Example output:**
 
 ```
-  Gauntlet v0.1.0
-  Running specs/order-support.gauntlet.yaml
+  Highbar v0.1.0
+  Running specs/order-support.highbar.yaml
 
   Order Lookup
     ✓ Where is my order #12345?                           120ms
@@ -69,19 +69,19 @@ gauntlet run
 
 ---
 
-### `gauntlet validate <spec_path>`
+### `highbar validate <spec_path>`
 
 Validate the syntax and structure of a spec file without running any tests.
 
 ```bash
-gauntlet validate specs/order-support.gauntlet.yaml
+highbar validate specs/order-support.highbar.yaml
 ```
 
 **Arguments:**
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `spec_path` | Yes | Path to a `.gauntlet.yaml` spec file |
+| `spec_path` | Yes | Path to a `.highbar.yaml` spec file |
 
 **Behavior:**
 
@@ -111,18 +111,18 @@ gauntlet validate specs/order-support.gauntlet.yaml
 
 ---
 
-### `gauntlet init`
+### `highbar init`
 
-Scaffold a new Gauntlet project with an example spec file.
+Scaffold a new Highbar project with an example spec file.
 
 ```bash
-gauntlet init
+highbar init
 ```
 
 **Behavior:**
 
 1. Creates the `specs/` directory if it does not exist.
-2. Generates `specs/example.gauntlet.yaml` with a basic template.
+2. Generates `specs/example.highbar.yaml` with a basic template.
 3. If the file already exists, skips creation and prints a notice.
 
 **Generated template:**
@@ -145,9 +145,9 @@ suites:
 **Example output:**
 
 ```
-  Created specs/example.gauntlet.yaml
+  Created specs/example.highbar.yaml
 
-  Edit the spec and run: gauntlet run specs/example.gauntlet.yaml
+  Edit the spec and run: highbar run specs/example.highbar.yaml
 ```
 
 ## Global Options
@@ -155,9 +155,9 @@ suites:
 | Option | Description |
 |--------|-------------|
 | `--help` | Show help for the CLI or any subcommand |
-| `--version` | Display the installed Gauntlet version |
+| `--version` | Display the installed Highbar version |
 
 ```bash
-gauntlet --help
-gauntlet run --help
+highbar --help
+highbar run --help
 ```
