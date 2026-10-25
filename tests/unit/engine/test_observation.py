@@ -67,23 +67,29 @@ def _run(
 class TestSelectRecords:
     def test_records_are_kept_when_every_correlation_key_matches(self) -> None:
         window = Window(
-            tools=[_tool("mine", test="a", conversation_id="7"), _tool("other", test="b")],
+            tools=[
+                _tool("mine", test="a", conversation_id="7"),
+                _tool("other", test="b"),
+                _tool("unattributed"),
+            ],
             turns=[_turn(test="a"), _turn(test="b")],
         )
 
-        selected, has_context = select_records(window, {"test": "a"})
+        selection = select_records(window, {"test": "a"})
 
-        assert has_context
-        assert [t.fn for t in selected.tools] == ["mine"]
-        assert selected.turns == [_turn(test="a")]
+        assert selection.has_context and selection.matched
+        # Another test's record is left out; one without context is kept: it may be this
+        # test's, from a thread that did not copy the context.
+        assert [t.fn for t in selection.window.tools] == ["mine", "unattributed"]
+        assert selection.window.turns == [_turn(test="a")]
 
     def test_a_window_without_context_is_used_whole(self) -> None:
         window = Window(tools=[_tool("a"), _tool("b")])
 
-        selected, has_context = select_records(window, {"test": "x"})
+        selection = select_records(window, {"test": "x"})
 
-        assert not has_context
-        assert selected == window
+        assert not selection.has_context
+        assert selection.window == window
 
     def test_int_and_string_ids_correlate(self) -> None:
         """The session says 42, the emitter wrote "42" (or a header made it text)."""
@@ -145,6 +151,30 @@ class TestCorrelation:
 
         assert [result.status for _, result in results] == [Status.PASSED, Status.PASSED]
 
+    def test_unattributed_call_still_fails_a_guardrail(self) -> None:
+        """A tool run in a thread the agent starts loses the context. Dropping it from a
+        correlated window would let `function_calls: []` pass with the call made."""
+
+        def script(message: str, test_id: str) -> Window:
+            return Window(tools=[_tool("delete_account")], turns=[_turn(test=test_id)])
+
+        results, _, reporter = _run([Case(trigger="a", expect=GUARDRAIL)], FakeAgent(script))
+
+        ((_, result),) = results
+        assert result.status is Status.FAILED
+        assert "delete_account" in result.errors[0]
+        reporter.on_warning.assert_called_once()
+
+    def test_unattributed_call_alone_is_not_proof_of_observation(self) -> None:
+        """Other tests' records plus one without context: nothing says this test was seen."""
+
+        def script(message: str, test_id: str) -> Window:
+            return Window(tools=[_tool("lookup")], turns=[_turn(test="someone-else")])
+
+        results, _, _ = _run([Case(trigger="a", expect=CALLS_LOOKUP)], FakeAgent(script))
+
+        assert results[0][1].status is Status.ERROR
+
     def test_records_without_context_use_the_whole_window_and_warn_once(self) -> None:
         agent = FakeAgent(lambda message, test_id: Window(tools=[_tool("lookup")]))
 
@@ -155,7 +185,7 @@ class TestCorrelation:
 
         assert [result.status for _, result in results] == [Status.PASSED, Status.PASSED]
         reporter.on_warning.assert_called_once()
-        assert "no context" in reporter.on_warning.call_args[0][0]
+        assert "no test context" in reporter.on_warning.call_args[0][0]
 
     def test_correlated_window_without_a_record_for_this_test_is_not_observed(self) -> None:
         agent = FakeAgent(lambda message, test_id: Window(turns=[_turn(test="someone-else")]))

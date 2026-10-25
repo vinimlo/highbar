@@ -26,8 +26,10 @@ from highbar.engine.observation import AgentNotObservedError, describe, select_r
 from highbar.engine.templates import TemplateError, resolve_template
 
 NO_CONTEXT_WARNING = (
-    "trace records carry no context: a tool call that ends after the response can be "
-    "counted in the next test; highbar.asgi.Middleware or hb.turn(test=...) tags them"
+    "some tool calls carry no test context, so each counts for the test whose window it "
+    "falls in, and a call that ends after the response can land in the next test. "
+    "highbar.asgi.Middleware or hb.turn(test=...) tags them; a thread the agent starts "
+    "itself needs contextvars.copy_context() to keep the tag"
 )
 
 
@@ -301,18 +303,18 @@ class TestRunner:
             return unverified(str(e))
 
         correlate = {"test": test_id}
-        selected, has_context = select_records(window, correlate)
-        if not has_context and window.tools and not self._warned_no_context:
+        selection = select_records(window, correlate)
+        if any(not t.context for t in window.tools) and not self._warned_no_context:
             self._warned_no_context = True
             self._reporter.on_warning(NO_CONTEXT_WARNING)
 
-        if expect.requires_observation and has_context and not (selected.tools or selected.turns):
+        if expect.requires_observation and selection.has_context and not selection.matched:
             return unverified(
                 f"not observed: no trace record for this test ({describe(correlate)}) in "
                 f"{self._collector.path}; the records there belong to other tests"
             )
 
-        traces = selected.tools
+        traces = selection.window.tools
         errors: list[str] = []
         for assertion in self._assertions:
             results = assertion.evaluate(traces, response, expect)

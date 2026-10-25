@@ -9,7 +9,7 @@ writes no traces": an old server on the port, or an agent whose SDK never starte
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, NamedTuple
 
 from highbar.domain.models import Window
 
@@ -35,28 +35,39 @@ def same_value(a: Any, b: Any) -> bool:
     return isinstance(a, scalars) and isinstance(b, scalars) and str(a) == str(b)
 
 
-def select_records(window: Window, correlate: Mapping[str, Any]) -> tuple[Window, bool]:
-    """The records of ``window`` that belong to the test, and whether any had context.
+class Selection(NamedTuple):
+    """What ``select_records`` found in a window."""
 
-    When no record carries context (the decorator without middleware), the whole
-    window is used, as before correlation existed.
+    window: Window  # the records that count for the test
+    has_context: bool  # some record in the window carried context
+    matched: bool  # some record matched the correlation: proof the test was seen
+
+
+def select_records(window: Window, correlate: Mapping[str, Any]) -> Selection:
+    """The records of ``window`` that count for the test.
+
+    A record whose context names another test is left out: that is a late call of an
+    earlier test (A4). A record with no context is kept. It may well be this test's,
+    from a thread the agent started without copying the context, and dropping it would
+    let ``function_calls: []`` pass with the call made. When no record carries context
+    at all (the decorator without middleware), the whole window counts.
     """
     has_context = any(t.context for t in window.tools) or any(t.context for t in window.turns)
     if not has_context:
-        return window, False
+        return Selection(window, has_context=False, matched=False)
 
     def belongs(context: Mapping[str, Any]) -> bool:
         return all(
             key in context and same_value(context[key], value) for key, value in correlate.items()
         )
 
-    return (
-        Window(
-            tools=[t for t in window.tools if belongs(t.context)],
-            turns=[t for t in window.turns if belongs(t.context)],
-            hellos=window.hellos,
-        ),
-        True,
+    tools = [t for t in window.tools if not t.context or belongs(t.context)]
+    turns = [t for t in window.turns if not t.context or belongs(t.context)]
+    matched = any(t.context and belongs(t.context) for t in [*window.tools, *window.turns])
+    return Selection(
+        Window(tools=tools, turns=turns, hellos=window.hellos),
+        has_context=True,
+        matched=matched,
     )
 
 
