@@ -33,6 +33,7 @@ from highbar.engine.observation import (
     describe,
 )
 from highbar.engine.placeholders import PlaceholderError, Values
+from highbar.engine.session import SessionContext, SessionError, SessionHooks
 from highbar.engine.templates import TemplateError, resolve_template
 
 NO_CONTEXT_WARNING = (
@@ -134,6 +135,8 @@ class TestRunner:
         variations: VariationGenerator | None = None,
         *,
         managed: bool = True,
+        session: SessionHooks | None = None,
+        spec_path: str = "",
     ) -> None:
         self._adapter = adapter
         self._client = client
@@ -143,6 +146,8 @@ class TestRunner:
         self._settle_time = settle_time
         self._variations = variations
         self._managed = managed
+        self._session = session
+        self._spec_path = spec_path
         self._variations_run = 0
         self._last_variation_count: int | None = None
         self._warned_no_context = False
@@ -424,15 +429,48 @@ class TestRunner:
     def _execute(
         self, turns: list[Turn], start: float, *, labelled: bool, name: str, label: str = ""
     ) -> TestResult:
-        """One execution of a test: one test id, shared by all its turns.
+        """One execution of a test: one test id and one session, shared by all its turns.
 
         It stops at the first turn that does not pass: later turns build on that one's
         state, so running them would test a conversation that did not happen.
         ``labelled`` prefixes each error with the turn it came from (multi-turn tests).
         """
-        values = Values(message=None, test_id=uuid.uuid4().hex, test_name=name, session={})
-        execution = _Execution(self._test_index, label, correlate={"test": values.test_id})
+        context = SessionContext(
+            test_id=uuid.uuid4().hex, test_name=name, spec_path=self._spec_path
+        )
+        execution = _Execution(self._test_index, label, correlate={"test": context.test_id})
         self._executions.append(execution)
+        session: dict[str, Any] = {}
+        if self._session is not None:
+            try:
+                session = self._session.setup(context)
+            except SessionError as e:
+                # No session, so nothing to tear down, and nothing was sent.
+                return TestResult(
+                    status=Status.ERROR, errors=[str(e)], duration_ms=(time.time() - start) * 1000
+                )
+        try:
+            return self._turns(turns, start, labelled, context, session, execution)
+        finally:
+            if self._session is not None:
+                try:
+                    self._session.teardown(context, session)
+                except SessionError as e:
+                    # The test's result stands; a session left open is worth knowing.
+                    self._reporter.on_warning(f"{name}: session teardown failed: {e}")
+
+    def _turns(
+        self,
+        turns: list[Turn],
+        start: float,
+        labelled: bool,
+        context: SessionContext,
+        session: dict[str, Any],
+        execution: _Execution,
+    ) -> TestResult:
+        values = Values(
+            message=None, test_id=context.test_id, test_name=context.test_name, session=session
+        )
         all_traces: list[Trace] = []
         all_errors: list[str] = []
         statuses: list[Status] = []
