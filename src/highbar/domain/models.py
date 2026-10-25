@@ -177,11 +177,12 @@ class FunctionCallExpect:
 
 @dataclass(frozen=True)
 class ResponseExpect:
-    """Expected response text assertion."""
+    """Expected response text: a matcher, with the vocabulary of ``params`` (D8).
 
-    contains: str | None = None
-    not_contains: str | None = None
-    matches: str | None = None
+    ``{contains: "shipped", not_matches: "\\b4[0-9]{3}..."}``: every condition must hold.
+    """
+
+    matcher: dict[str, Any]
 
 
 @dataclass(frozen=True)

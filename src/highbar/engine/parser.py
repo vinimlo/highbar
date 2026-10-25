@@ -484,16 +484,14 @@ def _parse_expect(raw: Any, where: str) -> Expect:
 
 def _parse_response(raw: Any, where: str) -> ResponseExpect:
     if raw is None or (isinstance(raw, dict) and not user_keys(raw)):
-        raise SpecError(f"{where}: response has no matcher (use contains, not_contains or matches)")
+        raise SpecError(f"{where}: response has no matcher (use {', '.join(sorted(MATCHER_KEYS))})")
     require_type(raw, dict, where, "response must be a mapping")
     response_where = f"{where}.response"
     check_keys(raw, "response", response_where)
-    for key in ("contains", "not_contains", "matches"):
-        if key not in raw:
-            continue
-        value = raw[key]
+    matcher = {key: value for key, value in raw.items() if key in MATCHER_KEYS}
+    for key, value in matcher.items():
         require_type(value, str, response_where, f"{key} must be a string")
-        if not value:
+        if not value and key != "equals":
             # "" is in every answer (and matches every answer): a check that cannot fail.
             raise SpecError(f"{response_where}: {key} cannot be empty")
         if _has_template(value):
@@ -501,18 +499,13 @@ def _parse_response(raw: Any, where: str) -> ResponseExpect:
                 f"{response_where}.{key}: templates are only resolved in triggers; "
                 "here '{{...}}' would be compared as literal text"
             )
+        if key in ("matches", "not_matches"):
+            try:
+                re.compile(value)
+            except re.error as e:
+                raise SpecError(f"{response_where}.{key}: invalid regex: {e}") from None
 
-    if "matches" in raw:
-        try:
-            re.compile(raw["matches"])
-        except re.error as e:
-            raise SpecError(f"{response_where}.matches: invalid regex: {e}") from None
-
-    return ResponseExpect(
-        contains=raw.get("contains"),
-        not_contains=raw.get("not_contains"),
-        matches=raw.get("matches"),
-    )
+    return ResponseExpect(matcher=matcher)
 
 
 def _parse_function_call(raw: Any, where: str) -> FunctionCallExpect:

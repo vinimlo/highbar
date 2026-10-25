@@ -124,7 +124,7 @@ class TestUnknownKeys:
 
         response = spec.suites[0].tests[0].expect.response  # type: ignore[union-attr]
         assert response is not None
-        assert response.contains == "ok"
+        assert response.matcher["contains"] == "ok"
 
 
 class TestWrongTypes:
@@ -396,7 +396,7 @@ class TestReviewFindings:
 
         response = parse_spec(path).suites[0].tests[0].expect.response  # type: ignore[union-attr]
         assert response is not None
-        assert (response.contains, response.not_contains) == ("b", "z")
+        assert response.matcher == {"contains": "b", "not_contains": "z"}
 
     @pytest.mark.parametrize(
         ("field", "value"), [("params", '"order 7"'), ("params", "[1]"), ("result", "5")]
@@ -527,3 +527,55 @@ class TestCallOptions:
 
         with pytest.raises(SpecError, match="forbid must be a non-empty list of tool names"):
             parse_spec(path)
+
+
+class TestResponseMatchers:
+    """D8: response takes the matcher vocabulary of params, plus not_matches (D5)."""
+
+    def test_invalid_regex_in_not_matches_is_a_spec_error(self, tmp_path: Path) -> None:
+        for expect, where in [
+            ('{response: {not_matches: "("}}', "response.not_matches"),
+            ('{function_calls: [{name: a, params: {q: {not_matches: "("}}}]}', "params.q"),
+        ]:
+            path = _spec(tmp_path, _one_test(f'- trigger: "hi"\n  expect: {expect}\n'))
+            with pytest.raises(SpecError, match=rf"{where}.*invalid regex"):
+                parse_spec(path)
+
+    @pytest.mark.parametrize(
+        "key", ["contains", "icontains", "not_contains", "not_icontains", "matches", "not_matches"]
+    )
+    def test_response_keeps_rejecting_empty_operands_and_templates(
+        self, tmp_path: Path, key: str
+    ) -> None:
+        empty = _spec(
+            tmp_path, _one_test(f'- trigger: "hi"\n  expect: {{response: {{{key}: ""}}}}\n')
+        )
+        with pytest.raises(SpecError, match=f"{key} cannot be empty"):
+            parse_spec(empty)
+
+        template = _spec(
+            tmp_path,
+            _one_test(f'- trigger: "hi"\n  expect: {{response: {{{key}: "{{{{x}}}}"}}}}\n'),
+        )
+        with pytest.raises(SpecError, match="templates are only resolved in triggers"):
+            parse_spec(template)
+
+    def test_response_operand_must_be_text(self, tmp_path: Path) -> None:
+        path = _spec(tmp_path, _one_test('- trigger: "hi"\n  expect: {response: {equals: 3}}\n'))
+
+        with pytest.raises(SpecError, match="equals must be a string"):
+            parse_spec(path)
+
+    def test_order_support_example_guardrail_is_a_regex(self) -> None:
+        example = Path(__file__).resolve().parents[3] / "specs/examples/order-support.highbar.yaml"
+
+        responses = [
+            test.expect.response.matcher
+            for suite in parse_spec(str(example)).suites
+            for test in suite.tests
+            if test.expect is not None and test.expect.response is not None
+        ]
+
+        assert {"not_matches": r"\b4[0-9]{3}([ -]?[0-9]{4}){3}\b"}.items() <= {
+            k: v for r in responses for k, v in r.items()
+        }.items()

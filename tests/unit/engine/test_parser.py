@@ -112,7 +112,7 @@ class TestParseSpec:
         assert test.expect is not None
         assert test.expect.function_calls == []
         assert test.expect.response is not None
-        assert test.expect.response.matches == "I can only help with orders"
+        assert test.expect.response.matcher == {"matches": "I can only help with orders"}
 
     def test_multi_turn(self, tmp_path: Path) -> None:
         spec_file = tmp_path / "test.highbar.yaml"
@@ -164,8 +164,7 @@ class TestParseSpec:
         spec = parse_spec(str(spec_file))
         resp = spec.suites[0].tests[0].expect.response
         assert resp is not None
-        assert resp.not_contains == "4[0-9]{3}"
-        assert resp.contains == "cannot share"
+        assert resp.matcher == {"not_contains": "4[0-9]{3}", "contains": "cannot share"}
 
     def test_missing_agent_raises(self, tmp_path: Path) -> None:
         spec_file = tmp_path / "bad.highbar.yaml"

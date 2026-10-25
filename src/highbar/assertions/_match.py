@@ -92,6 +92,12 @@ def _matches(actual: Any, operand: Any) -> bool:
     return text is not None and re.search(str(operand), text) is not None
 
 
+def _not_matches(actual: Any, operand: Any) -> bool:
+    # Like the other negatives, a value with no text form fails rather than passing.
+    text = _as_text(actual)
+    return text is not None and re.search(str(operand), text) is None
+
+
 # Mirrors the vocabulary `response:` already uses (contains / not_contains / matches),
 # with the same case-sensitive semantics, so a spec author doesn't have to learn a second
 # dialect. The `i` variants ignore case. `equals` is the escape hatch for a literal value
@@ -103,6 +109,7 @@ _CONDITIONS: dict[str, Callable[[Any, Any], bool]] = {
     "not_contains": _negative(ignore_case=False),
     "not_icontains": _negative(ignore_case=True),
     "matches": _matches,
+    "not_matches": _not_matches,
 }
 
 MATCHER_KEYS = frozenset(_CONDITIONS)
@@ -167,13 +174,15 @@ def validate_expected(expected: Any, where: str) -> None:
         return
 
     # A matcher. The operand of `equals` is a literal and is deliberately not inspected.
-    if "matches" in expected:
-        pattern = expected["matches"]
+    for key in ("matches", "not_matches"):
+        if key not in expected:
+            continue
+        pattern = expected[key]
         if not isinstance(pattern, str):
-            msg = f"{where}: 'matches' needs a regex string, got {type(pattern).__name__}"
+            msg = f"{where}: '{key}' needs a regex string, got {type(pattern).__name__}"
             raise ValueError(msg)
         try:
             re.compile(pattern)
         except re.error as exc:
-            msg = f"{where}: invalid regex in 'matches' ({pattern!r}): {exc}"
+            msg = f"{where}: invalid regex in '{key}' ({pattern!r}): {exc}"
             raise ValueError(msg) from exc

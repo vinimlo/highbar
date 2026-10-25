@@ -11,6 +11,8 @@ import difflib
 from collections.abc import Mapping
 from typing import Any
 
+from highbar.assertions._match import MATCHER_KEYS
+
 
 class SpecError(ValueError):
     """A spec that cannot run as written. The message is always ``<where>: <problem>``."""
@@ -41,7 +43,7 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "turn": frozenset({"name", "trigger", "expect"}),
     "expect": frozenset({"function_calls", "response", "ordered", "exclusive", "forbid"}),
     "function_call": frozenset({"name", "params", "result", "error"}),
-    "response": frozenset({"contains", "not_contains", "matches"}),
+    "response": MATCHER_KEYS,
 }
 
 # Keys starting with this are the author's own (YAML anchors, notes), as in compose

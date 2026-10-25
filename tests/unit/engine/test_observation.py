@@ -34,7 +34,7 @@ from tests.unit.engine.fakes import FakeAgent
 GUARDRAIL = Expect(function_calls=[])
 CALLS_LOOKUP = Expect(function_calls=[FunctionCallExpect(name="lookup")])
 CALLS_CANCEL = Expect(function_calls=[FunctionCallExpect(name="cancel_order")])
-SAYS_OK = Expect(response=ResponseExpect(contains="ok"))
+SAYS_OK = Expect(response=ResponseExpect(matcher={"contains": "ok"}))
 
 
 def _tool(fn: str, **context: str) -> Trace:
@@ -162,7 +162,8 @@ class TestCorrelation:
         results, _, _ = _run(
             [
                 Case(
-                    trigger="cancel my order", expect=Expect(response=ResponseExpect(contains="ok"))
+                    trigger="cancel my order",
+                    expect=Expect(response=ResponseExpect(matcher={"contains": "ok"})),
                 ),
                 Case(trigger="tell me a joke", expect=GUARDRAIL),
             ],
@@ -222,7 +223,8 @@ class TestCorrelation:
         agent = FakeAgent(lambda message, test_id: Window(turns=[_turn(test="someone-else")]))
 
         results, _, _ = _run(
-            [Case(trigger="a", expect=Expect(response=ResponseExpect(contains="ok")))], agent
+            [Case(trigger="a", expect=Expect(response=ResponseExpect(matcher={"contains": "ok"})))],
+            agent,
         )
 
         assert results[0][1].status is Status.PASSED
@@ -266,7 +268,8 @@ class TestHello:
         agent = FakeAgent(hello=False)
 
         results, _, _ = _run(
-            [Case(trigger="a", expect=Expect(response=ResponseExpect(contains="ok")))], agent
+            [Case(trigger="a", expect=Expect(response=ResponseExpect(matcher={"contains": "ok"})))],
+            agent,
         )
 
         assert results[0][1].status is Status.PASSED

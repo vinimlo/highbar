@@ -269,8 +269,8 @@ def _run(
     return agent, reporter
 
 
-SAYS_OK = Expect(response=ResponseExpect(contains="ok"))
-SAYS_NOPE = Expect(response=ResponseExpect(contains="nope"))
+SAYS_OK = Expect(response=ResponseExpect(matcher={"contains": "ok"}))
+SAYS_NOPE = Expect(response=ResponseExpect(matcher={"contains": "nope"}))
 
 
 class TestRunnerSessions:
