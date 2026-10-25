@@ -142,13 +142,15 @@ class TestResponse:
     def test_response_path_on_a_non_json_reply_is_an_error(self) -> None:
         agent = _Agent(httpx.Response(200, text="<html>oops</html>"))
 
-        with pytest.raises(AgentResponseError, match="is not JSON"):
+        with pytest.raises(AgentResponseError, match="is not a JSON object"):
             agent.client(response_path="data.reply").send("hi", values=_values())
 
-    def test_non_text_value_is_rendered_as_json(self) -> None:
+    def test_non_text_value_at_an_explicit_path_is_rendered_as_json(self) -> None:
         agent = _Agent(_json({"response": {"items": [1, 2]}}))
 
-        assert agent.client().send("hi", values=_values()) == '{"items": [1, 2]}'
+        reply = agent.client(response_path="response").send("hi", values=_values())
+
+        assert reply == '{"items": [1, 2]}'
 
 
 class TestFailures:
@@ -205,3 +207,112 @@ def test_p7_timeout_is_configurable(slow_agent: str) -> None:
         client.send("hi", values=_values())
 
     assert time.monotonic() - started < 2
+
+
+class _Trickle(httpx.SyncByteStream):
+    """A reply that keeps sending keep-alive lines: each read is quick, the whole is not."""
+
+    def __iter__(self) -> Iterator[bytes]:
+        for _ in range(20):
+            time.sleep(0.2)
+            yield b": keep-alive\n"
+
+
+class TestReviewFindings:
+    """PR 5 review: replies that are not a reply, timeouts that do not bound, secrets."""
+
+    @pytest.mark.parametrize("status", [301, 302, 307, 308])
+    def test_c2_redirect_is_an_error_that_says_where(self, status: int) -> None:
+        agent = _Agent(httpx.Response(status, headers={"Location": "http://agent.test/chat/"}))
+
+        with pytest.raises(AgentResponseError, match=rf"HTTP {status} .*redirected to "
+                           r"http://agent.test/chat/; set agent.endpoint to that URL"):  # fmt: skip
+            agent.client().send("hi", values=_values())
+
+    @pytest.mark.parametrize("status", [200, 202, 204])
+    def test_c2_empty_body_is_an_error(self, status: int) -> None:
+        agent = _Agent(httpx.Response(status))
+
+        with pytest.raises(AgentResponseError, match="empty body"):
+            agent.client().send("hi", values=_values())
+
+    def test_c2_non_success_status_below_400_is_an_error(self) -> None:
+        agent = _Agent(httpx.Response(101, text="switching"))
+
+        with pytest.raises(AgentResponseError, match="HTTP 101"):
+            agent.client().send("hi", values=_values())
+
+    @pytest.mark.parametrize("path", [None, "data.reply"])
+    def test_i7_null_reply_is_an_error_not_the_word_null(self, path: str | None) -> None:
+        data = {"response": None, "error": "quota"} if path is None else {"data": {"reply": None}}
+        agent = _Agent(_json(data))
+
+        with pytest.raises(AgentResponseError, match="null"):
+            agent.client(response_path=path).send("hi", values=_values())
+
+    def test_object_at_an_implicit_reply_key_is_an_error_with_the_hint(self) -> None:
+        agent = _Agent(_json({"message": {"role": "assistant", "content": "hi"}}))
+
+        with pytest.raises(AgentResponseError, match="set agent.response"):
+            agent.client().send("hi", values=_values())
+
+    @pytest.mark.parametrize("text", ["42", "true", "null", "[1, 2]", '"ok"'])
+    def test_i6_plain_text_reply_is_the_text_even_when_it_parses_as_json(self, text: str) -> None:
+        agent = _Agent(httpx.Response(200, text=text, headers={"Content-Type": "text/plain"}))
+
+        assert agent.client().send("hi", values=_values()) == text
+
+    def test_json_object_sent_as_text_is_still_read(self) -> None:
+        """A hand-rolled agent returning json.dumps(...) as text/html."""
+        agent = _Agent(
+            httpx.Response(200, text='{"response": "hello"}', headers={"Content-Type": "text/html"})
+        )
+
+        assert agent.client().send("hi", values=_values()) == "hello"
+
+    def test_invalid_json_under_a_json_content_type_is_an_error(self) -> None:
+        agent = _Agent(
+            httpx.Response(
+                200,
+                text='{"response": "Sorry, I can',
+                headers={"Content-Type": "application/json"},
+            )
+        )
+
+        with pytest.raises(AgentResponseError, match="not valid JSON"):
+            agent.client().send("hi", values=_values())
+
+    def test_i1_timeout_bounds_a_reply_that_keeps_trickling(self) -> None:
+        agent = _Agent(httpx.Response(200, stream=_Trickle()))
+        started = time.monotonic()
+
+        with pytest.raises(AgentResponseError, match=r"no response in 0.5s \(agent.timeout\)"):
+            agent.client(timeout_ms=500).send("hi", values=_values())
+
+        assert time.monotonic() - started < 1.5
+
+    def test_i1_reply_larger_than_the_cap_is_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("highbar.adapters.http_client.MAX_REPLY_BYTES", 1000)
+        agent = _Agent(httpx.Response(200, text="x" * 5000))
+
+        with pytest.raises(AgentResponseError, match="larger than"):
+            agent.client().send("hi", values=_values())
+
+    def test_i2_header_value_the_http_library_rejects_is_never_echoed(self) -> None:
+        """A session header with a trailing newline: h11 refuses it, quoting the value."""
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        client = HTTPClient(f"http://127.0.0.1:{port}/chat", timeout_ms=2000)
+        session = {"headers": {"Authorization": "Bearer s3cr3t-token\n"}}
+        try:
+            with pytest.raises(AgentResponseError) as info:
+                client.send("hi", values=_values(session))
+        finally:
+            listener.close()
+
+        assert "s3cr3t" not in str(info.value)
+        assert "header" in str(info.value)

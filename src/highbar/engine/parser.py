@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+from dataclasses import replace
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -33,6 +34,7 @@ from highbar.domain.models import (
 from highbar.engine import placeholders
 from highbar.engine.placeholders import check_placeholders, uses_placeholder
 from highbar.engine.schema import SpecError, check_keys, require_type, user_keys
+from highbar.engine.secrets import redact
 
 
 def parse_spec(path: str) -> Spec:
@@ -122,12 +124,27 @@ def _parse_agent(raw: Any) -> AgentConfig:
     where = "agent"
     require_type(raw, dict, where, "must be a mapping")
     check_keys(raw, "agent", where)
-    raw = _expand_env(raw, where)
+    secrets: dict[str, str] = {}
+    raw = _expand_env(raw, where, secrets)
+    try:
+        return replace(_parse_expanded_agent(raw), secrets=secrets)
+    except SpecError as e:
+        # An error that quotes a value (a URL) must not quote what came from ${NAME}.
+        raise SpecError(redact(str(e), secrets)) from None
 
+
+def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
+    where = "agent"
     if "endpoint" not in raw:
         raise SpecError(f"{where}: missing 'endpoint' (the URL highbar sends each trigger to)")
     endpoint = _required_text(raw, "endpoint")
     _check_url(endpoint, "endpoint")
+    for key in ("endpoint", "health"):
+        if isinstance(raw.get(key), str) and "{{" in raw[key]:
+            raise SpecError(
+                f"agent: {key} cannot hold {{{{...}}}}: placeholders are not resolved in the "
+                "URL; send the value in agent.request.body or agent.request.headers"
+            )
     start = _required_text(raw, "start") if "start" in raw else None
     managed = start is not None
     if raw.get("health") is not None:
@@ -173,16 +190,17 @@ def _parse_agent(raw: Any) -> AgentConfig:
 _ENV_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
-def _expand_env(value: Any, where: str) -> Any:
+def _expand_env(value: Any, where: str, found: dict[str, str]) -> Any:
     """Replace ``${NAME}`` with the environment variable, once (no re-expansion).
 
     A missing variable is an error that names it: an empty token would send
     ``Authorization: Bearer `` and read as the agent refusing a correct request.
+    Each value expanded goes in ``found``, to be masked in every message.
     """
     if isinstance(value, dict):
-        return {key: _expand_env(item, f"{where}.{key}") for key, item in value.items()}
+        return {key: _expand_env(item, f"{where}.{key}", found) for key, item in value.items()}
     if isinstance(value, list):
-        return [_expand_env(item, f"{where}[{index}]") for index, item in enumerate(value)]
+        return [_expand_env(item, f"{where}[{index}]", found) for index, item in enumerate(value)]
     if not isinstance(value, str):
         return value
 
@@ -190,6 +208,7 @@ def _expand_env(value: Any, where: str) -> Any:
         name = match.group(1)
         if name not in os.environ:
             raise SpecError(f"{where}: environment variable {name} is not set")
+        found[os.environ[name]] = name
         return os.environ[name]
 
     return _ENV_VAR.sub(variable, value)
@@ -221,6 +240,12 @@ def _parse_request(raw: Any, has_session: bool) -> RequestConfig:
         if not isinstance(value, str):
             raise SpecError(
                 f"{where}.headers: {name} must be a string (quote it), got {type(value).__name__}"
+            )
+        if value != value.strip() or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            # Usually a token read from a file with its newline. The value is not shown.
+            raise SpecError(
+                f"{where}.headers.{name}: the value has a control character or leading or "
+                "trailing whitespace (often a secret read with its newline); not shown"
             )
 
     body = raw.get("body", RequestConfig().body)

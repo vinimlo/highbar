@@ -12,12 +12,14 @@ from rich.markup import escape
 from highbar.adapters.attached import AttachedAgent
 from highbar.adapters.file_collector import FileTraceCollector, NoTraceCollector
 from highbar.adapters.http_client import HTTPClient
-from highbar.adapters.subprocess_adapter import SubprocessAdapter
+from highbar.adapters.subprocess_adapter import AgentStartError, SubprocessAdapter
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
 from highbar.domain.models import RunSummary, Spec
 from highbar.domain.protocols import TraceCollector
+from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.runner import TestRunner
+from highbar.engine.secrets import redact
 from highbar.engine.session import SessionHooks
 from highbar.reporters.terminal import TerminalReporter
 from highbar.variations.generator import VariationGenerator
@@ -71,7 +73,7 @@ def run_spec(
             session=session,
             managed=False,
         )
-        return runner.run(spec)
+        return _run(runner, spec)
 
     with tempfile.NamedTemporaryFile(
         suffix=".jsonl", prefix="highbar-traces-", delete=False
@@ -98,7 +100,7 @@ def run_spec(
     )
 
     try:
-        summary = runner.run(spec)
+        summary = _run(runner, spec)
     finally:
         if keep_traces:
             console.print(f"  Traces kept at {escape(traces_file)}")
@@ -134,7 +136,18 @@ def _runner(
         session=session,
         spec_path=path,
         correlate=spec.agent.correlate,
+        secrets=spec.agent.secrets,
     )
+
+
+def _run(runner: TestRunner, spec: Spec) -> RunSummary:
+    """Run the spec; an error that stops the run is masked like every other message."""
+    try:
+        return runner.run(spec)
+    except (AgentStartError, AgentNotObservedError) as e:
+        if not spec.agent.secrets:
+            raise
+        raise type(e)(redact(str(e), spec.agent.secrets)) from None
 
 
 def agent_log_path(spec_path: str) -> Path:

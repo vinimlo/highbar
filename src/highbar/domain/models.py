@@ -140,6 +140,8 @@ class AgentConfig:
     traces: str | None = None
     session: SessionConfig | None = None
     correlate: dict[str, Any] = field(default_factory=lambda: {"test": "{{test.id}}"})
+    # Each value expanded from ${NAME}, and the name: what output must never show.
+    secrets: dict[str, str] = field(default_factory=dict)
 
     @property
     def managed(self) -> bool:

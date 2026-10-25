@@ -17,6 +17,7 @@ from highbar.domain.models import (
     RunSummary,
     Spec,
     Status,
+    Suite,
     Test,
     TestResult,
     Trace,
@@ -33,8 +34,10 @@ from highbar.engine.observation import (
     attribute,
     classify,
     describe,
+    same_value,
 )
 from highbar.engine.placeholders import PlaceholderError, Values, render
+from highbar.engine.secrets import redact
 from highbar.engine.session import SessionContext, SessionError, SessionHooks
 from highbar.engine.templates import TemplateError, resolve_template
 
@@ -70,6 +73,31 @@ class _Finding:
     execution: _Execution
     status: Status
     error: str
+
+
+class _Masking:
+    """A reporter's stand-in that masks each value from ${VAR} in what it is told."""
+
+    def __init__(self, reporter: Reporter, secrets: Mapping[str, str]) -> None:
+        self._reporter = reporter
+        self._secrets = secrets
+
+    def on_suite_start(self, suite: Suite) -> None:
+        self._reporter.on_suite_start(suite)
+
+    def on_test_result(self, test_name: str, result: TestResult) -> None:
+        errors = [redact(error, self._secrets) for error in result.errors]
+        self._reporter.on_test_result(test_name, replace(result, errors=errors))
+
+    def on_warning(self, message: str) -> None:
+        self._reporter.on_warning(redact(message, self._secrets))
+
+    def on_run_end(self, summary: RunSummary) -> None:
+        self._reporter.on_run_end(summary)
+
+
+def _same_correlation(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    return bool(a) and a.keys() == b.keys() and all(same_value(a[k], b[k]) for k in a)
 
 
 def _names(tools: list[Trace]) -> str:
@@ -140,12 +168,14 @@ class TestRunner:
         session: SessionHooks | None = None,
         spec_path: str = "",
         correlate: Mapping[str, Any] | None = None,
+        secrets: Mapping[str, str] | None = None,
     ) -> None:
         self._adapter = adapter
         self._client = client
         self._collector = collector
         self._assertions = assertions
-        self._reporter = reporter
+        # Every message passes through it: values from ${VAR} never reach the output.
+        self._reporter = _Masking(reporter, secrets) if secrets else reporter
         self._settle_time = settle_time
         self._variations = variations
         self._managed = managed
@@ -313,26 +343,32 @@ class TestRunner:
             "hb.turn(test=<that header>) write. Run with --keep-traces to inspect the file"
         )
 
-    def _not_observed_attached(self, window: Window, correlate: dict[str, Any]) -> str | None:
-        """Why a window with nothing tagged cannot be trusted in attach mode, if it can't."""
+    def _not_observed_attached(self, window: Window, correlate: dict[str, Any]) -> str:
+        """Why nothing read while an attached test ran can be counted as that test's.
+
+        An attached agent may serve other traffic, so only a record of this test proves
+        what the agent did for its message (D4).
+        """
         records = [*window.tools, *window.turns]
         keys = sorted({key for record in records for key in record.context})
         if keys:
-            # The agent tags its records, but not with these keys: what it wrote cannot be
-            # told apart from other traffic on the same agent.
             return (
                 f"not observed: no trace record in {self._collector.path} carries the keys "
                 f"of agent.correlate ({describe(correlate)}); the ones read while this test "
                 f"ran have context keys: {', '.join(keys)}"
             )
-        if not records:
-            # An empty window cannot tell "no tool was called" from "the agent records
-            # nothing".
+        if records:
             return (
-                f"not observed: nothing was written to {self._collector.path} while this "
-                "test ran; the agent must write a turn per message it handles"
+                f"not observed: the {len(records)} trace records read while this test ran "
+                "carry no context, so they cannot be told from other traffic on this agent; "
+                "tag them (highbar.asgi.Middleware, or hb.turn(test=<the X-Highbar-Test "
+                "header>)) or set agent.correlate to keys they carry"
             )
-        return None
+        # An empty window cannot tell "no tool was called" from "the agent records nothing".
+        return (
+            f"not observed: nothing was written to {self._collector.path} while this "
+            "test ran; the agent must write a turn per message it handles"
+        )
 
     def _check(self, tools: list[Trace], response: str, expect: Expect) -> list[str]:
         return [
@@ -471,7 +507,7 @@ class TestRunner:
         if self._session is not None:
             try:
                 session = self._session.setup(context)
-            except SessionError as e:
+            except Exception as e:
                 # No session, so nothing to tear down, and nothing was sent.
                 return TestResult(
                     status=Status.ERROR, errors=[str(e)], duration_ms=(time.time() - start) * 1000
@@ -482,9 +518,10 @@ class TestRunner:
             if self._session is not None:
                 try:
                     self._session.teardown(context, session)
-                except SessionError as e:
+                except Exception as e:
                     # The test's result stands; a session left open is worth knowing.
-                    self._reporter.on_warning(f"{name}: session teardown failed: {e}")
+                    reason = str(e) if isinstance(e, SessionError) else f"{type(e).__name__}: {e}"
+                    self._reporter.on_warning(f"{name}: session teardown failed: {reason}")
 
     def _turns(
         self,
@@ -554,6 +591,15 @@ class TestRunner:
             )
         except PlaceholderError as e:
             return unverified(f"agent.correlate: {e}")
+        if expect.requires_observation and any(
+            other is not execution and _same_correlation(other.correlate, execution.correlate)
+            for other in self._executions
+        ):
+            return unverified(
+                f"agent.correlate gives {describe(execution.correlate)}, the same as an "
+                "earlier test's: their trace records cannot be told apart. The session must "
+                "give each test execution its own value"
+            )
 
         try:
             response = self._client.send(
@@ -587,9 +633,7 @@ class TestRunner:
             if expect.requires_observation and not self._managed:
                 # Attach mode: the agent may serve other traffic, and there is no
                 # `hello` from a fresh file to rely on.
-                unobserved = self._not_observed_attached(window, execution.correlate)
-                if unobserved:
-                    return unverified(unobserved)
+                return unverified(self._not_observed_attached(window, execution.correlate))
             # Nothing in the window is tagged: it is all there is to go by.
             traces = window.tools
             errors = self._check(traces, response, expect)

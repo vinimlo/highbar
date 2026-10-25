@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import sys
 import textwrap
 import time
@@ -325,3 +327,109 @@ class TestRunnerSessions:
         assert len(session.teardowns) == 1
         reporter.on_warning.assert_called_once()
         assert "session teardown failed" in reporter.on_warning.call_args[0][0]
+
+
+class TestReviewFindings:
+    """PR 5 review: hooks that hang, crash the run, or return what cannot be sent."""
+
+    def test_i3_python_setup_that_hangs_stops_at_agent_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "hangs_hook.py").write_text(
+            "import time\ndef setup(ctx):\n    time.sleep(5)\n    return {}\n", encoding="utf-8"
+        )
+        hooks = _hooks(setup=PythonHook("hangs_hook:setup"), timeout_ms=500)
+        started = time.monotonic()
+
+        with pytest.raises(SessionError, match=r"session.setup did not finish in 0.5s"):
+            hooks.setup(CTX)
+
+        assert time.monotonic() - started < 2
+
+    def test_python_hooks_run_in_the_thread_that_imported_them(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A module that opens SQLite at import can use it in its hooks."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "db_hook.py").write_text(
+            textwrap.dedent("""\
+                import sqlite3
+                db = sqlite3.connect(":memory:")
+                def setup(ctx):
+                    return {"one": db.execute("select 1").fetchone()[0]}
+            """),
+            encoding="utf-8",
+        )
+
+        assert _hooks(setup=PythonHook("db_hook:setup")).setup(CTX) == {"one": 1}
+
+    def test_i4_sys_exit_in_a_python_hook_is_a_session_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "exits_hook.py").write_text(
+            "import sys\ndef setup(ctx):\n    sys.exit('database is down')\n", encoding="utf-8"
+        )
+
+        with pytest.raises(SessionError, match="SystemExit: database is down"):
+            _hooks(setup=PythonHook("exits_hook:setup")).setup(CTX)
+
+    def test_i4_setup_value_that_is_not_json_is_a_session_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "uuid_hook.py").write_text(
+            "import uuid\ndef setup(ctx):\n    return {'conversation_id': uuid.uuid4()}\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(SessionError, match="not JSON: conversation_id is UUID"):
+            _hooks(setup=PythonHook("uuid_hook:setup")).setup(CTX)
+
+    def test_i4_non_utf8_hook_output_is_not_a_crash(self) -> None:
+        setup = _command("""\
+            import sys
+            sys.stderr.buffer.write(b"conex\\xe3o recusada\\n")
+            print('{"cid": 1}')
+        """)
+
+        assert _hooks(setup=setup).setup(CTX) == {"cid": 1}
+
+        failing = _command("""\
+            import sys
+            sys.stderr.buffer.write(b"conex\\xe3o recusada\\n")
+            sys.exit(3)
+        """)
+        with pytest.raises(SessionError, match="exited with code 3"):
+            _hooks(setup=failing).setup(CTX)
+
+    def test_m2_setup_that_leaves_a_daemon_holding_its_output_still_returns(
+        self, tmp_path: Path
+    ) -> None:
+        pid_file = tmp_path / "daemon.pid"
+        setup = _command(f"""\
+            import subprocess, sys
+            daemon = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+            )
+            open({str(pid_file)!r}, "w").write(str(daemon.pid))
+            print('{{"cid": 1}}')
+        """)
+        started = time.monotonic()
+        try:
+            assert _hooks(setup=setup, timeout_ms=5000).setup(CTX) == {"cid": 1}
+            assert time.monotonic() - started < 4
+        finally:
+            if pid_file.exists():
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+
+    def test_teardown_that_raises_anything_is_a_warning(self) -> None:
+        session = _FakeSession()
+        session.teardown = MagicMock(side_effect=TypeError("boom"))  # type: ignore[method-assign]
+
+        _, reporter = _run([Case(trigger="a", expect=SAYS_OK)], session)
+
+        ((_, result),) = [c.args for c in reporter.on_test_result.call_args_list]
+        assert result.status is Status.PASSED
+        assert "session teardown failed: TypeError: boom" in reporter.on_warning.call_args[0][0]
