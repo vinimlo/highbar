@@ -4,14 +4,14 @@ layout: home
 hero:
   name: Highbar
   text: Behavior testing framework for AI agents
-  tagline: Run your AI agents through the highbar.
+  tagline: Evals for AI agents that behave like tests.
   actions:
     - theme: brand
       text: Get Started
       link: /getting-started/introduction
     - theme: alt
       text: GitHub
-      link: https://github.com/highbar-ai/highbar
+      link: https://github.com/vinimlo/highbar
 
 features:
   - title: Function Call Assertions

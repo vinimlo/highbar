@@ -6,7 +6,7 @@ export default defineConfig({
 
   head: [
     ['meta', { property: 'og:title', content: 'Highbar — Behavior testing for AI agents' }],
-    ['meta', { property: 'og:description', content: 'Run your AI agents through the highbar. YAML specs, function call assertions, multi-turn testing.' }],
+    ['meta', { property: 'og:description', content: 'Evals for AI agents that behave like tests. YAML specs, function call assertions, multi-turn testing.' }],
   ],
 
   themeConfig: {
@@ -73,12 +73,12 @@ export default defineConfig({
     ],
 
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/highbar-ai/highbar' },
+      { icon: 'github', link: 'https://github.com/vinimlo/highbar' },
     ],
 
     footer: {
       message: 'Released under the MIT License.',
-      copyright: 'Copyright 2026 Highbar Contributors',
+      copyright: 'Copyright 2026 highbar contributors',
     },
 
     search: {
@@ -86,7 +86,7 @@ export default defineConfig({
     },
 
     editLink: {
-      pattern: 'https://github.com/highbar-ai/highbar/edit/main/site/:path',
+      pattern: 'https://github.com/vinimlo/highbar/edit/main/site/:path',
       text: 'Edit this page on GitHub',
     },
   },

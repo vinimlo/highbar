@@ -3,7 +3,7 @@
 
 <p align="center">
   <strong>Behavior testing framework for AI agents</strong><br>
-  <em>Run your AI agents through the highbar.</em>
+  <em>Evals for AI agents that behave like tests.</em>
 </p>
 
 <p align="center">
