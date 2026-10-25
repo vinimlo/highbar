@@ -54,13 +54,7 @@ class FunctionCallsAssertion:
         if expect.ordered:
             in_order = _in_order(expected, traces)
             if in_order is None:
-                wanted = ", ".join(_label(e) for e in expected)
-                got = ", ".join(
-                    traces[c].fn for c in sorted(c for c in assignment if c is not None)
-                )
-                results.append(
-                    _failed(f"calls matched but out of order: expected {wanted}; got {got}")
-                )
+                results.append(_failed(_out_of_order(expected, traces, assignment)))
             else:
                 assignment = in_order
 
@@ -96,31 +90,56 @@ def _assign(expected: list[FunctionCallExpect], traces: list[Trace]) -> list[int
 
 
 def _in_order(expected: list[FunctionCallExpect], traces: list[Trace]) -> list[int | None] | None:
-    """The earliest calls serving the expectations in order, or None if there are none.
+    """Calls serving the expectations one after the other, or None if there are none.
 
-    Taking the first call that fits each expectation in turn never loses a solution:
-    any other choice leaves fewer calls for the expectations after it.
+    In order means by when the calls ran: each starts after the one before it ended.
+    The file lists calls as they end, so an async call that started first and ended
+    last would otherwise pass for second. Taking, for each expectation, the fitting
+    call that ends first never loses a solution: it leaves the most time for the
+    expectations after it.
     """
+    used: set[int] = set()
+    previous_end = float("-inf")
     assignment: list[int | None] = []
-    position = 0
     for e in expected:
-        found = next((c for c in range(position, len(traces)) if satisfies(e, traces[c])), None)
-        if found is None:
+        fits = [
+            c
+            for c, t in enumerate(traces)
+            if c not in used and t.started_at >= previous_end and satisfies(e, t)
+        ]
+        if not fits:
             return None
-        assignment.append(found)
-        position = found + 1
+        chosen = min(fits, key=lambda c: (traces[c].ended_at, c))
+        used.add(chosen)
+        previous_end = traces[chosen].ended_at
+        assignment.append(chosen)
     return assignment
+
+
+def _out_of_order(
+    expected: list[FunctionCallExpect], traces: list[Trace], assignment: list[int | None]
+) -> str:
+    wanted = [_label(e) for e in expected]
+    matched = sorted(
+        (c for c in assignment if c is not None), key=lambda c: (traces[c].started_at, c)
+    )
+    got = [traces[c].fn for c in matched]
+    message = f"calls matched but out of order: expected {', '.join(wanted)}; got {', '.join(got)}"
+    if got == wanted:
+        message += " (they overlap: each call must start after the one before it ends)"
+    return message
 
 
 def _per_expectation(
     expected: list[FunctionCallExpect], traces: list[Trace], assignment: list[int | None]
 ) -> list[AssertionResult]:
     results = []
+    seen: set[str] = set()
     for index, (e, call) in enumerate(zip(expected, assignment, strict=True)):
-        if call is not None:
-            results.append(AssertionResult(passed=True, message=""))
-        else:
-            results.append(_failed(_unmet(e, index, expected, traces, assignment)))
+        message = "" if call is not None else _unmet(e, index, expected, traces, assignment)
+        # Two expectations short of the same calls say the same thing once.
+        results.append(AssertionResult(passed=not message or message in seen, message=message))
+        seen.add(message)
     return results
 
 
@@ -143,8 +162,7 @@ def _unmet(
 
     if any(satisfies(e, t) for t in candidates):
         # It fits, but another expectation needed the same call.
-        wanted = sum(1 for other in expected if set(other.accepted_names) & set(names))
-        return f"expected {wanted} calls to {_describe(names)}, got {len(candidates)}"
+        return _shortfall(index, expected, traces)
 
     # Calling the right tool with the wrong payload is a different defect from not
     # calling it at all, and the message has to say which one happened. The call to
@@ -160,6 +178,33 @@ def _unmet(
     if not _error_matches(e.error, call.error):
         errors.append(f"error: expected {_expected_error(e.error)}, got {call.error or 'none'}")
     return f"'{call.fn}' was called but didn't match: {'; '.join(errors)}"
+
+
+def _shortfall(index: int, expected: list[FunctionCallExpect], traces: list[Trace]) -> str:
+    """How many calls the expectations sharing names with this one need, and got.
+
+    Sharing is transitive: with [a, a|b, b], all three compete for calls to a and b.
+    A call counts as got only if it fits one of them; failed ones are said apart.
+    """
+    group = {index}
+    names: list[str] = list(expected[index].accepted_names)
+    grew = True
+    while grew:
+        grew = False
+        for other, e in enumerate(expected):
+            if other not in group and set(e.accepted_names) & set(names):
+                group.add(other)
+                names.extend(n for n in e.accepted_names if n not in names)
+                grew = True
+    # Said in the spec's order, whichever expectation was found short.
+    names = list(dict.fromkeys(n for g in sorted(group) for n in expected[g].accepted_names))
+    fit = [t for t in traces if any(satisfies(expected[g], t) for g in group)]
+    failed = [t for t in traces if t.fn in names and t.error is not None and t not in fit]
+    label = " or ".join(f"'{name}'" for name in names)
+    message = f"expected {len(group)} calls to {label}, got {len(fit)} that fit"
+    if failed:
+        message += f"; {len(failed)} more failed: " + "; ".join(t.error or "" for t in failed[:3])
+    return message
 
 
 def _error_matches(expected: bool | dict[str, Any], actual: str | None) -> bool:

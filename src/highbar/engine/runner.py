@@ -61,6 +61,8 @@ class _Execution:
     test_index: int
     label: str  # '[variation: "..."] ' for a phrasing, so its errors say which one
     correlate: dict[str, Any]
+    phrasing: int = 0  # which phrasing of the test, and which run of it
+    run: int = 0
     expect: Expect | None = None  # of its last turn
     response: str = ""
     tools: list[Trace] = field(default_factory=list)
@@ -116,16 +118,39 @@ def _merged_errors(results: list[TestResult]) -> list[str]:
     return [f"{error} ({n} of {len(results)} runs)" for error, n in seen.items()]
 
 
-def _with_findings(result: TestResult, findings: list[_Finding]) -> TestResult:
-    if not findings:
-        return result
-    return TestResult(
-        status=combine([result.status, *(f.status for f in findings)]),
-        errors=[*result.errors, *(f.execution.label + f.error for f in findings)],
-        duration_ms=result.duration_ms,
-        traces=result.traces,
-        counts=result.counts,
-    )
+@dataclass
+class _Gate:
+    """The status of each run of a test, per phrasing, kept for the whole run.
+
+    A late call fails its own run, and the test is judged again against min_pass:
+    a run that fails late counts like a run that fails in time, no more.
+    """
+
+    min_pass: int
+    counted: bool  # the title shows passed/runs: no variations, more than one run
+    runs: list[list[Status]] = field(default_factory=list)
+
+    @property
+    def status(self) -> Status:
+        return combine(phrasing_status(statuses, self.min_pass) for statuses in self.runs)
+
+    @property
+    def counts(self) -> tuple[int, int, int] | None:
+        if not self.counted:
+            return None
+        (statuses,) = self.runs
+        return sum(s is Status.PASSED for s in statuses), len(statuses), self.min_pass
+
+    def demote(self, finding: _Finding) -> None:
+        execution = finding.execution
+        run = self.runs[execution.phrasing]
+        run[execution.run] = combine([run[execution.run], finding.status])
+
+    def describe(self, finding: _Finding) -> str:
+        execution = finding.execution
+        total = len(self.runs[execution.phrasing])
+        which = f" (run {execution.run + 1} of {total})" if total > 1 else ""
+        return f"{execution.label}{finding.error}{which}"
 
 
 def _test_name(test: Test, variations_run: int | None = None) -> str:
@@ -215,6 +240,7 @@ class TestRunner:
         self._variations_run = 0
         self._warned_no_context = False
         self._executions, self._findings, self._test_index = [], [], 0
+        self._gates: dict[int, _Gate] = {}
         observes = any(test.requires_observation for suite in spec.suites for test in suite.tests)
         run_start = time.time()
 
@@ -230,9 +256,19 @@ class TestRunner:
                     result = self._run_test(test)
                     own = [f for f in self._findings if f.execution.test_index == self._test_index]
                     earlier = [f for f in self._findings if f not in own]
-                    # A phrasing's late call lands in the next phrasing's read: it is
-                    # part of this test's result, not news about a reported one.
-                    result = _with_findings(result, own)
+                    self._findings = []
+                    # A run's late call lands in the next run's read: it is part of this
+                    # test's result, not news about a reported one.
+                    if own:
+                        gate = self._gates[self._test_index]
+                        for finding in own:
+                            gate.demote(finding)
+                        result = replace(
+                            result,
+                            status=gate.status,
+                            counts=gate.counts,
+                            errors=[*result.errors, *(gate.describe(f) for f in own)],
+                        )
                     name = _test_name(test, self._last_variation_count)
                     counts[result.status] += 1
                     reported[self._test_index] = (name, result.status)
@@ -265,18 +301,30 @@ class TestRunner:
         reported: dict[int, tuple[str, Status]],
         counts: dict[Status, int],
     ) -> None:
-        """A reported test that passed, and no longer does, is counted again and said so."""
+        """Judge a reported test again: counted again if its status changed, said always."""
+        by_test: dict[int, list[_Finding]] = {}
         for finding in findings:
-            name, status = reported[finding.execution.test_index]
-            if status is not Status.PASSED:
-                continue
-            counts[Status.PASSED] -= 1
-            counts[finding.status] += 1
-            reported[finding.execution.test_index] = (name, finding.status)
-            verdict = "now fails" if finding.status is Status.FAILED else "is now unverified"
-            self._reporter.on_warning(
-                f"{name}: {verdict}: {finding.execution.label}{finding.error}"
+            by_test.setdefault(finding.execution.test_index, []).append(finding)
+        for index, group in by_test.items():
+            name, before = reported[index]
+            gate = self._gates[index]
+            for finding in group:
+                gate.demote(finding)
+            after = gate.status
+            tally = (
+                f" ({gate.counts[0]}/{gate.counts[1]}, min {gate.counts[2]})" if gate.counts else ""
             )
+            detail = "; ".join(gate.describe(f) for f in group)
+            if after is not before:
+                counts[before] -= 1
+                counts[after] += 1
+                reported[index] = (name, after)
+                verdict = "now fails" if after is Status.FAILED else "is now unverified"
+                self._reporter.on_warning(f"{name}: {verdict}{tally}: {detail}")
+            elif after is Status.PASSED:
+                self._reporter.on_warning(
+                    f"{name}: a run now fails{tally}, and the test still passes: {detail}"
+                )
         self._findings = []
 
     def _read_after_last_test(self) -> None:
@@ -455,34 +503,42 @@ class TestRunner:
         statuses: list[Status] = []
         errors: list[str] = []
         traces: list[Trace] = []
-        counts: tuple[int, int, int] | None = None
+        gate = _Gate(min_pass, counted=runs > 1 and not test.variations)
+        self._gates[self._test_index] = gate
         # Every phrasing runs even after one fails: three of ten broken is a different
         # bug from one of ten, and stopping early hides which. They all go to the same
         # running agent, back to back, with no reset in between.
         for index, (label, turns) in enumerate(phrasings):
             results = [
                 # Each run is its own execution, with its own test id and session.
-                self._execute(turns, time.time(), labelled=bool(test.turns), name=name, label=label)
-                for _ in range(runs)
+                self._execute(
+                    turns,
+                    time.time(),
+                    labelled=bool(test.turns),
+                    name=name,
+                    label=label,
+                    phrasing=index,
+                    run=run,
+                )
+                for run in range(runs)
             ]
             if index > 0:
                 self._variations_run += 1
-            statuses.append(phrasing_status(results, min_pass))
+            gate.runs.append([r.status for r in results])
+            statuses.append(phrasing_status(gate.runs[-1], min_pass))
             passed = sum(1 for r in results if r.passed)
             errors.extend(label + error for error in _merged_errors(results))
             if runs > 1 and test.variations and passed < min_pass:
                 errors.append(f"{label}{passed}/{runs} runs passed (min {min_pass})")
             for r in results:
                 traces.extend(r.traces)
-            if runs > 1 and not test.variations:
-                counts = (passed, runs, min_pass)
 
         return TestResult(
             status=combine(statuses),
             errors=errors,
             duration_ms=(time.time() - start) * 1000,
             traces=traces,
-            counts=counts,
+            counts=gate.counts,
         )
 
     def _paraphrases(self, trigger: str, count: int) -> list[str] | str:
@@ -508,7 +564,15 @@ class TestRunner:
         return paraphrases
 
     def _execute(
-        self, turns: list[Turn], start: float, *, labelled: bool, name: str, label: str = ""
+        self,
+        turns: list[Turn],
+        start: float,
+        *,
+        labelled: bool,
+        name: str,
+        label: str = "",
+        phrasing: int = 0,
+        run: int = 0,
     ) -> TestResult:
         """One execution of a test: one test id and one session, shared by all its turns.
 
@@ -519,7 +583,9 @@ class TestRunner:
         context = SessionContext(
             test_id=uuid.uuid4().hex, test_name=name, spec_path=self._spec_path
         )
-        execution = _Execution(self._test_index, label, correlate={"test": context.test_id})
+        execution = _Execution(
+            self._test_index, label, {"test": context.test_id}, phrasing=phrasing, run=run
+        )
         self._executions.append(execution)
         session: dict[str, Any] = {}
         if self._session is not None:

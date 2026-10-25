@@ -581,3 +581,19 @@ class TestResponseMatchers:
         assert {"not_matches": r"\b4[0-9]{3}([ -]?[0-9]{4}){3}\b"}.items() <= {
             k: v for r in responses for k, v in r.items()
         }.items()
+
+
+def test_i4_a_turn_whose_only_check_is_forbid_asserts_something(tmp_path: Path) -> None:
+    path = _spec(
+        tmp_path,
+        _one_test("""\
+            - turns:
+                - trigger: "hi"
+                - trigger: "close my account"
+                  expect: {forbid: [delete_account]}
+        """),
+    )
+
+    (test,) = parse_spec(path).suites[0].tests
+
+    assert test.requires_observation

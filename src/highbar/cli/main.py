@@ -120,8 +120,8 @@ def run(
 
     # Every spec is parsed before any agent starts: a typo in the third file must not
     # cost the time of running the first two, nor leave half a run behind.
-    specs = _parse_all(paths)
-    if specs is None or not _check_all_runs(specs, runs):
+    specs = _parse_all(paths, runs=runs)
+    if specs is None:
         raise typer.Exit(EXIT_UNRUNNABLE)
     # Python session hooks are imported before any agent starts, like the specs parsed.
     hooks = _load_all_hooks(specs)
@@ -265,20 +265,8 @@ def validate(
         console.print("[red]No spec files found.[/red]")
         raise typer.Exit(EXIT_UNRUNNABLE)
 
-    specs = _parse_all(paths, report_valid=True)
+    specs = _parse_all(paths, report_valid=True, runs=None)
     raise typer.Exit(EXIT_UNRUNNABLE if specs is None else EXIT_OK)
-
-
-def _check_all_runs(specs: list[tuple[str, Spec]], runs: int | None) -> bool:
-    """With --runs, a test's min_pass may now be more than its runs: say so for each."""
-    ok = True
-    for path, spec in specs:
-        try:
-            check_runs(spec, spec.default_runs if runs is None else runs)
-        except SpecError as e:
-            console.print(f"  [red]\u2717[/red] {escape(path)}: {escape(str(e))}", soft_wrap=True)
-            ok = False
-    return ok
 
 
 def _load_all_hooks(specs: list[tuple[str, Spec]]) -> dict[str, SessionHooks | None] | None:
@@ -294,13 +282,24 @@ def _load_all_hooks(specs: list[tuple[str, Spec]]) -> dict[str, SessionHooks | N
     return None if failed else hooks
 
 
-def _parse_all(paths: list[str], *, report_valid: bool = False) -> list[tuple[str, Spec]] | None:
-    """Parse every spec, printing one line per invalid one. ``None`` if any is invalid."""
+def _parse_all(
+    paths: list[str], *, report_valid: bool = False, runs: int | None | bool = False
+) -> list[tuple[str, Spec]] | None:
+    """Parse every spec, printing one line per invalid one. ``None`` if any is invalid.
+
+    Unless ``runs`` is False, each test's min_pass is checked against its runs: with
+    ``runs`` (``--runs``) in place of the spec's defaults.runs when it is a number.
+    """
     specs: list[tuple[str, Spec]] = []
     invalid = False
     for path in paths:
         try:
             spec = parse_spec(path)
+            if runs is not False:
+                try:
+                    check_runs(spec, spec.default_runs if runs is None else int(runs))
+                except SpecError as e:
+                    raise SpecError(f"{path}: {e}") from None
         except SpecError as e:
             # The message already starts with the file's path.
             console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)

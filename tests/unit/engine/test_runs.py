@@ -109,18 +109,24 @@ class TestResolve:
 
 class TestPhrasingStatus:
     def test_passes_at_min_pass(self) -> None:
-        results = [_result(Status.PASSED)] * 3 + [_result(Status.FAILED)] * 2
+        statuses = [Status.PASSED] * 3 + [Status.FAILED] * 2
 
-        assert phrasing_status(results, 3) is Status.PASSED
-        assert phrasing_status(results, 4) is Status.FAILED
+        assert phrasing_status(statuses, 3) is Status.PASSED
+        assert phrasing_status(statuses, 4) is Status.FAILED
 
     def test_errored_run_counts_as_not_passed(self) -> None:
-        results = [_result(Status.PASSED)] * 3 + [_result(Status.ERROR)] * 2
+        statuses = [Status.PASSED] * 2 + [Status.ERROR] + [Status.FAILED] * 2
 
-        assert phrasing_status(results, 4) is Status.FAILED
+        assert phrasing_status(statuses, 4) is Status.FAILED
+
+    def test_i5_runs_that_could_not_be_checked_are_no_evidence_of_failure(self) -> None:
+        """3 passed, 2 timed out, min 4: nothing shows the agent did wrong (D2)."""
+        statuses = [Status.PASSED] * 3 + [Status.ERROR] * 2
+
+        assert phrasing_status(statuses, 4) is Status.ERROR
 
     def test_all_errored_runs_are_an_error_not_a_failure(self) -> None:
-        assert phrasing_status([_result(Status.ERROR)] * 3, 2) is Status.ERROR
+        assert phrasing_status([Status.ERROR] * 3, 2) is Status.ERROR
 
 
 class TestRunnerRuns:
@@ -275,7 +281,33 @@ class TestSpec:
         with pytest.raises(SpecError, match=message):
             parse_spec(path)
 
-    def test_min_pass_above_runs_is_a_spec_error(self, tmp_path: Path) -> None:
+    def test_i3_cli_runs_lifts_an_integer_min_pass(self, tmp_path: Path) -> None:
+        """A spec written for CI: min_pass 3, no runs, run with --runs 5."""
+        (tmp_path / "spec.highbar.yaml").write_text(
+            f"""\
+agent:
+  start: "{sys.executable} -c \\"import sys; sys.exit(1)\\""
+  endpoint: "http://127.0.0.1:9/chat"
+suites:
+  - name: S
+    tests:
+      - {{trigger: "a", expect: {{function_calls: []}}, min_pass: 3}}
+""",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "highbar.cli.main", "run", "spec.highbar.yaml", "--runs", "5"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        assert "min_pass" not in result.stdout
+        assert "could not start the agent" in result.stdout
+
+    def test_min_pass_above_runs_fails_validation(self, tmp_path: Path) -> None:
         path = _spec(
             tmp_path,
             """\
@@ -287,8 +319,16 @@ class TestSpec:
             """,
         )
 
-        with pytest.raises(SpecError, match=r"min_pass 4 is more than its 3 runs"):
-            parse_spec(path)
+        parse_spec(path)  # --runs could still make it possible
+        result = subprocess.run(
+            [sys.executable, "-m", "highbar.cli.main", "validate", path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "min_pass 4 is more than its 3 runs" in result.stdout
 
     def test_min_pass_above_cli_runs_exits_2_before_any_agent(self, tmp_path: Path) -> None:
         marker = tmp_path / "STARTED"
@@ -317,3 +357,81 @@ suites:
         assert result.returncode == 2, result.stdout + result.stderr
         assert "min_pass 4 is more than its 3 runs" in result.stdout
         assert not marker.exists()
+
+
+def _late_delete(on_runs: set[int]):
+    """Every run calls lookup; the runs in `on_runs` (1-based) also delete, late."""
+    count = 0
+
+    def script(message: str, test_id: str) -> Window | tuple[Window, Window]:
+        nonlocal count
+        count += 1
+        lookup = Trace(fn="lookup", args={}, result=None, started_at=1.0, ended_at=1.1,
+                       context={"test": test_id})  # fmt: skip
+        now = Window(tools=[lookup], turns=[TurnRecord(ts=1.0, context={"test": test_id})])
+        if count not in on_runs:
+            return now
+        delete = Trace(fn="delete_account", args={}, result=None, started_at=2.0,
+                       ended_at=2.1, context={"test": test_id})  # fmt: skip
+        return now, Window(tools=[delete])
+
+    return script
+
+
+NEVER_DELETES = Expect(
+    function_calls=[FunctionCallExpect(name="lookup")], forbid=("delete_account",)
+)
+
+
+class TestLateCallsAndMinPass:
+    """PR 6 review, I1: a late call fails its own run; the test is judged again."""
+
+    def test_late_call_fails_its_run_and_min_pass_still_holds(self) -> None:
+        ((name, result),), reporter = _run(
+            [Case(trigger="where is my order", expect=NEVER_DELETES, runs=5, min_pass=4)],
+            FakeAgent(_late_delete({1})),
+        )
+
+        assert result.status is Status.PASSED
+        assert result.counts == (4, 5, 4)
+        assert any("delete_account" in e and "(run 1 of 5)" in e for e in result.errors)
+        assert reporter.on_run_end.call_args[0][0].passed == 1
+
+    def test_late_call_that_breaks_min_pass_fails_the_test(self) -> None:
+        ((_, result),), _ = _run(
+            [Case(trigger="a", expect=NEVER_DELETES, runs=5, min_pass=5)],
+            FakeAgent(_late_delete({1})),
+        )
+
+        assert result.status is Status.FAILED
+        assert result.counts == (4, 5, 5)
+
+    def test_late_call_on_a_reported_test_that_still_passes_is_a_warning(self) -> None:
+        """The last run's late call lands while the next test runs."""
+        results, reporter = _run(
+            [
+                Case(trigger="first", expect=NEVER_DELETES, runs=3, min_pass=2),
+                Case(trigger="second", expect=CALLS_LOOKUP),
+            ],
+            FakeAgent(_late_delete({3})),
+        )
+
+        summary = reporter.on_run_end.call_args[0][0]
+        assert (summary.passed, summary.failed) == (2, 0)
+        (warning,) = [c.args[0] for c in reporter.on_warning.call_args_list]
+        assert warning.startswith("first: a run now fails (2/3, min 2), and the test still passes")
+        assert "delete_account" in warning
+
+    def test_late_call_on_a_reported_test_below_min_pass_recounts_it(self) -> None:
+        _, reporter = _run(
+            [
+                Case(trigger="first", expect=NEVER_DELETES, runs=3, min_pass=3),
+                Case(trigger="second", expect=CALLS_LOOKUP),
+            ],
+            FakeAgent(_late_delete({3})),
+        )
+
+        summary = reporter.on_run_end.call_args[0][0]
+        assert (summary.passed, summary.failed) == (1, 1)
+        (warning,) = [c.args[0] for c in reporter.on_warning.call_args_list]
+        assert "now fails (2/3, min 3)" in warning

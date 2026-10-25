@@ -8,9 +8,10 @@ into a gate.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from fractions import Fraction
 
-from highbar.domain.models import Spec, Status, Test, TestResult
+from highbar.domain.models import Spec, Status, Test
 from highbar.engine.schema import SpecError
 
 
@@ -40,13 +41,17 @@ def check_runs(spec: Spec, default_runs: int) -> None:
                 )
 
 
-def phrasing_status(results: list[TestResult], min_pass: int) -> Status:
-    """Passed when enough runs passed; an error, not a failure, when every run was one.
+def phrasing_status(statuses: Sequence[Status], min_pass: int) -> Status:
+    """Passed when enough runs passed; failed only when the failures alone prevent it.
 
-    A run with an error counts as not passed: it is not evidence the agent works.
+    A run with an error counts as not passed: it is not evidence the agent works. Nor
+    is it evidence it does wrong (D2): when the runs that could not be checked could
+    have reached the minimum, the phrasing is unverified, not failed.
     """
-    if sum(1 for r in results if r.passed) >= min_pass:
+    passed = sum(1 for status in statuses if status is Status.PASSED)
+    errored = sum(1 for status in statuses if status is Status.ERROR)
+    if passed >= min_pass:
         return Status.PASSED
-    if all(r.status is Status.ERROR for r in results):
+    if passed + errored >= min_pass:
         return Status.ERROR
     return Status.FAILED

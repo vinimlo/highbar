@@ -10,6 +10,7 @@ from highbar.domain.models import RunSummary
 from highbar.engine.parser import parse_spec
 from highbar.engine.run_spec import load_session_hooks, run_spec
 from highbar.engine.runs import check_runs
+from highbar.engine.schema import SpecError
 from highbar.variations.cache import VariationCache, find_cache_path
 from highbar.variations.generator import VariationGenerator
 
@@ -32,10 +33,12 @@ def run(
     """
     path = os.fspath(spec)
     parsed = parse_spec(path)
-    if runs is not None:
-        if runs < 1:
-            raise ValueError("runs must be at least 1")
-        check_runs(parsed, runs)
+    if runs is not None and (isinstance(runs, bool) or not isinstance(runs, int) or runs < 1):
+        raise ValueError(f"runs must be a whole number of at least 1, got {runs!r}")
+    try:
+        check_runs(parsed, parsed.default_runs if runs is None else runs)
+    except SpecError as e:
+        raise SpecError(f"{path}: {e}") from None
     generator = VariationGenerator(VariationCache(find_cache_path()), frozen=frozen)
     return run_spec(
         path,

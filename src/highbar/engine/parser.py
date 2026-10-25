@@ -33,7 +33,6 @@ from highbar.domain.models import (
 )
 from highbar.engine import placeholders
 from highbar.engine.placeholders import check_placeholders, uses_placeholder
-from highbar.engine.runs import check_runs
 from highbar.engine.schema import SpecError, check_keys, require_type, user_keys
 from highbar.engine.secrets import redact
 
@@ -126,9 +125,9 @@ def _parse_spec(raw: Any) -> Spec:
                         f"writes: suites[{i}].tests[{j}] checks function_calls"
                     )
 
-    spec = Spec(agent=agent, suites=suites, default_runs=default_runs)
-    check_runs(spec, default_runs)
-    return spec
+    # min_pass is checked against runs where the run's runs are known: --runs (or
+    # highbar.run(runs=...)) takes the place of defaults.runs.
+    return Spec(agent=agent, suites=suites, default_runs=default_runs)
 
 
 def _parse_runs(raw: Any, where: str) -> int:
@@ -471,7 +470,7 @@ def _parse_turn(raw: Any, where: str) -> Turn:
 
 
 def _asserts_something(expect: Expect) -> bool:
-    return expect.function_calls is not None or expect.response is not None
+    return expect.function_calls is not None or expect.response is not None or bool(expect.forbid)
 
 
 def _parse_variations(raw: Any, where: str) -> int:
