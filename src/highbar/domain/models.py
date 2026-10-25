@@ -83,6 +83,8 @@ class Window:
     tools: list[Trace] = field(default_factory=list)
     turns: list[TurnRecord] = field(default_factory=list)
     hellos: list[Hello] = field(default_factory=list)
+    # Where the next read starts: every record is read once, none falls between reads.
+    end: int = 0
 
 
 @dataclass(frozen=True)

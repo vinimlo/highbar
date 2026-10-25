@@ -26,7 +26,9 @@ from highbar.domain.models import Hello, Trace, TurnRecord, Window
 CONTRACT_VERSION = 1
 
 # Fields a v0 line has of its own; any other top-level field is correlation context.
-_V0_FIELDS = frozenset({"id", "seq", "fn", "args", "result", "started_at", "ended_at", "error"})
+_V0_FIELDS = frozenset(
+    {"v", "id", "seq", "fn", "args", "result", "started_at", "ended_at", "error"}
+)
 
 _BACKWARD_CHUNK = 64 * 1024
 
@@ -72,9 +74,10 @@ class FileTraceCollector:
         except FileNotFoundError:
             return Window()
 
-        window = Window()
+        complete = data[: data.rfind(b"\n") + 1]
+        window = Window(end=start + len(complete))
         offset = start
-        for raw in data[: data.rfind(b"\n") + 1].splitlines(keepends=True):
+        for raw in complete.splitlines(keepends=True):
             try:
                 _add(window, raw)
             except _BadLine as e:
@@ -113,10 +116,10 @@ def _add(window: Window, raw: bytes) -> None:
         raise _BadLine(f"not a JSON object, got {type(record).__name__}")
 
     version = record.get("v")
-    if version is None:
+    if version is None or (version == 0 and not isinstance(version, bool)):
         window.tools.append(_tool(record, context=_v0_context(record)))
         return
-    if isinstance(version, bool) or not isinstance(version, int):
+    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
         raise _BadLine(f"unknown trace format version {version!r}")
     if version > CONTRACT_VERSION:
         raise _BadLine(
@@ -157,13 +160,17 @@ def _tool(record: dict[str, Any], *, context: dict[str, Any]) -> Trace:
         raise _BadLine(f"'args' must be an object, got {type(args).__name__}")
     ts = _number(record, "ts", 0.0)
     error = record.get("error")
+    if not error:
+        error = None  # false, "" and null all say "no error"
+    elif not isinstance(error, str):
+        error = json.dumps(error, ensure_ascii=False)
     return Trace(
         fn=fn,
         args=args,
         result=record.get("result"),
         started_at=_number(record, "started_at", ts),
         ended_at=_number(record, "ended_at", ts),
-        error=None if error is None else str(error),
+        error=error,
         context=context,
     )
 

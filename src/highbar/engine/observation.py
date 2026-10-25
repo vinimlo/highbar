@@ -9,6 +9,7 @@ writes no traces": an old server on the port, or an agent whose SDK never starte
 from __future__ import annotations
 
 from collections.abc import Mapping
+from enum import Enum
 from typing import Any, NamedTuple
 
 from highbar.domain.models import Window
@@ -35,39 +36,56 @@ def same_value(a: Any, b: Any) -> bool:
     return isinstance(a, scalars) and isinstance(b, scalars) and str(a) == str(b)
 
 
-class Selection(NamedTuple):
-    """What ``select_records`` found in a window."""
-
-    window: Window  # the records that count for the test
-    has_context: bool  # some record in the window carried context
-    matched: bool  # some record matched the correlation: proof the test was seen
+class Attribution(Enum):
+    MINE = "mine"  # every correlation key present and equal
+    OTHER = "other"  # some key present with another value: another execution's
+    UNATTRIBUTED = "unattributed"  # no key with a value: nothing says whose it is
 
 
-def select_records(window: Window, correlate: Mapping[str, Any]) -> Selection:
-    """The records of ``window`` that count for the test.
+def attribute(context: Mapping[str, Any], correlate: Mapping[str, Any]) -> Attribution:
+    """Whose a record is, by its context. A key whose value is null counts as absent.
 
-    A record whose context names another test is left out: that is a late call of an
-    earlier test (A4). A record with no context is kept. It may well be this test's,
-    from a thread the agent started without copying the context, and dropping it would
-    let ``function_calls: []`` pass with the call made. When no record carries context
-    at all (the decorator without middleware), the whole window counts.
+    A record that agrees on some keys and lacks the others is unattributed, not
+    mine: a thread that kept ``conversation_id`` but lost ``test`` may be this
+    test's, or the one before it in the same conversation.
     """
-    has_context = any(t.context for t in window.tools) or any(t.context for t in window.turns)
-    if not has_context:
-        return Selection(window, has_context=False, matched=False)
+    present = {key: context[key] for key in correlate if context.get(key) is not None}
+    if not present:
+        return Attribution.UNATTRIBUTED
+    if any(not same_value(value, correlate[key]) for key, value in present.items()):
+        return Attribution.OTHER
+    return Attribution.MINE if len(present) == len(correlate) else Attribution.UNATTRIBUTED
 
-    def belongs(context: Mapping[str, Any]) -> bool:
-        return all(
-            key in context and same_value(context[key], value) for key, value in correlate.items()
-        )
 
-    tools = [t for t in window.tools if not t.context or belongs(t.context)]
-    turns = [t for t in window.turns if not t.context or belongs(t.context)]
-    matched = any(t.context and belongs(t.context) for t in [*window.tools, *window.turns])
-    return Selection(
-        Window(tools=tools, turns=turns, hellos=window.hellos),
-        has_context=True,
-        matched=matched,
+class Classified(NamedTuple):
+    """The records of a window, split by whose they are."""
+
+    mine: Window
+    other: Window
+    unattributed: Window
+
+    @property
+    def correlated(self) -> bool:
+        """Some record carries the correlation, so the window can be split by test.
+
+        When none does (the decorator without the middleware), the window is all
+        there is to go by, and every record in it counts for the test.
+        """
+        return any([self.mine.tools, self.mine.turns, self.other.tools, self.other.turns])
+
+
+def classify(window: Window, correlate: Mapping[str, Any]) -> Classified:
+    parts = {
+        Attribution.MINE: Window(hellos=window.hellos, end=window.end),
+        Attribution.OTHER: Window(),
+        Attribution.UNATTRIBUTED: Window(),
+    }
+    for tool in window.tools:
+        parts[attribute(tool.context, correlate)].tools.append(tool)
+    for turn in window.turns:
+        parts[attribute(turn.context, correlate)].turns.append(turn)
+    return Classified(
+        parts[Attribution.MINE], parts[Attribution.OTHER], parts[Attribution.UNATTRIBUTED]
     )
 
 

@@ -223,3 +223,45 @@ class TestOffsets:
         collector = _write(tmp_path / "t.jsonl", _line(_tool("after-restart")))
 
         assert [t.fn for t in collector.collect(since=10_000).tools] == ["after-restart"]
+
+
+class TestReviewFindings:
+    def test_explicit_v0_line_is_read_as_v0(self, tmp_path: Path) -> None:
+        """An emitter told "the format is v0" writes v: 0; dropping it hid its tools."""
+        collector = _write(tmp_path / "t.jsonl", _line({**V0_LINE, "v": 0}))
+
+        (trace,) = collector.collect(since=0).tools
+
+        assert trace.fn == "search_products"
+        assert trace.context == {"conversation_id": 42, "person_id": None}
+
+    def test_negative_version_is_an_error(self, tmp_path: Path) -> None:
+        collector = _write(tmp_path / "t.jsonl", _line({**_tool(), "v": -1}))
+
+        with pytest.raises(TraceFormatError, match="unknown trace format version -1"):
+            collector.collect(since=0)
+
+    @pytest.mark.parametrize("value", [False, "", None])
+    def test_falsy_error_means_no_error(self, tmp_path: Path, value: object) -> None:
+        collector = _write(tmp_path / "t.jsonl", _line(_tool(error=value)))
+
+        (trace,) = collector.collect(since=0).tools
+
+        assert trace.error is None
+
+    def test_non_text_error_is_kept_as_json(self, tmp_path: Path) -> None:
+        collector = _write(tmp_path / "t.jsonl", _line(_tool(error={"code": 500})))
+
+        (trace,) = collector.collect(since=0).tools
+
+        assert trace.error == '{"code": 500}'
+
+    def test_window_end_is_where_the_next_read_starts(self, tmp_path: Path) -> None:
+        path = tmp_path / "t.jsonl"
+        first = _line(_tool("first"))
+        collector = _write(path, first, '{"v": 1')
+
+        window = collector.collect(since=0)
+
+        assert window.end == len(first.encode())
+        assert collector.collect(since=window.end).tools == []
