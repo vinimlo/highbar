@@ -451,3 +451,79 @@ class TestReviewFindings:
             parse_spec(str(path))
 
         assert "\n" not in str(raised.value)
+
+
+class TestCallOptions:
+    """error, ordered, exclusive and forbid (A2, A3, A7)."""
+
+    def test_error_must_be_a_bool_or_a_matcher(self, tmp_path: Path) -> None:
+        for error, ok in [("true", True), ("{contains: Timeout}", True), ('"Timeout"', False)]:
+            path = _spec(
+                tmp_path,
+                _one_test(f"""\
+                    - trigger: "hi"
+                      expect:
+                        function_calls: [{{name: get_order, error: {error}}}]
+                """),
+            )
+            if ok:
+                parse_spec(path)
+                continue
+            with pytest.raises(
+                SpecError, match=r"error must be true, false or a matcher.*contains"
+            ):
+                parse_spec(path)
+
+    @pytest.mark.parametrize("key", ["ordered", "exclusive"])
+    def test_ordered_and_exclusive_need_function_calls(self, tmp_path: Path, key: str) -> None:
+        path = _spec(
+            tmp_path,
+            _one_test(f"""\
+                - trigger: "hi"
+                  expect: {{{key}: true, response: {{contains: "ok"}}}}
+            """),
+        )
+
+        with pytest.raises(SpecError, match=f"{key} needs function_calls"):
+            parse_spec(path)
+
+    @pytest.mark.parametrize("key", ["ordered", "exclusive"])
+    def test_ordered_and_exclusive_are_booleans(self, tmp_path: Path, key: str) -> None:
+        path = _spec(
+            tmp_path,
+            _one_test(f"""\
+                - trigger: "hi"
+                  expect: {{function_calls: [{{name: a}}], {key}: "yes"}}
+            """),
+        )
+
+        with pytest.raises(SpecError, match=f"{key} must be true or false"):
+            parse_spec(path)
+
+    def test_forbid_alone_asserts_something_and_requires_observation(self, tmp_path: Path) -> None:
+        path = _spec(
+            tmp_path,
+            _one_test("""\
+                - trigger: "close my account"
+                  expect: {forbid: [delete_account]}
+            """),
+        )
+
+        (test,) = parse_spec(path).suites[0].tests
+
+        assert test.expect is not None
+        assert test.expect.forbid == ("delete_account",)
+        assert test.requires_observation
+
+    @pytest.mark.parametrize("value", ["[]", "delete_account", "[1]", '[""]'])
+    def test_forbid_is_a_non_empty_list_of_names(self, tmp_path: Path, value: str) -> None:
+        path = _spec(
+            tmp_path,
+            _one_test(f"""\
+                - trigger: "hi"
+                  expect: {{forbid: {value}}}
+            """),
+        )
+
+        with pytest.raises(SpecError, match="forbid must be a non-empty list of tool names"):
+            parse_spec(path)

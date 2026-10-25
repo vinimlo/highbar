@@ -163,6 +163,9 @@ class FunctionCallExpect:
     name: str | list[str]
     params: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
+    # False: the call must not have failed. True: it must have. A matcher: it must
+    # have failed with an error that matches (``{contains: "Timeout"}``).
+    error: bool | dict[str, Any] = False
 
     @property
     def accepted_names(self) -> list[str]:
@@ -187,15 +190,18 @@ class Expect:
 
     function_calls: list[FunctionCallExpect] | None = None
     response: ResponseExpect | None = None
+    ordered: bool = False  # the expected calls happen in this order
+    exclusive: bool = False  # no call beyond the expected ones
+    forbid: tuple[str, ...] = ()  # tools that must not be called, failed or not
 
     @property
     def requires_observation(self) -> bool:
         """Checks tool calls, so it needs proof the instrumented agent saw the message.
 
-        ``function_calls: []`` included: "no tool was called" means nothing unless the
-        message reached an agent that would have recorded one.
+        ``function_calls: []`` and ``forbid`` included: "no tool was called" means
+        nothing unless the message reached an agent that would have recorded one.
         """
-        return self.function_calls is not None
+        return self.function_calls is not None or bool(self.forbid)
 
 
 @dataclass(frozen=True)

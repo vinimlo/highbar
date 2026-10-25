@@ -39,8 +39,8 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "suite": frozenset({"name", "tests"}),
     "test": frozenset({"name", "trigger", "expect", "turns", "variations"}),
     "turn": frozenset({"name", "trigger", "expect"}),
-    "expect": frozenset({"function_calls", "response"}),
-    "function_call": frozenset({"name", "params", "result"}),
+    "expect": frozenset({"function_calls", "response", "ordered", "exclusive", "forbid"}),
+    "function_call": frozenset({"name", "params", "result", "error"}),
     "response": frozenset({"contains", "not_contains", "matches"}),
 }
 

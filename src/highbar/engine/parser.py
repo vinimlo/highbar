@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from highbar.assertions._match import validate_expected
+from highbar.assertions._match import MATCHER_KEYS, validate_expected
 from highbar.domain.models import (
     AgentConfig,
     CommandHook,
@@ -443,7 +443,7 @@ def _parse_expect(raw: Any, where: str) -> Expect:
     check_keys(raw, "expect", where)
     if not user_keys(raw):
         raise SpecError(
-            f"{where}: asserts nothing — use function_calls, response, or "
+            f"{where}: asserts nothing — use function_calls, response, forbid, or "
             "function_calls: [] to check that no tool is called"
         )
 
@@ -455,11 +455,31 @@ def _parse_expect(raw: Any, where: str) -> Expect:
             _parse_function_call(fc, f"{where}.function_calls[{n}]") for n, fc in enumerate(calls)
         ]
 
+    flags = {}
+    for key in ("ordered", "exclusive"):
+        if key not in raw:
+            continue
+        require_type(raw[key], bool, where, f"{key} must be true or false")
+        if function_calls is None:
+            raise SpecError(f"{where}: {key} needs function_calls (the calls it applies to)")
+        flags[key] = raw[key]
+
+    forbid: tuple[str, ...] = ()
+    if "forbid" in raw:
+        names = raw["forbid"]
+        if (
+            not isinstance(names, list)
+            or not names
+            or not all(isinstance(name, str) and name for name in names)
+        ):
+            raise SpecError(f"{where}: forbid must be a non-empty list of tool names")
+        forbid = tuple(names)
+
     response = None
     if "response" in raw:
         response = _parse_response(raw["response"], where)
 
-    return Expect(function_calls=function_calls, response=response)
+    return Expect(function_calls=function_calls, response=response, forbid=forbid, **flags)
 
 
 def _parse_response(raw: Any, where: str) -> ResponseExpect:
@@ -521,7 +541,24 @@ def _parse_function_call(raw: Any, where: str) -> FunctionCallExpect:
         name=_parse_call_name(raw["name"], where),
         params=raw.get("params"),
         result=raw.get("result"),
+        error=_parse_call_error(raw.get("error", False), where),
     )
+
+
+def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
+    """``true``, ``false``, or a matcher the error text must satisfy."""
+    if isinstance(raw, bool):
+        return raw
+    if not (isinstance(raw, dict) and raw and set(raw) <= MATCHER_KEYS):
+        raise SpecError(
+            f"{where}.error: error must be true, false or a matcher such as "
+            '{contains: "Timeout"}; a bare text would be ambiguous between equals and contains'
+        )
+    try:
+        validate_expected(raw, f"{where}.error")
+    except ValueError as e:
+        raise SpecError(str(e)) from None
+    return raw
 
 
 def _has_template(value: Any) -> bool:
