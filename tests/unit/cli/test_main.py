@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from highbar.cli.main import _discover_specs, app
+from highbar.cli.main import _agent_log_path, _discover_specs, app
 from highbar.domain.models import RunSummary
 
 runner = CliRunner()
@@ -161,6 +161,22 @@ class TestSpecErrors:
         lines = result.output.splitlines()
         assert any("✓" in line and "menu.highbar.yaml" in line for line in lines)
         assert any("✗" in line and "bad.highbar.yaml" in line for line in lines)
+
+
+class TestAgentLogPath:
+    def test_does_not_reuse_an_existing_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two specs named agent.highbar.yaml in one second shared a log, and a tail."""
+        monkeypatch.chdir(tmp_path)
+        first = _agent_log_path("specs/a/agent.highbar.yaml")
+        first.parent.mkdir(parents=True)
+        first.touch()
+
+        second = _agent_log_path("specs/b/agent.highbar.yaml")
+
+        assert second != first
+        assert second.name.startswith("agent-")
 
 
 class TestVariationsCommand:

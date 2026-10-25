@@ -71,21 +71,36 @@ class SubprocessAdapter:
                 "highbar starts."
             )
 
-        self._log_path.parent.mkdir(parents=True, exist_ok=True)
-        gitignore = self._log_path.parent / ".gitignore"
-        if not gitignore.exists():
-            gitignore.write_text("*\n")
+        try:
+            argv = shlex.split(self._start_cmd)
+        except ValueError as e:
+            raise AgentStartError(f"`start` is not a valid command line: {e}") from None
+
+        try:
+            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+            gitignore = self._log_path.parent / ".gitignore"
+            if not gitignore.exists():
+                gitignore.write_text("*\n")
+            log = open(self._log_path, "ab")  # noqa: SIM115 — closed right after Popen
+        except OSError as e:
+            raise AgentStartError(
+                f"cannot write the agent log at {self._log_path}: {e.strerror or e}"
+            ) from None
 
         env = {**os.environ, **(self._env or {})}
-        with open(self._log_path, "ab") as log:
-            self._process = subprocess.Popen(
-                shlex.split(self._start_cmd),
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                env=env,
-            )
+        with log:
+            try:
+                self._process = subprocess.Popen(
+                    argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    env=env,
+                )
+            except OSError as e:
+                # Most often a typo in `start`: the command does not exist.
+                raise AgentStartError(f"could not run '{argv[0]}': {e.strerror or e}") from None
 
         try:
             self._wait_until_ready(host, port)
@@ -105,11 +120,16 @@ class SubprocessAdapter:
         group = process.pid
         _signal_group(group, signal.SIGTERM)
         deadline = time.monotonic() + _STOP_GRACE
-        while time.monotonic() < deadline:
-            process.poll()  # reap the leader, or it counts as alive
-            if not _group_alive(group):
-                return
-            time.sleep(0.1)
+        try:
+            while time.monotonic() < deadline:
+                process.poll()  # reap the leader, or it counts as alive
+                if not _group_alive(group):
+                    return
+                time.sleep(0.1)
+        except BaseException:
+            # A second Ctrl-C while a slow agent shuts down: kill it now, not never.
+            _signal_group(group, signal.SIGKILL)
+            raise
         _signal_group(group, signal.SIGKILL)
         with contextlib.suppress(subprocess.TimeoutExpired):
             process.wait(timeout=2)
@@ -133,6 +153,11 @@ class SubprocessAdapter:
             if code is not None:
                 raise AgentStartError(self._exited_message(code))
             if self._ready(host, port):
+                # The check can take a while; if `start` exited meanwhile (it put the
+                # agent in the background), that is the same error as exiting before.
+                code = self._process.poll()
+                if code is not None:
+                    raise AgentStartError(self._exited_message(code))
                 return
             if time.monotonic() >= deadline:
                 waited_for = (

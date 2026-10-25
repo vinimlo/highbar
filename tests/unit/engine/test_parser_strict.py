@@ -148,6 +148,23 @@ class TestWrongTypes:
         with pytest.raises(SpecError, match=r"startup_timeout must be an integer \(milliseconds\)"):
             parse_spec(path)
 
+    @pytest.mark.parametrize(
+        ("endpoint", "problem"),
+        [
+            ("localhost:18733/chat", r"endpoint must be an http:// or https:// URL"),
+            ("http://localhost:99999/chat", r"endpoint has an invalid port"),
+        ],
+    )
+    def test_endpoint_must_be_an_http_url(
+        self, tmp_path: Path, endpoint: str, problem: str
+    ) -> None:
+        """Without a scheme the port was read as 80, and the run waited out the timeout."""
+        agent = AGENT.replace('"http://localhost:8000/chat"', f'"{endpoint}"')
+        path = _spec(tmp_path, _one_test(GUARDRAIL), agent)
+
+        with pytest.raises(SpecError, match=problem):
+            parse_spec(path)
+
 
 class TestNothingToCheck:
     def test_a1_test_without_expect_asserts_nothing(self, tmp_path: Path) -> None:

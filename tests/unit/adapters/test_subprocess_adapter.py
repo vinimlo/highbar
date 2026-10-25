@@ -198,3 +198,70 @@ class TestTail:
         )
 
         assert adapter.tail() == ""
+
+
+class TestReviewFindings:
+    """Paths the PR review found leaving an agent behind, or crashing instead of exit 2."""
+
+    def test_unknown_start_command_is_an_agent_start_error(self, make_adapter: MakeAdapter) -> None:
+        """A typo in `start` is the most common way an agent fails to come up."""
+        adapter, _ = make_adapter(start_cmd="definitely-not-a-highbar-command --port {port}")
+
+        with pytest.raises(
+            AgentStartError, match="could not run 'definitely-not-a-highbar-command'"
+        ):
+            adapter.start()
+
+    def test_unwritable_log_directory_is_an_agent_start_error(self, tmp_path: Path) -> None:
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o500)
+        try:
+            adapter = SubprocessAdapter(
+                start_cmd="true",
+                endpoint=f"http://127.0.0.1:{_free_port()}/chat",
+                log_path=locked / "logs" / "agent.log",
+            )
+            with pytest.raises(AgentStartError, match="cannot write the agent log"):
+                adapter.start()
+        finally:
+            locked.chmod(0o700)
+
+    def test_second_interrupt_during_stop_still_kills_the_group(
+        self, make_adapter: MakeAdapter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl-C again while a slow agent shuts down used to leave it on the port."""
+        adapter, port = make_adapter("--ignore-term")
+        adapter.start()
+
+        def interrupted(seconds: float) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("highbar.adapters.subprocess_adapter.time.sleep", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            adapter.stop()
+        monkeypatch.undo()
+
+        assert _wait_until(lambda: not accepts_connections("127.0.0.1", port), 3)
+
+    def test_start_that_backgrounds_the_agent_is_always_an_error(
+        self, make_adapter: MakeAdapter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """It passed or failed depending on whether the health check won the race.
+
+        The first check is made slow (as httpx's first request is), so `sh` has exited
+        and the backgrounded agent is up by the time the check answers.
+        """
+        ready = SubprocessAdapter._ready
+
+        def slow_ready(self: SubprocessAdapter, host: str, port: int) -> bool:
+            time.sleep(0.5)
+            return ready(self, host, port)
+
+        monkeypatch.setattr(SubprocessAdapter, "_ready", slow_ready)
+        adapter, port = make_adapter(start_cmd=f"sh -c '{PYTHON} {SERVER} --port {{port}} &'")
+
+        with pytest.raises(AgentStartError, match="attach"):
+            adapter.start()
+
+        assert _wait_until(lambda: not accepts_connections("127.0.0.1", port), 6)

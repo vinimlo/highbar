@@ -46,8 +46,12 @@ class _Project:
         self.tmp = root / "tmp"
         self.tmp.mkdir()
 
-    def spec(self, *server_args: str, expect: str = "function_calls: []") -> str:
-        start = " ".join([sys.executable, str(SERVER), "--port", str(self.port), *server_args])
+    def spec(
+        self, *server_args: str, expect: str = "function_calls: []", start: str | None = None
+    ) -> str:
+        start = start or " ".join(
+            [sys.executable, str(SERVER), "--port", str(self.port), *server_args]
+        )
         (self.root / "agent.highbar.yaml").write_text(
             f"""\
 agent:
@@ -164,5 +168,44 @@ def test_ctrl_c_stops_agent_and_cleans_up(project: _Project) -> None:
             cli.kill()
 
     assert cli.returncode == 130, output
+    assert _wait_until(lambda: not accepts_connections("127.0.0.1", project.port), 6)
+    assert project.leftover_traces() == []
+
+
+@pytest.mark.timeout(30)
+def test_typo_in_start_command_exits_2(project: _Project) -> None:
+    result = project.run(project.spec(start="definitely-not-a-highbar-command"))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "could not run" in result.stdout
+    assert "Traceback" not in result.stdout + result.stderr
+
+
+@pytest.mark.timeout(40)
+@pytest.mark.parametrize(("sig", "code"), [(signal.SIGTERM, 143), (signal.SIGHUP, 129)])
+def test_termination_signal_stops_agent_and_cleans_up(
+    project: _Project, sig: signal.Signals, code: int
+) -> None:
+    """`timeout`, a closed terminal or a cancelled CI job: the agent must not outlive the run."""
+    spec = project.spec("--slow-chat", "10")
+    cli = subprocess.Popen(
+        project.command(spec),
+        cwd=project.root,
+        env=project.env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        assert _wait_until(lambda: accepts_connections("127.0.0.1", project.port), 10)
+        time.sleep(0.5)
+
+        cli.send_signal(sig)
+        output, _ = cli.communicate(timeout=15)
+    finally:
+        if cli.poll() is None:
+            cli.kill()
+
+    assert cli.returncode == code, output
     assert _wait_until(lambda: not accepts_connections("127.0.0.1", project.port), 6)
     assert project.leftover_traces() == []

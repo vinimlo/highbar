@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import signal
 import tempfile
 import textwrap
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from types import FrameType
 
 import typer
 from rich.console import Console
@@ -121,8 +125,9 @@ def run(
     summaries: list[RunSummary] = []
     current = ""
     try:
-        for current, spec in specs:
-            summaries.append(_run_spec(current, spec, generator, keep_traces))
+        with _terminate_as_exit():
+            for current, spec in specs:
+                summaries.append(_run_spec(current, spec, generator, keep_traces))
     except AgentStartError as e:
         # The next specs are not run: an agent that cannot start is not a test result,
         # and a second agent on the same machine usually fails the same way.
@@ -337,9 +342,38 @@ def init() -> None:
 
 
 def _agent_log_path(spec_path: str) -> Path:
-    """``.highbar/logs/<spec stem>-<timestamp>.log``, relative to where highbar runs."""
+    """``.highbar/logs/<spec stem>-<timestamp>.log``, relative to where highbar runs.
+
+    Never an existing file: two specs with the same name in the same second would
+    share a log, and one's failure would show the other agent's output.
+    """
     stem = Path(spec_path).name.removesuffix(".yaml").removesuffix(".highbar")
-    return Path(".highbar") / "logs" / f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}.log"
+    base = Path(".highbar") / "logs" / f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}"
+    path, n = base.with_suffix(".log"), 1
+    while path.exists():
+        n += 1
+        path = base.parent / f"{base.name}-{n}.log"
+    return path
+
+
+@contextmanager
+def _terminate_as_exit() -> Iterator[None]:
+    """Turn SIGTERM and SIGHUP into SystemExit(128 + signal) while a run is going.
+
+    `timeout`, closing the terminal and cancelling a CI job send these. Uncaught, they
+    end the process without running a single `finally`: the agent (in its own process
+    group) would stay on the port and the trace file in the temp directory.
+    """
+
+    def exit_on(signum: int, frame: FrameType | None) -> None:
+        raise SystemExit(128 + signum)
+
+    previous = {sig: signal.signal(sig, exit_on) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def _discover_specs(spec_path: str) -> list[str]:

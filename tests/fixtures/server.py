@@ -8,12 +8,14 @@ Serves ``GET /health`` -> 200 and ``POST /chat`` -> ``{"response": "ok"}``.
     --delay S        wait S seconds before listening
     --exit-code N    print "boom-marker" and exit with N, without listening
     --slow-chat S    POST /chat takes S seconds to answer
+    --ignore-term    ignore SIGTERM (only SIGKILL stops it), like a server mid-request
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,7 +29,11 @@ def main() -> None:
     parser.add_argument("--delay", type=float, default=0.0)
     parser.add_argument("--exit-code", type=int, default=None)
     parser.add_argument("--slow-chat", type=float, default=0.0)
+    parser.add_argument("--ignore-term", action="store_true")
     args = parser.parse_args()
+
+    if args.ignore_term:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
     if args.exit_code is not None:
         print("boom-marker", flush=True)
