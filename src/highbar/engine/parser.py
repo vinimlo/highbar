@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -107,8 +108,12 @@ def _parse_agent(raw: Any) -> AgentConfig:
         if key not in raw:
             raise SpecError(f"{where}: missing '{key}'")
         require_type(raw[key], str, where, f"{key} must be a string")
+        if not raw[key].strip():
+            raise SpecError(f"{where}: {key} cannot be empty")
+    _check_url(raw["endpoint"], "endpoint")
     if raw.get("health") is not None:
         require_type(raw["health"], str, where, "health must be a string (a URL)")
+        _check_url(raw["health"], "health")
 
     return AgentConfig(
         start=raw["start"],
@@ -117,6 +122,17 @@ def _parse_agent(raw: Any) -> AgentConfig:
         startup_timeout=_milliseconds(raw, "startup_timeout", 15000, minimum=1),
         settle_time=_milliseconds(raw, "settle_time", 500, minimum=0),
     )
+
+
+def _check_url(url: str, key: str) -> None:
+    """An http(s) URL with a host. Without a scheme, `localhost:8000/chat` reads as port 80."""
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise SpecError(f"agent: {key} must be an http:// or https:// URL, got {url!r}")
+    try:
+        parts.port  # noqa: B018 — parsing the port is the check
+    except ValueError:
+        raise SpecError(f"agent: {key} has an invalid port: {url!r}") from None
 
 
 def _milliseconds(raw: dict[str, Any], key: str, default: int, minimum: int) -> int:

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import signal
 import tempfile
 import textwrap
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from types import FrameType
 
 import typer
 from rich.console import Console
@@ -13,7 +18,7 @@ from rich.markup import escape
 
 from highbar.adapters.file_collector import FileTraceCollector
 from highbar.adapters.http_client import HTTPClient
-from highbar.adapters.subprocess_adapter import SubprocessAdapter
+from highbar.adapters.subprocess_adapter import AgentStartError, SubprocessAdapter
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
 from highbar.domain.models import RunSummary, Spec
@@ -29,6 +34,7 @@ from highbar.variations.generator import VariationError, VariationGenerator
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_UNRUNNABLE = 2
+EXIT_INTERRUPTED = 130  # the shell's code for a run stopped by Ctrl-C (128 + SIGINT)
 
 app = typer.Typer(
     name="highbar",
@@ -84,6 +90,11 @@ def run(
             "If omitted, discovers all specs in specs/"
         ),
     ),
+    keep_traces: bool = typer.Option(
+        False,
+        "--keep-traces",
+        help="Keep each spec's trace file (JSONL of the tool calls seen) and print its path.",
+    ),
     frozen: bool = typer.Option(
         False,
         "--frozen",
@@ -112,35 +123,23 @@ def run(
     generator = VariationGenerator(VariationCache(find_cache_path()), frozen=frozen)
 
     summaries: list[RunSummary] = []
-    for path, spec in specs:
-        console.print(f"  Running {escape(path)}")
-
-        with tempfile.NamedTemporaryFile(
-            suffix=".jsonl", prefix="highbar-traces-", delete=False
-        ) as traces_fd:
-            traces_file = traces_fd.name
-
-        adapter = SubprocessAdapter(
-            start_cmd=spec.agent.start,
-            health_url=spec.agent.health,
-            startup_timeout=spec.agent.startup_timeout,
-            env={"HIGHBAR_TRACES_URL": traces_file},
+    current = ""
+    try:
+        with _terminate_as_exit():
+            for current, spec in specs:
+                summaries.append(_run_spec(current, spec, generator, keep_traces))
+    except AgentStartError as e:
+        # The next specs are not run: an agent that cannot start is not a test result,
+        # and a second agent on the same machine usually fails the same way.
+        console.print(
+            f"  [red]\u2717[/red] {escape(current)}: could not start the agent: {escape(str(e))}",
+            soft_wrap=True,
         )
-        client = HTTPClient(endpoint=spec.agent.endpoint)
-        collector = FileTraceCollector(traces_file)
-        reporter = TerminalReporter()
-
-        runner = TestRunner(
-            adapter=adapter,
-            client=client,
-            collector=collector,
-            assertions=[FunctionCallsAssertion(), ResponseAssertion()],
-            reporter=reporter,
-            settle_time=spec.agent.settle_time / 1000.0,
-            variations=generator,
-        )
-
-        summaries.append(runner.run(spec))
+        raise typer.Exit(EXIT_UNRUNNABLE) from None
+    except KeyboardInterrupt:
+        # The runner's finally has already stopped the agent's process group.
+        console.print("\n  Interrupted.")
+        raise typer.Exit(EXIT_INTERRUPTED) from None
 
     total = _total(summaries)
     if len(summaries) > 1:
@@ -148,6 +147,49 @@ def run(
 
     # An error is not a pass: a run where a test could not be checked is not green.
     raise typer.Exit(EXIT_FAILED if total.failed or total.errored else EXIT_OK)
+
+
+def _run_spec(
+    path: str, spec: Spec, generator: VariationGenerator, keep_traces: bool
+) -> RunSummary:
+    """Run one spec against its own agent; the trace file is removed unless kept."""
+    console.print(f"  Running {escape(path)}")
+
+    with tempfile.NamedTemporaryFile(
+        suffix=".jsonl", prefix="highbar-traces-", delete=False
+    ) as traces_fd:
+        traces_file = traces_fd.name
+
+    adapter = SubprocessAdapter(
+        start_cmd=spec.agent.start,
+        endpoint=spec.agent.endpoint,
+        log_path=_agent_log_path(path),
+        health_url=spec.agent.health,
+        startup_timeout=spec.agent.startup_timeout,
+        env={"HIGHBAR_TRACES_URL": traces_file},
+    )
+    runner = TestRunner(
+        adapter=adapter,
+        client=HTTPClient(endpoint=spec.agent.endpoint),
+        collector=FileTraceCollector(traces_file),
+        assertions=[FunctionCallsAssertion(), ResponseAssertion()],
+        reporter=TerminalReporter(),
+        settle_time=spec.agent.settle_time / 1000.0,
+        variations=generator,
+    )
+
+    try:
+        summary = runner.run(spec)
+    finally:
+        if keep_traces:
+            console.print(f"  Traces kept at {escape(traces_file)}")
+        else:
+            Path(traces_file).unlink(missing_ok=True)
+
+    if summary.failed or summary.errored:
+        # What the agent printed while failing is usually the explanation.
+        console.print(f"  Agent log: {escape(str(adapter.log_path))}\n", soft_wrap=True)
+    return summary
 
 
 @app.command()
@@ -297,6 +339,41 @@ def init() -> None:
         console.print(f"  [green]Created[/green] {example}")
 
     console.print("\n  Edit the spec and run: [bold]highbar run specs/example.highbar.yaml[/bold]")
+
+
+def _agent_log_path(spec_path: str) -> Path:
+    """``.highbar/logs/<spec stem>-<timestamp>.log``, relative to where highbar runs.
+
+    Never an existing file: two specs with the same name in the same second would
+    share a log, and one's failure would show the other agent's output.
+    """
+    stem = Path(spec_path).name.removesuffix(".yaml").removesuffix(".highbar")
+    base = Path(".highbar") / "logs" / f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}"
+    path, n = base.with_suffix(".log"), 1
+    while path.exists():
+        n += 1
+        path = base.parent / f"{base.name}-{n}.log"
+    return path
+
+
+@contextmanager
+def _terminate_as_exit() -> Iterator[None]:
+    """Turn SIGTERM and SIGHUP into SystemExit(128 + signal) while a run is going.
+
+    `timeout`, closing the terminal and cancelling a CI job send these. Uncaught, they
+    end the process without running a single `finally`: the agent (in its own process
+    group) would stay on the port and the trace file in the temp directory.
+    """
+
+    def exit_on(signum: int, frame: FrameType | None) -> None:
+        raise SystemExit(128 + signum)
+
+    previous = {sig: signal.signal(sig, exit_on) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def _discover_specs(spec_path: str) -> list[str]:
