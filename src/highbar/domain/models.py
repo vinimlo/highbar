@@ -37,20 +37,52 @@ def combine(statuses: Iterable[Status]) -> Status:
 
 @dataclass(frozen=True)
 class Trace:
-    """An atomic box capturing a single tool invocation."""
+    """One tool call, from a `tool` record of the trace contract.
 
-    id: str
-    seq: int
+    ``error`` is the only signal that the call failed: ``result`` is never inspected,
+    because a tool may legitimately return an object with an ``error`` key.
+    ``context`` holds the record's correlation fields (``test``, ``conversation_id``...).
+    """
+
     fn: str
     args: dict[str, Any]
     result: Any
     started_at: float
     ended_at: float
     error: str | None = None
+    context: dict[str, Any] = field(default_factory=dict)
 
     @property
     def duration_ms(self) -> float:
         return (self.ended_at - self.started_at) * 1000
+
+
+@dataclass(frozen=True)
+class TurnRecord:
+    """A `turn` record: the instrumented agent received and handled a message."""
+
+    ts: float
+    context: dict[str, Any] = field(default_factory=dict)
+    message: str | None = None
+    response: str | None = None
+
+
+@dataclass(frozen=True)
+class Hello:
+    """A `hello` record: an emitter started writing to the trace file."""
+
+    ts: float
+    sdk: str | None = None
+    pid: int | None = None
+
+
+@dataclass(frozen=True)
+class Window:
+    """The records written to the trace file between two points of a run."""
+
+    tools: list[Trace] = field(default_factory=list)
+    turns: list[TurnRecord] = field(default_factory=list)
+    hellos: list[Hello] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

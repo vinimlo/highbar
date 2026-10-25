@@ -11,6 +11,7 @@ from highbar.domain.models import (
     Suite,
     TestResult,
     Trace,
+    Window,
 )
 
 
@@ -47,8 +48,8 @@ class VariationGenerator(Protocol):
 
 
 class TraceCollector(Protocol):
-    """Reads captured trace boxes."""
+    """Reads the records an instrumented agent writes (the trace contract)."""
 
     def checkpoint(self) -> int: ...
 
-    def collect(self, since: int) -> list[Trace]: ...
+    def collect(self, since: int) -> Window: ...

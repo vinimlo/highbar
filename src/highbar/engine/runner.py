@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from highbar.adapters.file_collector import TraceFormatError
 from highbar.adapters.http_client import HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
 from highbar.assertions.response import truncate
@@ -205,7 +206,12 @@ class TestRunner:
             )
 
         time.sleep(self._settle_time)
-        traces = self._collector.collect(since=checkpoint)
+        try:
+            traces = self._collector.collect(since=checkpoint).tools
+        except TraceFormatError as e:
+            # A line that cannot be read may be the call this test is about.
+            duration = (time.time() - start) * 1000
+            return TestResult(status=Status.ERROR, errors=[str(e)], duration_ms=duration)
 
         errors: list[str] = []
         for assertion in self._assertions:
