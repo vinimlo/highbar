@@ -34,10 +34,10 @@ suites:
 
           - trigger: "Yes, order {{previous.function_calls[0].result.order_id}}, please refund it"
             expect:
+              # Templates are resolved in triggers only: the order id travels in the
+              # message above, and a "{{...}}" here would be compared as literal text.
               function_calls:
                 - name: initiate_refund
-                  params:
-                    order_id: "{{previous.function_calls[0].result.order_id}}"
               response:
                 contains: "refund"
 

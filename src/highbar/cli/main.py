@@ -16,9 +16,10 @@ from highbar.adapters.http_client import HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
-from highbar.domain.models import RunSummary
+from highbar.domain.models import RunSummary, Spec
 from highbar.engine.parser import parse_spec
 from highbar.engine.runner import TestRunner
+from highbar.engine.schema import SpecError
 from highbar.reporters.terminal import TerminalReporter, format_summary
 from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
 from highbar.variations.generator import VariationError, VariationGenerator
@@ -100,14 +101,19 @@ def run(
 
     console.print(f"\n  [bold]Highbar v{_version()}[/bold]")
 
+    # Every spec is parsed before any agent starts: a typo in the third file must not
+    # cost the time of running the first two, nor leave half a run behind.
+    specs = _parse_all(paths)
+    if specs is None:
+        raise typer.Exit(EXIT_UNRUNNABLE)
+
     # One cache for the whole run. It reads its file lazily, so specs that ask for no
     # variations never touch it.
     generator = VariationGenerator(VariationCache(find_cache_path()), frozen=frozen)
 
     summaries: list[RunSummary] = []
-    for path in paths:
+    for path, spec in specs:
         console.print(f"  Running {escape(path)}")
-        spec = parse_spec(path)
 
         with tempfile.NamedTemporaryFile(
             suffix=".jsonl", prefix="highbar-traces-", delete=False
@@ -169,8 +175,11 @@ def variations(
     reused = 0
     short = 0
 
-    for path in paths:
-        spec = parse_spec(path)
+    specs = _parse_all(paths)
+    if specs is None:
+        raise typer.Exit(EXIT_UNRUNNABLE)
+
+    for _, spec in specs:
         for suite in spec.suites:
             for test in suite.tests:
                 if not test.variations or not test.trigger:
@@ -222,19 +231,41 @@ def variations(
 
 @app.command()
 def validate(
-    spec_path: str = typer.Argument(help="Path to a .highbar.yaml spec file"),
+    spec_path: str = typer.Argument(
+        default="",
+        help="Spec file or directory to validate. If omitted, all specs in specs/",
+    ),
 ) -> None:
-    """Validate spec syntax without running tests."""
-    try:
-        spec = parse_spec(spec_path)
-        test_count = sum(len(s.tests) for s in spec.suites)
-        suite_count = len(spec.suites)
-        console.print(
-            f"  [green]\u2713[/green] Valid: {suite_count} suite(s), {test_count} test(s)"
-        )
-    except Exception as e:
-        console.print(f"  [red]\u2717[/red] Invalid: {e}")
-        raise typer.Exit(1) from e
+    """Validate specs without running tests."""
+    paths = _discover_specs(spec_path)
+    if not paths:
+        console.print("[red]No spec files found.[/red]")
+        raise typer.Exit(EXIT_UNRUNNABLE)
+
+    specs = _parse_all(paths, report_valid=True)
+    raise typer.Exit(EXIT_UNRUNNABLE if specs is None else EXIT_OK)
+
+
+def _parse_all(paths: list[str], *, report_valid: bool = False) -> list[tuple[str, Spec]] | None:
+    """Parse every spec, printing one line per invalid one. ``None`` if any is invalid."""
+    specs: list[tuple[str, Spec]] = []
+    invalid = False
+    for path in paths:
+        try:
+            spec = parse_spec(path)
+        except SpecError as e:
+            # The message already starts with the file's path.
+            console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)
+            invalid = True
+            continue
+        specs.append((path, spec))
+        if report_valid:
+            tests = sum(len(s.tests) for s in spec.suites)
+            console.print(
+                f"  [green]\u2713[/green] Valid: {escape(path)} "
+                f"({len(spec.suites)} suite(s), {tests} test(s))"
+            )
+    return None if invalid else specs
 
 
 @app.command()

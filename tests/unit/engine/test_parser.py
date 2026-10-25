@@ -187,7 +187,7 @@ class TestParseSpec:
         with pytest.raises(ValueError, match="endpoint"):
             parse_spec(str(spec_file))
 
-    def test_null_response_block(self, tmp_path: Path) -> None:
+    def test_null_response_block_asserts_nothing(self, tmp_path: Path) -> None:
         spec_file = tmp_path / "test.highbar.yaml"
         spec_file.write_text(
             textwrap.dedent("""\
@@ -203,10 +203,8 @@ class TestParseSpec:
         """)
         )
 
-        spec = parse_spec(str(spec_file))
-        test = spec.suites[0].tests[0]
-        assert test.expect is not None
-        assert test.expect.response is None
+        with pytest.raises(ValueError, match="response has no matcher"):
+            parse_spec(str(spec_file))
 
     def test_function_call_missing_name_raises(self, tmp_path: Path) -> None:
         spec_file = tmp_path / "test.highbar.yaml"
@@ -355,7 +353,7 @@ class TestVariations:
             """,
         )
 
-        with pytest.raises(ValueError, match="non-empty 'trigger'"):
+        with pytest.raises(ValueError, match="missing 'trigger'|trigger cannot be empty"):
             parse_spec(str(spec))
 
 

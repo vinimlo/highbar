@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import textwrap
 from pathlib import Path
 from unittest.mock import patch
@@ -107,6 +108,59 @@ class TestExitCodes:
 
         assert result.exit_code == 1, result.output
         assert "Total: 1 passed | 1 failed | 0.02s" in result.output
+
+
+class TestSpecErrors:
+    """A spec that cannot run is one line and exit code 2, before any agent starts."""
+
+    def test_run_missing_file_exits_2_without_traceback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["run", "nope.highbar.yaml"])
+
+        assert result.exit_code == 2, result.output
+        assert "no such file" in result.output
+        assert "Traceback" not in result.output
+
+    def test_run_invalid_spec_exits_2_before_starting_agent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        start = f"{sys.executable} -c \"open('MARKER', 'w')\""
+        (tmp_path / "bad.highbar.yaml").write_text(
+            textwrap.dedent(f"""\
+                agent:
+                  start: {json.dumps(start)}
+                  endpoint: "http://localhost:8000/chat"
+                  startup_timeout: 1000
+                suites:
+                  - name: S
+                    tests:
+                      - trigger: "hi"
+                        expect:
+                          responce: {{contains: "hello"}}
+                """),
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(app, ["run", "bad.highbar.yaml"])
+
+        assert result.exit_code == 2, result.output
+        assert "did you mean 'response'" in result.output
+        assert not (tmp_path / "MARKER").exists()
+
+    def test_validate_accepts_directory(self, project: Path) -> None:
+        bad = project / "specs" / "bad.highbar.yaml"
+        bad.write_text(textwrap.dedent(SPEC).replace("function_calls:", "function_call:"))
+
+        result = runner.invoke(app, ["validate", "specs/"])
+
+        assert result.exit_code == 2, result.output
+        lines = result.output.splitlines()
+        assert any("✓" in line and "menu.highbar.yaml" in line for line in lines)
+        assert any("✗" in line and "bad.highbar.yaml" in line for line in lines)
 
 
 class TestVariationsCommand:

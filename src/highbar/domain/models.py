@@ -111,6 +111,7 @@ class Turn:
 
     trigger: str
     expect: Expect
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,7 @@ class Test:
     expect: Expect | None = None
     turns: list[Turn] | None = None
     variations: int = 0
+    name: str | None = None
 
 
 @dataclass(frozen=True)
