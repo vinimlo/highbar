@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import textwrap
+import time
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -122,6 +123,8 @@ def run(
 
         adapter = SubprocessAdapter(
             start_cmd=spec.agent.start,
+            endpoint=spec.agent.endpoint,
+            log_path=_agent_log_path(path),
             health_url=spec.agent.health,
             startup_timeout=spec.agent.startup_timeout,
             env={"HIGHBAR_TRACES_URL": traces_file},
@@ -297,6 +300,12 @@ def init() -> None:
         console.print(f"  [green]Created[/green] {example}")
 
     console.print("\n  Edit the spec and run: [bold]highbar run specs/example.highbar.yaml[/bold]")
+
+
+def _agent_log_path(spec_path: str) -> Path:
+    """``.highbar/logs/<spec stem>-<timestamp>.log``, relative to where highbar runs."""
+    stem = Path(spec_path).name.removesuffix(".yaml").removesuffix(".highbar")
+    return Path(".highbar") / "logs" / f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}.log"
 
 
 def _discover_specs(spec_path: str) -> list[str]:
