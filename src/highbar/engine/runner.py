@@ -6,6 +6,7 @@ import time
 
 from highbar.adapters.http_client import HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
+from highbar.assertions.response import truncate
 from highbar.domain.models import (
     Expect,
     RunSummary,
@@ -28,12 +29,24 @@ def _test_name(test: Test, variations_run: int | None = None) -> str:
     produced 3 of the 5 requested, saying "5 variations" overstates what was tested.
     """
     if test.turns:
-        return f"multi-turn ({len(test.turns)} turns)"
+        return test.name or f"multi-turn ({len(test.turns)} turns)"
+    label = test.name or test.trigger or ""
     if test.variations:
         if variations_run is None or variations_run == test.variations:
-            return f"{test.trigger} ({test.variations} variations)"
-        return f"{test.trigger} ({variations_run} of {test.variations} variations)"
-    return test.trigger or ""
+            return f"{label} ({test.variations} variations)"
+        return f"{label} ({variations_run} of {test.variations} variations)"
+    return label
+
+
+def _turn_label(turn: Turn, previous_traces: list[Trace]) -> str:
+    """The turn's ``name``, or the message it sends, cut at 80 characters."""
+    if turn.name:
+        return turn.name
+    try:
+        trigger = resolve_template(turn.trigger, previous_traces)
+    except TemplateError:
+        trigger = turn.trigger
+    return truncate(trigger, 80)
 
 
 class TestRunner:
@@ -219,10 +232,12 @@ class TestRunner:
         all_errors: list[str] = []
         statuses: list[Status] = []
 
-        for turn in turns:
+        for number, turn in enumerate(turns, start=1):
+            # Which turn broke is the finding: "Expected X" alone does not say where.
+            prefix = f"turn {number}/{len(turns)} ({_turn_label(turn, all_traces)}): "
             result = self._run_single_turn(turn.trigger, turn.expect, start, all_traces)
             all_traces.extend(result.traces)
-            all_errors.extend(result.errors)
+            all_errors.extend(prefix + error for error in result.errors)
             statuses.append(result.status)
 
             if not result.passed:

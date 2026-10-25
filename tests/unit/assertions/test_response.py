@@ -1,6 +1,6 @@
 """Tests for response text assertion."""
 
-from highbar.assertions.response import ResponseAssertion
+from highbar.assertions.response import ResponseAssertion, truncate
 from highbar.domain.models import Expect, ResponseExpect
 
 
@@ -62,3 +62,30 @@ class TestResponseAssertion:
         )
         results = self.assertion.evaluate([], "cannot share, card number is 4123", expect)
         assert any(not r.passed for r in results)
+
+
+class TestFailureShowsTheResponse:
+    """A failed response check says what the agent actually answered."""
+
+    def setup_method(self) -> None:
+        self.assertion = ResponseAssertion()
+
+    def test_r1_failure_shows_actual_response(self) -> None:
+        expect = Expect(response=ResponseExpect(contains="hello"))
+
+        (result,) = self.assertion.evaluate([], "Hello! How can I help?", expect)
+
+        assert "Got: 'Hello! How can I help?'" in result.message
+
+    def test_r1_long_response_is_truncated(self) -> None:
+        expect = Expect(response=ResponseExpect(contains="hello"))
+
+        (result,) = self.assertion.evaluate([], "x" * 1000, expect)
+
+        assert "\u2026" in result.message
+        assert "x" * 300 in result.message
+        assert "x" * 301 not in result.message
+
+    def test_truncate_marks_only_what_it_cut(self) -> None:
+        assert truncate("abc", 2) == "ab\u2026"
+        assert truncate("ab", 2) == "ab"

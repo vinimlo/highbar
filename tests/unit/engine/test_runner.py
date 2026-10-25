@@ -262,6 +262,63 @@ class TestTestRunner:
         # The unresolvable message is never sent: turn 1 and the second test only.
         assert client.send.call_count == 2
 
+    def test_r2_multi_turn_failure_names_the_turn(self) -> None:
+        found = Trace(
+            id="t1", seq=1, fn="find_order", args={}, result={"id": 7}, started_at=1.0, ended_at=1.1
+        )
+        runner, _, client, _, reporter = _make_runner(traces=[found])
+        client.send.side_effect = lambda trigger: trigger
+        assertion = MagicMock()
+        assertion.evaluate.side_effect = lambda traces, response, expect: [
+            AssertionResult(passed=response != "refund order 7", message="Expected X")
+        ]
+        runner._assertions = [assertion]
+        test = Test(
+            turns=[
+                Turn(trigger="find my order", expect=Expect()),
+                Turn(
+                    trigger="refund order {{previous.function_calls[0].result.id}}", expect=Expect()
+                ),
+                Turn(trigger="thanks", expect=Expect()),
+            ]
+        )
+
+        runner.run(_make_spec([test]))
+
+        _, result = reporter.on_test_result.call_args[0]
+        assert result.errors[0].startswith("turn 2/3 (refund order 7): ")
+
+    def test_r2_turn_name_labels_the_failure(self) -> None:
+        runner, _, _, _, reporter = _make_runner(
+            assertion_results=[AssertionResult(passed=False, message="Expected X")]
+        )
+        test = Test(turns=[Turn(trigger="x" * 200, expect=Expect(), name="greeting")])
+
+        runner.run(_make_spec([test]))
+
+        _, result = reporter.on_test_result.call_args[0]
+        assert result.errors[0] == "turn 1/1 (greeting): Expected X"
+
+    def test_r2_long_trigger_label_is_cut_at_80(self) -> None:
+        runner, _, _, _, reporter = _make_runner(
+            assertion_results=[AssertionResult(passed=False, message="Expected X")]
+        )
+        test = Test(turns=[Turn(trigger="y" * 200, expect=Expect())])
+
+        runner.run(_make_spec([test]))
+
+        _, result = reporter.on_test_result.call_args[0]
+        assert result.errors[0] == f"turn 1/1 ({'y' * 80}\u2026): Expected X"
+
+    def test_r2_test_name_is_used_in_report(self) -> None:
+        runner, _, _, _, reporter = _make_runner()
+        spec = _make_spec([Test(name="cancel order", trigger="cancel it", expect=Expect())])
+
+        runner.run(spec)
+
+        name, _ = reporter.on_test_result.call_args[0]
+        assert name == "cancel order"
+
     def test_reporter_methods_called(self) -> None:
         runner, _, _, _, reporter = _make_runner()
         spec = _make_spec([Test(trigger="hello", expect=Expect())])
