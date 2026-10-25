@@ -46,7 +46,7 @@ class _Client:
         self._collector = collector
         self.sent: list[str] = []
 
-    def send(self, trigger: str, *, test_id: str) -> str:
+    def send(self, trigger: str, *, values: object) -> str:
         self.sent.append(trigger)
         self._collector.last_trigger = trigger
         return "ok"

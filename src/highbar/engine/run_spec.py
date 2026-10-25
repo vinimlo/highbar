@@ -46,7 +46,12 @@ def run_spec(
     )
     runner = TestRunner(
         adapter=adapter,
-        client=HTTPClient(endpoint=spec.agent.endpoint),
+        client=HTTPClient(
+            spec.agent.endpoint,
+            request=spec.agent.request,
+            response_path=spec.agent.response,
+            timeout_ms=spec.agent.timeout,
+        ),
         collector=FileTraceCollector(traces_file),
         assertions=[FunctionCallsAssertion(), ResponseAssertion()],
         reporter=TerminalReporter(),

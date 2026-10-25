@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from highbar.adapters.file_collector import TraceFormatError
-from highbar.adapters.http_client import HTTPClient
+from highbar.adapters.http_client import AgentResponseError, HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
 from highbar.assertions.response import truncate
 from highbar.domain.models import (
@@ -32,6 +32,7 @@ from highbar.engine.observation import (
     classify,
     describe,
 )
+from highbar.engine.placeholders import PlaceholderError, Values
 from highbar.engine.templates import TemplateError, resolve_template
 
 NO_CONTEXT_WARNING = (
@@ -97,6 +98,11 @@ def _test_name(test: Test, variations_run: int | None = None) -> str:
             return f"{label} ({test.variations} variations)"
         return f"{label} ({variations_run} of {test.variations} variations)"
     return label
+
+
+def _plain_name(test: Test) -> str:
+    """The test's name for {{test.name}} and session hooks: no counts, no decoration."""
+    return test.name or test.trigger or f"multi-turn ({len(test.turns or [])} turns)"
 
 
 def _turn_label(turn: Turn, previous_traces: list[Trace]) -> str:
@@ -329,21 +335,24 @@ class TestRunner:
         """Run a single test (single-turn, multi-turn, or a trigger plus its variations)."""
         start = time.time()
 
+        name = _plain_name(test)
         if test.turns:
-            return self._execute(test.turns, start, labelled=True)
+            return self._execute(test.turns, start, labelled=True, name=name)
 
         if test.trigger is None or test.expect is None:
             raise ValueError("Single-turn test must have both 'trigger' and 'expect'")
 
         if test.variations:
-            return self._run_with_variations(test.trigger, test.expect, test.variations, start)
+            return self._run_with_variations(
+                test.trigger, test.expect, test.variations, start, name
+            )
 
         return self._execute(
-            [Turn(trigger=test.trigger, expect=test.expect)], start, labelled=False
+            [Turn(trigger=test.trigger, expect=test.expect)], start, labelled=False, name=name
         )
 
     def _run_with_variations(
-        self, trigger: str, expect: Expect, count: int, start: float
+        self, trigger: str, expect: Expect, count: int, start: float, name: str
     ) -> TestResult:
         """Run the trigger and N paraphrases of it through the same assertions.
 
@@ -391,7 +400,11 @@ class TestRunner:
             label = f'[{kind}: "{phrasing}"] '
             # Each phrasing is its own execution, with its own test id.
             result = self._execute(
-                [Turn(trigger=phrasing, expect=expect)], time.time(), labelled=False, label=label
+                [Turn(trigger=phrasing, expect=expect)],
+                time.time(),
+                labelled=False,
+                name=name,
+                label=label,
             )
             traces.extend(result.traces)
             statuses.append(result.status)
@@ -409,7 +422,7 @@ class TestRunner:
         )
 
     def _execute(
-        self, turns: list[Turn], start: float, *, labelled: bool, label: str = ""
+        self, turns: list[Turn], start: float, *, labelled: bool, name: str, label: str = ""
     ) -> TestResult:
         """One execution of a test: one test id, shared by all its turns.
 
@@ -417,8 +430,8 @@ class TestRunner:
         state, so running them would test a conversation that did not happen.
         ``labelled`` prefixes each error with the turn it came from (multi-turn tests).
         """
-        test_id = uuid.uuid4().hex
-        execution = _Execution(self._test_index, label, correlate={"test": test_id})
+        values = Values(message=None, test_id=uuid.uuid4().hex, test_name=name, session={})
+        execution = _Execution(self._test_index, label, correlate={"test": values.test_id})
         self._executions.append(execution)
         all_traces: list[Trace] = []
         all_errors: list[str] = []
@@ -431,7 +444,7 @@ class TestRunner:
                 if labelled
                 else ""
             )
-            result = self._run_turn(turn.trigger, turn.expect, start, all_traces, execution)
+            result = self._run_turn(turn.trigger, turn.expect, start, all_traces, values, execution)
             all_traces.extend(result.traces)
             all_errors.extend(prefix + error for error in result.errors)
             statuses.append(result.status)
@@ -453,10 +466,10 @@ class TestRunner:
         expect: Expect,
         start: float,
         previous_traces: list[Trace],
+        values: Values,
         execution: _Execution,
     ) -> TestResult:
         """Send one message, read what the agent recorded for it, and check it."""
-        test_id = execution.correlate["test"]
         execution.passed = False
 
         def unverified(error: str) -> TestResult:
@@ -471,7 +484,13 @@ class TestRunner:
             return unverified(str(e))
 
         try:
-            response = self._client.send(resolved_trigger, test_id=test_id)
+            response = self._client.send(
+                resolved_trigger, values=replace(values, message=resolved_trigger)
+            )
+        except AgentResponseError as e:
+            return unverified(str(e))
+        except PlaceholderError as e:
+            return unverified(f"agent.request: {e}")
         except Exception as e:
             # The message never reached the agent, so its behavior was not checked.
             return unverified(f"HTTP error: {e}")

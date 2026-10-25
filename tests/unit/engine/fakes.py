@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from highbar.domain.models import Hello, TurnRecord, Window
+from highbar.engine.placeholders import Values
 
 Script = Callable[[str, str], "Window | tuple[Window, Window]"]
 
@@ -28,6 +29,7 @@ class FakeAgent:
         self._late: list[Window] = []
         self._sent_since_read = False
         self.sent: list[tuple[str, str]] = []
+        self.values: list[Values] = []
         self.path = Path("/tmp/fake-traces.jsonl")
 
     @property
@@ -35,10 +37,11 @@ class FakeAgent:
         return [test_id for _, test_id in self.sent]
 
     # The HTTP client side.
-    def send(self, message: str, *, test_id: str) -> str:
+    def send(self, message: str, *, values: Values) -> str:
         self._arrive_late()
-        self.sent.append((message, test_id))
-        written = self._script(message, test_id)
+        self.sent.append((message, values.test_id))
+        self.values.append(values)
+        written = self._script(message, values.test_id)
         now, late = written if isinstance(written, tuple) else (written, None)
         self._log.append(now)
         if late is not None:
