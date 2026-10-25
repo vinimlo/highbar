@@ -11,8 +11,9 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from highbar.cli.main import _agent_log_path, _discover_specs, app
+from highbar.cli.main import _discover_specs, app
 from highbar.domain.models import RunSummary
+from highbar.engine.run_spec import agent_log_path
 
 runner = CliRunner()
 
@@ -85,14 +86,14 @@ class TestExitCodes:
         assert result.exit_code == 2, result.output
 
     def test_errored_test_exits_1(self, project: Path) -> None:
-        with patch("highbar.cli.main.TestRunner") as fake:
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
             fake.return_value.run.return_value = _summary(errored=1)
             result = runner.invoke(app, ["run", "specs/"])
 
         assert result.exit_code == 1, result.output
 
     def test_all_passed_exits_0(self, project: Path) -> None:
-        with patch("highbar.cli.main.TestRunner") as fake:
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
             fake.return_value.run.return_value = _summary(passed=1)
             result = runner.invoke(app, ["run", "specs/"])
 
@@ -102,7 +103,7 @@ class TestExitCodes:
         second = project / "specs" / "menu" / "other.highbar.yaml"
         second.write_text(textwrap.dedent(SPEC), encoding="utf-8")
 
-        with patch("highbar.cli.main.TestRunner") as fake:
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
             fake.return_value.run.side_effect = [_summary(passed=1), _summary(failed=1)]
             result = runner.invoke(app, ["run", "specs/"])
 
@@ -169,11 +170,11 @@ class TestAgentLogPath:
     ) -> None:
         """Two specs named agent.highbar.yaml in one second shared a log, and a tail."""
         monkeypatch.chdir(tmp_path)
-        first = _agent_log_path("specs/a/agent.highbar.yaml")
+        first = agent_log_path("specs/a/agent.highbar.yaml")
         first.parent.mkdir(parents=True)
         first.touch()
 
-        second = _agent_log_path("specs/b/agent.highbar.yaml")
+        second = agent_log_path("specs/b/agent.highbar.yaml")
 
         assert second != first
         assert second.name.startswith("agent-")
