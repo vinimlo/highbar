@@ -1,4 +1,4 @@
-"""YAML spec parser — converts .gauntlet.yaml files to domain models."""
+"""YAML spec parser — converts .highbar.yaml files to domain models."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from typing import Any
 
 import yaml
 
-from gauntlet.assertions._match import validate_expected
-from gauntlet.domain.models import (
+from highbar.assertions._match import validate_expected
+from highbar.domain.models import (
     AgentConfig,
     Expect,
     FunctionCallExpect,
@@ -20,7 +20,7 @@ from gauntlet.domain.models import (
 
 
 def parse_spec(path: str) -> Spec:
-    """Parse a .gauntlet.yaml file into a Spec model."""
+    """Parse a .highbar.yaml file into a Spec model."""
     with open(path) as f:
         raw = yaml.safe_load(f)
 
@@ -71,7 +71,7 @@ def _parse_test(raw: dict[str, Any]) -> Test:
     expect = _parse_expect(raw.get("expect", {}))
     variations = _parse_variations(raw.get("variations"))
     if variations and not (isinstance(trigger, str) and trigger.strip()):
-        # Nothing to paraphrase: `gauntlet variations` would skip it and the run would
+        # Nothing to paraphrase: `highbar variations` would skip it and the run would
         # then miss the cache for an empty sentence.
         msg = "A test with 'variations' must have a non-empty 'trigger'"
         raise ValueError(msg)
@@ -116,7 +116,7 @@ def _parse_expect(raw: dict[str, Any]) -> Expect:
 
 
 def _parse_function_call(raw: dict[str, Any]) -> FunctionCallExpect:
-    # A malformed matcher must fail at `gauntlet validate`, not in the middle of a run.
+    # A malformed matcher must fail at `highbar validate`, not in the middle of a run.
     validate_expected(raw.get("params"), "params")
     validate_expected(raw.get("result"), "result")
     if "name" not in raw:
@@ -133,7 +133,7 @@ def _parse_call_name(raw: Any) -> str | list[str]:
     """Accept a tool name, or a list of tools of which any one satisfies the expectation.
 
     Validated here rather than left to the assertion: a spec that says
-    ``name: [a, 3]`` or ``name: ""`` should fail loudly at `gauntlet validate`, not
+    ``name: [a, 3]`` or ``name: ""`` should fail loudly at `highbar validate`, not
     silently never match at run time.
     """
     if isinstance(raw, str):

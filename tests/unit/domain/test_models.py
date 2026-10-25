@@ -1,6 +1,6 @@
 """Tests for domain model construction and defaults."""
 
-from gauntlet.domain.models import (
+from highbar.domain.models import (
     AgentConfig,
     AssertionResult,
     Expect,

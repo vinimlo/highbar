@@ -1,6 +1,6 @@
 # Domain Models
 
-All domain models are frozen dataclasses defined in `gauntlet.domain.models`. Frozen dataclasses are immutable after creation, which prevents accidental mutation during test execution.
+All domain models are frozen dataclasses defined in `highbar.domain.models`. Frozen dataclasses are immutable after creation, which prevents accidental mutation during test execution.
 
 ---
 

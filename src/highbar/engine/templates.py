@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from gauntlet.domain.models import Trace
+from highbar.domain.models import Trace
 
 _TEMPLATE_PATTERN = re.compile(r"\{\{previous\.(.+?)\}\}")
 

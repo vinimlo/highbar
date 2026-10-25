@@ -1,8 +1,8 @@
 # Extension Protocols
 
-Gauntlet uses Python `Protocol` classes (structural subtyping) for its extension points. Any class that implements the required methods is compatible -- no inheritance or registration needed.
+Highbar uses Python `Protocol` classes (structural subtyping) for its extension points. Any class that implements the required methods is compatible -- no inheritance or registration needed.
 
-All protocols are defined in `gauntlet.domain.protocols`.
+All protocols are defined in `highbar.domain.protocols`.
 
 ---
 
@@ -30,8 +30,8 @@ class Assertion(Protocol):
 
 | Class | Module | Description |
 |-------|--------|-------------|
-| `FunctionCallsAssertion` | `gauntlet.assertions.function_calls` | Validates tool invocations: name, params (subset match), result (subset match), and empty-list guardrails |
-| `ResponseAssertion` | `gauntlet.assertions.response` | Validates response text: `contains`, `not_contains`, `matches` (regex) |
+| `FunctionCallsAssertion` | `highbar.assertions.function_calls` | Validates tool invocations: name, params (subset match), result (subset match), and empty-list guardrails |
+| `ResponseAssertion` | `highbar.assertions.response` | Validates response text: `contains`, `not_contains`, `matches` (regex) |
 
 ---
 
@@ -77,7 +77,7 @@ Called after all suites have completed.
 
 | Class | Module | Description |
 |-------|--------|-------------|
-| `TerminalReporter` | `gauntlet.reporters.terminal` | Rich-formatted terminal output with colors and timing |
+| `TerminalReporter` | `highbar.reporters.terminal` | Rich-formatted terminal output with colors and timing |
 
 ---
 
@@ -105,7 +105,7 @@ Shuts down the agent process. Implementations should handle graceful shutdown wi
 
 | Class | Module | Description |
 |-------|--------|-------------|
-| `SubprocessAdapter` | `gauntlet.adapters.subprocess_adapter` | Starts agent as a subprocess, polls health endpoint, terminate/kill on stop |
+| `SubprocessAdapter` | `highbar.adapters.subprocess_adapter` | Starts agent as a subprocess, polls health endpoint, terminate/kill on stop |
 
 ---
 
@@ -138,4 +138,4 @@ Reads all traces added after the given checkpoint position.
 
 | Class | Module | Description |
 |-------|--------|-------------|
-| `FileTraceCollector` | `gauntlet.adapters.file_collector` | Reads JSONL files; checkpoint returns line count; collect reads lines added since checkpoint |
+| `FileTraceCollector` | `highbar.adapters.file_collector` | Reads JSONL files; checkpoint returns line count; collect reads lines added since checkpoint |

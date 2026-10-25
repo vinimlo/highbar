@@ -1,4 +1,4 @@
-"""Core Gauntlet class — instantiation and tool registration."""
+"""Core Highbar class — instantiation and tool registration."""
 
 from __future__ import annotations
 
@@ -6,19 +6,19 @@ import os
 from collections.abc import Callable
 from typing import Any
 
-from gauntlet.sdk.decorator import make_tool_decorator
-from gauntlet.sdk.trace import TraceWriter
+from highbar.sdk.decorator import make_tool_decorator
+from highbar.sdk.trace import TraceWriter
 
-_ENV_VAR = "GAUNTLET_TRACES_URL"
+_ENV_VAR = "HIGHBAR_TRACES_URL"
 
 
-class Gauntlet:
+class Highbar:
     """Main entry point for instrumenting agent tools.
 
     Usage:
-        gt = Gauntlet()
+        hb = Highbar()
 
-        @gt.tool
+        @hb.tool
         def search_orders(order_id: str) -> dict:
             ...
     """

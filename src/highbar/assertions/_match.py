@@ -134,7 +134,7 @@ _NEAR_MISSES = {_stem(key): key for key in MATCHER_KEYS}
 def validate_expected(expected: Any, where: str) -> None:
     """Reject expected values whose matchers are malformed or ambiguous.
 
-    Called by the parser so that a bad matcher fails at `gauntlet validate` instead of
+    Called by the parser so that a bad matcher fails at `highbar validate` instead of
     blowing up — or, worse, silently comparing as a literal — in the middle of a run.
 
     ``where`` names the field being checked (e.g. ``params.order_id``) for the message.

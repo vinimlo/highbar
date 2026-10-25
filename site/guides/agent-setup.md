@@ -1,12 +1,12 @@
 # Agent Setup
 
-The `agent` block in your spec file tells Gauntlet how to start, communicate with, and manage the lifecycle of your agent process.
+The `agent` block in your spec file tells Highbar how to start, communicate with, and manage the lifecycle of your agent process.
 
 ## Configuration Fields
 
 ### `start` (required)
 
-The shell command to start your agent. Gauntlet runs this as a subprocess using `subprocess.Popen` with `shlex.split` for argument parsing.
+The shell command to start your agent. Highbar runs this as a subprocess using `subprocess.Popen` with `shlex.split` for argument parsing.
 
 ```yaml
 agent:
@@ -18,11 +18,11 @@ agent:
   start: "uvicorn my_agent:app --host 0.0.0.0 --port 8000"
 ```
 
-The command runs with the current working directory inherited from where you invoked `gauntlet run`.
+The command runs with the current working directory inherited from where you invoked `highbar run`.
 
 ### `endpoint` (required)
 
-The HTTP URL where Gauntlet sends POST requests with the trigger message. Each trigger is sent as a JSON body:
+The HTTP URL where Highbar sends POST requests with the trigger message. Each trigger is sent as a JSON body:
 
 ```json
 {"message": "trigger text here"}
@@ -35,7 +35,7 @@ agent:
 
 ### `health` (optional)
 
-A URL that Gauntlet polls with GET requests until it receives an HTTP 200 response. Polling occurs at 200ms intervals. If omitted, Gauntlet starts sending test triggers immediately after launching the subprocess.
+A URL that Highbar polls with GET requests until it receives an HTTP 200 response. Polling occurs at 200ms intervals. If omitted, Highbar starts sending test triggers immediately after launching the subprocess.
 
 ```yaml
 agent:
@@ -46,7 +46,7 @@ Using a health check is recommended for agents that need initialization time (lo
 
 ### `startup_timeout` (optional, default: 15000)
 
-Maximum time in milliseconds to wait for the health check to succeed. If the health endpoint does not return HTTP 200 within this window, Gauntlet terminates the agent subprocess and raises a `TimeoutError`.
+Maximum time in milliseconds to wait for the health check to succeed. If the health endpoint does not return HTTP 200 within this window, Highbar terminates the agent subprocess and raises a `TimeoutError`.
 
 ```yaml
 agent:
@@ -64,12 +64,12 @@ agent:
 
 ## Agent Lifecycle
 
-When you run `gauntlet run`, the following sequence occurs for each spec file:
+When you run `highbar run`, the following sequence occurs for each spec file:
 
 ```
 1. Create temporary JSONL file for traces
 2. Start agent subprocess
-   └─ Inject GAUNTLET_TRACES_URL env var pointing to the trace file
+   └─ Inject HIGHBAR_TRACES_URL env var pointing to the trace file
 3. Poll health endpoint (if configured)
    └─ GET requests every 200ms until HTTP 200 or timeout
 4. Run all suites and tests
@@ -85,7 +85,7 @@ When you run `gauntlet run`, the following sequence occurs for each spec file:
 
 ## Response Format
 
-Gauntlet expects your agent's endpoint to return JSON. It extracts the response text by checking for these keys in order:
+Highbar expects your agent's endpoint to return JSON. It extracts the response text by checking for these keys in order:
 
 1. `response`
 2. `message`
@@ -111,30 +111,30 @@ The first key found is used as the response text. If none of these keys exist, t
 
 ## Environment Variables
 
-Gauntlet injects the following environment variable into your agent's subprocess:
+Highbar injects the following environment variable into your agent's subprocess:
 
 | Variable | Value | Purpose |
 |----------|-------|---------|
-| `GAUNTLET_TRACES_URL` | Path to a temporary `.jsonl` file | Tells the SDK where to write trace records |
+| `HIGHBAR_TRACES_URL` | Path to a temporary `.jsonl` file | Tells the SDK where to write trace records |
 
-Your agent inherits all environment variables from the parent process, plus `GAUNTLET_TRACES_URL`. This means API keys, database URLs, and other configuration set in your shell are available to the agent.
+Your agent inherits all environment variables from the parent process, plus `HIGHBAR_TRACES_URL`. This means API keys, database URLs, and other configuration set in your shell are available to the agent.
 
 ## Example: Minimal Agent
 
-A minimal FastAPI agent compatible with Gauntlet:
+A minimal FastAPI agent compatible with Highbar:
 
 ```python
 from fastapi import FastAPI
 from pydantic import BaseModel
-from gauntlet import Gauntlet
+from highbar import Highbar
 
 app = FastAPI()
-gt = Gauntlet()
+hb = Highbar()
 
 class ChatRequest(BaseModel):
     message: str
 
-@gt.tool
+@hb.tool
 def get_weather(city: str) -> dict:
     return {"city": city, "temp": 22, "condition": "sunny"}
 
@@ -170,7 +170,7 @@ suites:
 
 ## Tips
 
-- **Always use a health check** for agents that take more than a few milliseconds to start. Without it, Gauntlet may send triggers before the agent is ready.
+- **Always use a health check** for agents that take more than a few milliseconds to start. Without it, Highbar may send triggers before the agent is ready.
 - **Increase `settle_time`** if your agent performs tool calls asynchronously after returning the HTTP response.
 - **Increase `startup_timeout`** for agents that load large models or connect to external services during initialization.
 - **Use a dedicated port** to avoid conflicts with other services running on your development machine.

@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from gauntlet.cli.main import _discover_specs, app
+from highbar.cli.main import _discover_specs, app
 
 runner = CliRunner()
 
@@ -45,28 +45,28 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A project directory with one spec under specs/, used as the cwd."""
     specs = tmp_path / "specs" / "menu"
     specs.mkdir(parents=True)
-    (specs / "menu.gauntlet.yaml").write_text(textwrap.dedent(SPEC), encoding="utf-8")
+    (specs / "menu.highbar.yaml").write_text(textwrap.dedent(SPEC), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("GAUNTLET_LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("HIGHBAR_LLM_API_KEY", "sk-test")
     monkeypatch.setenv("COLUMNS", "200")
     return tmp_path
 
 
 class TestDiscoverSpecs:
     def test_a_file_is_returned_as_is(self, project: Path) -> None:
-        assert _discover_specs("specs/menu/menu.gauntlet.yaml") == ["specs/menu/menu.gauntlet.yaml"]
+        assert _discover_specs("specs/menu/menu.highbar.yaml") == ["specs/menu/menu.highbar.yaml"]
 
     def test_a_directory_is_searched(self, project: Path) -> None:
-        assert _discover_specs("specs/") == ["specs/menu/menu.gauntlet.yaml"]
+        assert _discover_specs("specs/") == ["specs/menu/menu.highbar.yaml"]
 
     def test_no_argument_searches_specs(self, project: Path) -> None:
-        assert _discover_specs("") == ["specs/menu/menu.gauntlet.yaml"]
+        assert _discover_specs("") == ["specs/menu/menu.highbar.yaml"]
 
 
 class TestVariationsCommand:
-    @pytest.mark.parametrize("argument", [["specs/"], [], ["specs/menu/menu.gauntlet.yaml"]])
+    @pytest.mark.parametrize("argument", [["specs/"], [], ["specs/menu/menu.highbar.yaml"]])
     def test_generates_and_writes_the_cache(self, project: Path, argument: list[str]) -> None:
-        """`gauntlet variations specs/` is the command the README documents."""
+        """`highbar variations specs/` is the command the README documents."""
         reply = '["qual é o cardápio?", "tem [menu] aí?"]'
 
         with patch("httpx.post", return_value=_Response(reply)):
@@ -78,7 +78,7 @@ class TestVariationsCommand:
         assert "tem [menu] aí?" in result.output
         assert "1 generated | 0 already cached" in result.output
 
-        cache_file = project / ".gauntlet" / "variations.json"
+        cache_file = project / ".highbar" / "variations.json"
         (entry,) = json.loads(cache_file.read_text(encoding="utf-8")).values()
         assert entry["variations"] == ["qual é o cardápio?", "tem [menu] aí?"]
 
@@ -108,7 +108,7 @@ class TestVariationsCommand:
         post.assert_not_called()
 
     def test_broken_cache_file_is_a_clean_error(self, project: Path) -> None:
-        cache_file = project / ".gauntlet" / "variations.json"
+        cache_file = project / ".highbar" / "variations.json"
         cache_file.parent.mkdir()
         cache_file.write_text("<<<<<<< HEAD\n{}\n")
 
@@ -121,9 +121,9 @@ class TestVariationsCommand:
     def test_missing_api_key_is_a_clean_error(
         self, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("GAUNTLET_LLM_API_KEY")
+        monkeypatch.delenv("HIGHBAR_LLM_API_KEY")
 
         result = runner.invoke(app, ["variations"])
 
         assert result.exit_code == 1
-        assert "GAUNTLET_LLM_API_KEY" in result.output
+        assert "HIGHBAR_LLM_API_KEY" in result.output

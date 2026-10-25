@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from gauntlet.assertions._match import subset_match
-from gauntlet.domain.models import AssertionResult, Expect, FunctionCallExpect, Trace
+from highbar.assertions._match import subset_match
+from highbar.domain.models import AssertionResult, Expect, FunctionCallExpect, Trace
 
 
 class FunctionCallsAssertion:

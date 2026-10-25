@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from gauntlet.domain.models import AssertionResult, Expect, Trace
+from highbar.domain.models import AssertionResult, Expect, Trace
 
 
 class ResponseAssertion:

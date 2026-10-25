@@ -4,7 +4,7 @@ This example demonstrates a complete spec for an order support agent, covering s
 
 ## The Complete Spec
 
-Create `specs/order-support.gauntlet.yaml`:
+Create `specs/order-support.highbar.yaml`:
 
 ```yaml
 agent:
@@ -104,11 +104,11 @@ This is a single-turn test that validates the agent's core capability -- looking
 
 This is a multi-turn test that validates a two-step workflow:
 
-**Turn 1:** The user asks to return shoes. The agent should search for recent shoe orders. Gauntlet verifies that `search_orders` is called with `category: shoes`.
+**Turn 1:** The user asks to return shoes. The agent should search for recent shoe orders. Highbar verifies that `search_orders` is called with `category: shoes`.
 
 **Turn 2:** The user confirms the refund using the order ID from the previous turn's result. The <code v-pre>{{previous.function_calls[0].result.order_id}}</code> template is resolved at runtime. If the `search_orders` call returned `{"order_id": "ORD-789", "product": "Running Shoes"}`, the trigger becomes `"Yes, order ORD-789, please refund it"`.
 
-Gauntlet then verifies that:
+Highbar then verifies that:
 - The agent calls `initiate_refund` (the specific params are not checked in this example).
 - The response contains the word "refund".
 
@@ -173,14 +173,14 @@ The trigger asks for sensitive information. The spec asserts:
 ## Running the Spec
 
 ```bash
-gauntlet run specs/order-support.gauntlet.yaml
+highbar run specs/order-support.highbar.yaml
 ```
 
 Expected output:
 
 ```
-  Gauntlet v0.1.0
-  Running specs/order-support.gauntlet.yaml
+  Highbar v0.1.0
+  Running specs/order-support.highbar.yaml
 
   Order Lookup
     ✓ Where is my order #12345?                           120ms

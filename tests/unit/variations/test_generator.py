@@ -10,13 +10,13 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from gauntlet.variations.cache import (
+from highbar.variations.cache import (
     CacheError,
     VariationCache,
     find_cache_path,
     fingerprint,
 )
-from gauntlet.variations.generator import VariationError, VariationGenerator, _parse_variations
+from highbar.variations.generator import VariationError, VariationGenerator, _parse_variations
 
 
 class _Response:
@@ -89,7 +89,7 @@ class TestCache:
         VariationCache(str(path))  # does not raise
 
     def test_cache_is_found_from_a_subdirectory(self, tmp_path: Path) -> None:
-        cache_file = tmp_path / ".gauntlet" / "variations.json"
+        cache_file = tmp_path / ".highbar" / "variations.json"
         cache_file.parent.mkdir()
         cache_file.write_text("{}")
         nested = tmp_path / "specs" / "orders"
@@ -98,7 +98,7 @@ class TestCache:
         assert find_cache_path(nested) == str(cache_file)
 
     def test_cache_defaults_to_the_starting_directory(self, tmp_path: Path) -> None:
-        assert find_cache_path(tmp_path) == str(tmp_path / ".gauntlet" / "variations.json")
+        assert find_cache_path(tmp_path) == str(tmp_path / ".highbar" / "variations.json")
 
     def test_key_changes_with_trigger_and_count(self) -> None:
         """A cached entry must miss exactly when regenerating is the correct thing to do."""
@@ -151,7 +151,7 @@ class TestGenerate:
             VariationCache(str(tmp_path / "v.json")), api_key="", model="m"
         )
 
-        with pytest.raises(VariationError, match="GAUNTLET_LLM_API_KEY"):
+        with pytest.raises(VariationError, match="HIGHBAR_LLM_API_KEY"):
             generator.generate("hi", 10)
 
     def test_more_variations_than_asked_are_trimmed(self, tmp_path: Path) -> None:

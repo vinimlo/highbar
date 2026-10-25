@@ -1,6 +1,6 @@
 # Execution Model
 
-This page describes the step-by-step flow of a Gauntlet test run, from spec parsing to final summary.
+This page describes the step-by-step flow of a Highbar test run, from spec parsing to final summary.
 
 ## Full Execution Flow
 
@@ -10,17 +10,17 @@ The spec YAML file is parsed into domain models: `Spec`, `AgentConfig`, `Suite`,
 
 ### 2. Create Trace File
 
-A temporary JSONL file is created (e.g., `/tmp/gauntlet-traces-abc123.jsonl`). This file serves as the communication channel between the agent's `@gt.tool` decorator and Gauntlet's trace collector.
+A temporary JSONL file is created (e.g., `/tmp/highbar-traces-abc123.jsonl`). This file serves as the communication channel between the agent's `@hb.tool` decorator and Highbar's trace collector.
 
 ### 3. Start Agent Subprocess
 
-The agent is launched as a subprocess using the `start` command from the spec's `agent` block. The environment variable `GAUNTLET_TRACES_URL` is injected, pointing to the temporary trace file.
+The agent is launched as a subprocess using the `start` command from the spec's `agent` block. The environment variable `HIGHBAR_TRACES_URL` is injected, pointing to the temporary trace file.
 
 ### 4. Wait for Health Check
 
-If a `health` URL is configured, Gauntlet polls it every **200ms** until it receives an HTTP 200 response. If the health check does not pass within `startup_timeout` (default: 15,000ms), Gauntlet stops the agent and raises a `TimeoutError`.
+If a `health` URL is configured, Highbar polls it every **200ms** until it receives an HTTP 200 response. If the health check does not pass within `startup_timeout` (default: 15,000ms), Highbar stops the agent and raises a `TimeoutError`.
 
-If no `health` URL is configured, Gauntlet proceeds immediately to test execution.
+If no `health` URL is configured, Highbar proceeds immediately to test execution.
 
 ### 5. Execute Tests
 
@@ -28,7 +28,7 @@ For each suite, and for each test within the suite:
 
 #### a. Record Checkpoint
 
-Gauntlet calls `collector.checkpoint()`, which returns the current line count of the JSONL trace file. This marks the boundary -- any traces written after this point belong to the current test.
+Highbar calls `collector.checkpoint()`, which returns the current line count of the JSONL trace file. This marks the boundary -- any traces written after this point belong to the current test.
 
 #### b. Resolve Templates
 
@@ -36,25 +36,25 @@ For multi-turn tests, trigger strings may contain template expressions (e.g., `p
 
 #### c. Send Trigger
 
-Gauntlet sends an HTTP POST request to the agent's `endpoint`:
+Highbar sends an HTTP POST request to the agent's `endpoint`:
 
 ```json
 {"message": "Where is my order #12345?"}
 ```
 
-The agent processes the request, potentially calling `@gt.tool`-decorated functions (which write trace boxes to the JSONL file), and returns an HTTP response.
+The agent processes the request, potentially calling `@hb.tool`-decorated functions (which write trace boxes to the JSONL file), and returns an HTTP response.
 
 #### d. Receive Response
 
-The response JSON is parsed. Gauntlet checks for common response fields (`response`, `message`, `content`, `text`, `reply`) and extracts the text value.
+The response JSON is parsed. Highbar checks for common response fields (`response`, `message`, `content`, `text`, `reply`) and extracts the text value.
 
 #### e. Wait Settle Time
 
-Gauntlet waits for `settle_time` (default: 500ms) after receiving the response. This gives the agent time to finish writing any remaining trace records -- for example, if tool calls happen asynchronously or in a post-processing step.
+Highbar waits for `settle_time` (default: 500ms) after receiving the response. This gives the agent time to finish writing any remaining trace records -- for example, if tool calls happen asynchronously or in a post-processing step.
 
 #### f. Read Traces
 
-Gauntlet calls `collector.collect(since=checkpoint)`, which reads all JSONL lines added after the checkpoint. Each line is parsed into a `Trace` domain object.
+Highbar calls `collector.collect(since=checkpoint)`, which reads all JSONL lines added after the checkpoint. Each line is parsed into a `Trace` domain object.
 
 #### g. Run Assertions
 
@@ -66,7 +66,7 @@ The `Reporter` is called with the test name and `TestResult` (pass/fail, errors,
 
 ### 6. Stop Agent
 
-After all tests complete (or if an error occurs), Gauntlet shuts down the agent:
+After all tests complete (or if an error occurs), Highbar shuts down the agent:
 
 1. Sends `SIGTERM` to the process.
 2. Waits up to 5 seconds for graceful shutdown.
@@ -82,7 +82,7 @@ The `Reporter` receives the `RunSummary` with total, passed, failed counts and o
 
 Traditional test frameworks correlate requests to responses using request IDs or correlation tokens. This requires middleware in the agent to thread the ID through every tool call.
 
-Gauntlet takes a simpler approach:
+Highbar takes a simpler approach:
 
 1. **Before** sending a trigger, record the current line count in the trace file.
 2. **After** receiving the response (plus settle time), read everything new.
@@ -93,7 +93,7 @@ This works because:
 - The trace file is **append-only** -- new traces are always added at the end.
 - The **settle time** provides a buffer for traces that are written after the HTTP response returns (e.g., async operations, cleanup handlers).
 
-The result: the `@gt.tool` decorator is the **only** instrumentation needed. No request ID, no middleware, no correlation tokens. The decorator itself does not even know about tests or Gauntlet's execution model -- it simply writes trace boxes.
+The result: the `@hb.tool` decorator is the **only** instrumentation needed. No request ID, no middleware, no correlation tokens. The decorator itself does not even know about tests or Highbar's execution model -- it simply writes trace boxes.
 
 ## Multi-Turn Execution
 
@@ -117,10 +117,10 @@ If any turn fails its assertions, the remaining turns are skipped and the entire
 ```
 Time →
 
-Gauntlet:    [parse] [start agent] [health poll...] [checkpoint] [POST trigger]     [wait settle] [read traces] [assert]
+Highbar:    [parse] [start agent] [health poll...] [checkpoint] [POST trigger]     [wait settle] [read traces] [assert]
                                                                       │                    │
 Agent:                [starting...]  [ready]                     [process request]    [done]
                                                                       │
-@gt.tool:                                                        [write trace A]
+@hb.tool:                                                        [write trace A]
                                                                  [write trace B]
 ```

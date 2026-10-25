@@ -1,10 +1,10 @@
-"""Protocol definitions for Gauntlet's extension points."""
+"""Protocol definitions for Highbar's extension points."""
 
 from __future__ import annotations
 
 from typing import Protocol
 
-from gauntlet.domain.models import (
+from highbar.domain.models import (
     AssertionResult,
     Expect,
     RunSummary,

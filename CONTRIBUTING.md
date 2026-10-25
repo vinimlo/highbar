@@ -1,6 +1,6 @@
-# Contributing to Gauntlet
+# Contributing to Highbar
 
-Thanks for your interest in contributing! Gauntlet is at an early stage, so every contribution — code, docs, ideas, bug reports — has an outsized impact.
+Thanks for your interest in contributing! Highbar is at an early stage, so every contribution — code, docs, ideas, bug reports — has an outsized impact.
 
 ## Prerequisites
 
@@ -11,8 +11,8 @@ Thanks for your interest in contributing! Gauntlet is at an early stage, so ever
 ## Getting Started
 
 ```bash
-git clone https://github.com/your-org/gauntlet.git
-cd gauntlet
+git clone https://github.com/your-org/highbar.git
+cd highbar
 pnpm install
 pnpm dev      # watch mode
 pnpm test     # run tests
@@ -34,7 +34,7 @@ src/
 
 ### Key Concepts
 
-- **Spec**: A `.gauntlet.yaml` file defining agent behavior tests
+- **Spec**: A `.highbar.yaml` file defining agent behavior tests
 - **Suite**: A named group of tests within a spec
 - **Test**: A single trigger → expect pair, or a multi-turn `turns:` flow
 - **Preset**: A provider adapter that knows how to parse tool calls from a specific API format
@@ -70,7 +70,7 @@ refactor: extract variation generator interface
 3. Ensure `pnpm test` and `pnpm lint` pass
 4. Submit a PR with a clear description of what and why
 
-## Extending Gauntlet
+## Extending Highbar
 
 ### Adding a New Preset
 

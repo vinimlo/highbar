@@ -4,7 +4,7 @@ import json
 import threading
 from pathlib import Path
 
-from gauntlet.sdk.trace import TraceWriter
+from highbar.sdk.trace import TraceWriter
 
 
 class TestTraceWriter:

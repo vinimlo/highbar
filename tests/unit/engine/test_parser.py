@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from gauntlet.engine.parser import parse_spec
+from highbar.engine.parser import parse_spec
 
 
 class TestParseSpec:
     def test_minimal_spec(self, tmp_path: Path) -> None:
-        spec_file = tmp_path / "test.gauntlet.yaml"
+        spec_file = tmp_path / "test.highbar.yaml"
         spec_file.write_text(
             textwrap.dedent("""\
             agent:
@@ -34,7 +34,7 @@ class TestParseSpec:
         assert spec.suites[0].name == "Basic"
 
     def test_full_agent_config(self, tmp_path: Path) -> None:
-        spec_file = tmp_path / "test.gauntlet.yaml"
+        spec_file = tmp_path / "test.highbar.yaml"
         spec_file.write_text(
             textwrap.dedent("""\
             agent:
@@ -59,7 +59,7 @@ class TestParseSpec:
         assert spec.agent.settle_time == 1000
 
     def test_function_calls_with_params_and_result(self, tmp_path: Path) -> None:
-        spec_file = tmp_path / "test.gauntlet.yaml"
+        spec_file = tmp_path / "test.highbar.yaml"
         spec_file.write_text(
             textwrap.dedent("""\
             agent:
@@ -90,7 +90,7 @@ class TestParseSpec:
         assert fc[0].result == {"status": "shipped"}
 
     def test_empty_function_calls_guardrail(self, tmp_path: Path) -> None:
-        spec_file = tmp_path / "test.gauntlet.yaml"
+        spec_file = tmp_path / "test.highbar.yaml"
         spec_file.write_text(
             textwrap.dedent("""\
             agent:
@@ -115,7 +115,7 @@ class TestParseSpec:
         assert test.expect.response.matches == "I can only help with orders"
 
     def test_multi_turn(self, tmp_path: Path) -> None:
-        spec_file = tmp_path / "test.gauntlet.yaml"
+        spec_file = tmp_path / "test.highbar.yaml"
         spec_file.write_text(
             textwrap.dedent("""\
             agent:
@@ -144,7 +144,7 @@ class TestParseSpec:
         assert test.turns[1].trigger == "yes refund it"
 
     def test_response_not_contains(self, tmp_path: Path) -> None:
-        spec_file = tmp_path / "test.gauntlet.yaml"
+        spec_file = tmp_path / "test.highbar.yaml"
         spec_file.write_text(
             textwrap.dedent("""\
             agent:
@@ -168,14 +168,14 @@ class TestParseSpec:
         assert resp.contains == "cannot share"
 
     def test_missing_agent_raises(self, tmp_path: Path) -> None:
-        spec_file = tmp_path / "bad.gauntlet.yaml"
+        spec_file = tmp_path / "bad.highbar.yaml"
         spec_file.write_text("suites: []")
 
         with pytest.raises(ValueError, match="agent"):
             parse_spec(str(spec_file))
 
     def test_missing_endpoint_raises(self, tmp_path: Path) -> None:
-        spec_file = tmp_path / "bad.gauntlet.yaml"
+        spec_file = tmp_path / "bad.highbar.yaml"
         spec_file.write_text(
             textwrap.dedent("""\
             agent:
@@ -188,7 +188,7 @@ class TestParseSpec:
             parse_spec(str(spec_file))
 
     def test_null_response_block(self, tmp_path: Path) -> None:
-        spec_file = tmp_path / "test.gauntlet.yaml"
+        spec_file = tmp_path / "test.highbar.yaml"
         spec_file.write_text(
             textwrap.dedent("""\
             agent:
@@ -209,7 +209,7 @@ class TestParseSpec:
         assert test.expect.response is None
 
     def test_function_call_missing_name_raises(self, tmp_path: Path) -> None:
-        spec_file = tmp_path / "test.gauntlet.yaml"
+        spec_file = tmp_path / "test.highbar.yaml"
         spec_file.write_text(
             textwrap.dedent("""\
             agent:
@@ -230,7 +230,7 @@ class TestParseSpec:
             parse_spec(str(spec_file))
 
     def test_missing_start_raises(self, tmp_path: Path) -> None:
-        spec_file = tmp_path / "bad.gauntlet.yaml"
+        spec_file = tmp_path / "bad.highbar.yaml"
         spec_file.write_text(
             textwrap.dedent("""\
             agent:
@@ -245,7 +245,7 @@ class TestParseSpec:
 
 class TestVariations:
     def _spec(self, tmp_path: Path, body: str) -> Path:
-        spec_file = tmp_path / "variations.gauntlet.yaml"
+        spec_file = tmp_path / "variations.highbar.yaml"
         spec_file.write_text(textwrap.dedent(body))
         return spec_file
 
@@ -453,6 +453,6 @@ class TestFunctionCallNameAlternatives:
 
 
 def _write_spec(tmp_path: Path, body: str) -> Path:
-    spec_file = tmp_path / "test.gauntlet.yaml"
+    spec_file = tmp_path / "test.highbar.yaml"
     spec_file.write_text(textwrap.dedent(body))
     return spec_file

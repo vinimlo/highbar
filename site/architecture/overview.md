@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Gauntlet is a behavior testing framework for AI agents. It tests the **agent** -- not the LLM -- by defining expected behaviors in YAML specs, instrumenting tool calls via a Python decorator, and running assertions against collected traces.
+Highbar is a behavior testing framework for AI agents. It tests the **agent** -- not the LLM -- by defining expected behaviors in YAML specs, instrumenting tool calls via a Python decorator, and running assertions against collected traces.
 
 ## Component Diagram
 
@@ -23,13 +23,13 @@ graph TB
 
 ### Parser
 
-**Module:** `gauntlet.engine.parser`
+**Module:** `highbar.engine.parser`
 
-Reads `.gauntlet.yaml` spec files, validates their structure, and produces strongly-typed domain models (`Spec`, `Suite`, `Test`, `Expect`, etc.). The parser is the entry point for all test execution -- every run starts by parsing a spec.
+Reads `.highbar.yaml` spec files, validates their structure, and produces strongly-typed domain models (`Spec`, `Suite`, `Test`, `Expect`, etc.). The parser is the entry point for all test execution -- every run starts by parsing a spec.
 
 ### TestRunner
 
-**Module:** `gauntlet.engine.runner`
+**Module:** `highbar.engine.runner`
 
 The central orchestrator. The `TestRunner` coordinates the entire test flow:
 
@@ -46,7 +46,7 @@ The central orchestrator. The `TestRunner` coordinates the entire test flow:
 
 ### Assertions
 
-**Module:** `gauntlet.assertions.*`
+**Module:** `highbar.assertions.*`
 
 Two built-in assertion implementations:
 
@@ -59,7 +59,7 @@ Both implement the `Assertion` protocol, making it straightforward to add custom
 
 ### Reporter
 
-**Module:** `gauntlet.reporters.terminal`
+**Module:** `highbar.reporters.terminal`
 
 The `TerminalReporter` formats test results for the terminal using the `rich` library. It displays:
 
@@ -70,27 +70,27 @@ The `TerminalReporter` formats test results for the terminal using the `rich` li
 
 ### SubprocessAdapter
 
-**Module:** `gauntlet.adapters.subprocess_adapter`
+**Module:** `highbar.adapters.subprocess_adapter`
 
 Manages the agent process lifecycle:
 
-- **Start**: Launches the agent as a subprocess with `GAUNTLET_TRACES_URL` injected into the environment. If a health check URL is configured, polls it every 200ms until it returns HTTP 200 or the startup timeout expires.
+- **Start**: Launches the agent as a subprocess with `HIGHBAR_TRACES_URL` injected into the environment. If a health check URL is configured, polls it every 200ms until it returns HTTP 200 or the startup timeout expires.
 - **Stop**: Sends `SIGTERM` to the process. If it does not exit within 5 seconds, sends `SIGKILL`.
 
 ### FileTraceCollector
 
-**Module:** `gauntlet.adapters.file_collector`
+**Module:** `highbar.adapters.file_collector`
 
 Reads trace boxes from the JSONL trace file:
 
 - **Checkpoint**: Returns the current line count in the file.
 - **Collect**: Reads all lines added after the checkpoint, parses each as JSON, and returns a list of `Trace` domain objects.
 
-This checkpoint-based approach means Gauntlet does not need to inject request IDs into the agent. Each test simply reads the traces that appeared during its execution window.
+This checkpoint-based approach means Highbar does not need to inject request IDs into the agent. Each test simply reads the traces that appeared during its execution window.
 
 ### HTTPClient
 
-**Module:** `gauntlet.adapters.http_client`
+**Module:** `highbar.adapters.http_client`
 
 Sends POST requests to the agent's HTTP endpoint with a JSON body of `{"message": trigger}`. Parses the response JSON, checking common field names (`response`, `message`, `content`, `text`, `reply`) to extract the response text.
 
@@ -99,12 +99,12 @@ Sends POST requests to the agent's HTTP endpoint with a JSON body of `{"message"
 ```
 1. Parse YAML spec → domain models (Spec, Suite, Test, Expect)
 2. Create temp JSONL file
-3. Start agent subprocess (with GAUNTLET_TRACES_URL)
+3. Start agent subprocess (with HIGHBAR_TRACES_URL)
 4. For each test:
    a. Checkpoint trace file (record line count)
    b. POST trigger to agent endpoint
-   c. Agent processes request, calls @gt.tool functions
-   d. @gt.tool decorator writes trace boxes to JSONL
+   c. Agent processes request, calls @hb.tool functions
+   d. @hb.tool decorator writes trace boxes to JSONL
    e. Agent returns HTTP response
    f. Wait settle_time
    g. Read new trace lines since checkpoint
@@ -116,6 +116,6 @@ Sends POST requests to the agent's HTTP endpoint with a JSON body of `{"message"
 
 ## Key Design Principles
 
-- **Test the agent, not the LLM.** The language model is an implementation detail. Gauntlet validates that the agent calls the right tools with the right arguments and produces appropriate responses.
-- **Minimal instrumentation.** The `@gt.tool` decorator is the only change required in agent code. No middleware, no mocks, no test doubles.
+- **Test the agent, not the LLM.** The language model is an implementation detail. Highbar validates that the agent calls the right tools with the right arguments and produces appropriate responses.
+- **Minimal instrumentation.** The `@hb.tool` decorator is the only change required in agent code. No middleware, no mocks, no test doubles.
 - **Protocol-based extension.** All major components (assertions, reporters, adapters, collectors) are defined as `Protocol` classes. Swap implementations without touching the runner.

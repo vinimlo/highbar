@@ -16,7 +16,7 @@ The key is ``(trigger, count)`` — change either and the entry misses, which is
 when regenerating is correct.
 
 The **model is not part of the key**, on purpose. If it were, CI would only hit the
-cache when its ``GAUNTLET_LLM_MODEL`` happened to match whatever the developer had set
+cache when its ``HIGHBAR_LLM_MODEL`` happened to match whatever the developer had set
 months earlier when generating; otherwise it would miss, demand an API key, and fail.
 The committed file is the source of truth — the model only matters at generation time,
 and is recorded as metadata so you can see what wrote the text.
@@ -36,7 +36,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-DEFAULT_CACHE_PATH = ".gauntlet/variations.json"
+DEFAULT_CACHE_PATH = ".highbar/variations.json"
 
 
 class CacheError(RuntimeError):
@@ -101,7 +101,7 @@ class VariationCache:
             msg = (
                 f"{self._path} is not valid JSON (line {exc.lineno}: {exc.msg}). "
                 "Leftover merge conflict markers? Fix the file, or delete it and "
-                "regenerate with `gauntlet variations`."
+                "regenerate with `highbar variations`."
             )
             raise CacheError(msg) from exc
 

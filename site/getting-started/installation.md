@@ -6,23 +6,23 @@
 
 ## Full Install
 
-Install Gauntlet with all dependencies (CLI, SDK, and runtime):
+Install Highbar with all dependencies (CLI, SDK, and runtime):
 
 ```bash
-pip install gauntlet
+pip install highbar
 ```
 
-This includes everything you need: the `gauntlet` CLI, the `@gt.tool` decorator SDK, and all dependencies (`pyyaml`, `rich`, `typer`, `httpx`).
+This includes everything you need: the `highbar` CLI, the `@hb.tool` decorator SDK, and all dependencies (`pyyaml`, `rich`, `typer`, `httpx`).
 
 ## SDK-Only Install
 
-For production agent code where you only need the `@gt.tool` decorator:
+For production agent code where you only need the `@hb.tool` decorator:
 
 ```bash
-pip install gauntlet[sdk]
+pip install highbar[sdk]
 ```
 
-This is a slim install with **zero external dependencies**. The decorator is a complete no-op when the `GAUNTLET_TRACES_URL` environment variable is not set, so there is no runtime overhead in production.
+This is a slim install with **zero external dependencies**. The decorator is a complete no-op when the `HIGHBAR_TRACES_URL` environment variable is not set, so there is no runtime overhead in production.
 
 ## Using uv
 
@@ -30,10 +30,10 @@ If you use [uv](https://docs.astral.sh/uv/) as your package manager:
 
 ```bash
 # Full install
-uv add gauntlet
+uv add highbar
 
 # SDK-only install
-uv add gauntlet[sdk]
+uv add highbar[sdk]
 ```
 
 ## Verify Installation
@@ -41,13 +41,13 @@ uv add gauntlet[sdk]
 After installing, verify the CLI is available:
 
 ```bash
-gauntlet --help
+highbar --help
 ```
 
 Expected output:
 
 ```
- Usage: gauntlet [OPTIONS] COMMAND [ARGS]...
+ Usage: highbar [OPTIONS] COMMAND [ARGS]...
 
  Behavior testing framework for AI agents.
 
@@ -55,7 +55,7 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  init      Scaffold a gauntlet.config.yaml and example spec.
+  init      Scaffold a highbar.config.yaml and example spec.
   run       Run behavior tests against your agent.
   validate  Validate spec syntax without running tests.
 ```
@@ -65,10 +65,10 @@ Commands:
 To generate an example spec file and get started quickly:
 
 ```bash
-gauntlet init
+highbar init
 ```
 
-This creates a `specs/` directory with an `example.gauntlet.yaml` file you can edit and run.
+This creates a `specs/` directory with an `example.highbar.yaml` file you can edit and run.
 
 ## Next Steps
 

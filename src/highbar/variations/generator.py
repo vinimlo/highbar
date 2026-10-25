@@ -17,7 +17,7 @@ from typing import Any
 
 import httpx
 
-from gauntlet.variations.cache import VariationCache, fingerprint
+from highbar.variations.cache import VariationCache, fingerprint
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
@@ -71,11 +71,11 @@ class VariationGenerator:
     ) -> None:
         self._cache = cache
         self._frozen = frozen
-        self._api_key = api_key if api_key is not None else os.environ.get("GAUNTLET_LLM_API_KEY")
+        self._api_key = api_key if api_key is not None else os.environ.get("HIGHBAR_LLM_API_KEY")
         self._base_url = (
-            base_url or os.environ.get("GAUNTLET_LLM_BASE_URL") or DEFAULT_BASE_URL
+            base_url or os.environ.get("HIGHBAR_LLM_BASE_URL") or DEFAULT_BASE_URL
         ).rstrip("/")
-        self._model = model or os.environ.get("GAUNTLET_LLM_MODEL") or DEFAULT_MODEL
+        self._model = model or os.environ.get("HIGHBAR_LLM_MODEL") or DEFAULT_MODEL
 
     @property
     def model(self) -> str:
@@ -92,7 +92,7 @@ class VariationGenerator:
         if self._frozen:
             msg = (
                 f"No cached variations for {trigger!r} and the run is frozen.\n"
-                f"Generate them with `gauntlet variations <spec>` and commit {self._cache.path}."
+                f"Generate them with `highbar variations <spec>` and commit {self._cache.path}."
             )
             raise VariationError(msg)
 
@@ -104,8 +104,8 @@ class VariationGenerator:
     def _call_llm(self, trigger: str, count: int) -> list[str]:
         if not self._api_key:
             msg = (
-                f"No cached variations for {trigger!r} and GAUNTLET_LLM_API_KEY is not set.\n"
-                "Generate them once with `gauntlet variations <spec>` and commit the cache "
+                f"No cached variations for {trigger!r} and HIGHBAR_LLM_API_KEY is not set.\n"
+                "Generate them once with `highbar variations <spec>` and commit the cache "
                 "file — runs are then deterministic and offline."
             )
             raise VariationError(msg)

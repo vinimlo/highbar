@@ -1,12 +1,12 @@
 import { defineConfig } from 'vitepress'
 
 export default defineConfig({
-  title: 'Gauntlet',
+  title: 'Highbar',
   description: 'Behavior testing framework for AI agents',
 
   head: [
-    ['meta', { property: 'og:title', content: 'Gauntlet — Behavior testing for AI agents' }],
-    ['meta', { property: 'og:description', content: 'Run your AI agents through the gauntlet. YAML specs, function call assertions, multi-turn testing.' }],
+    ['meta', { property: 'og:title', content: 'Highbar — Behavior testing for AI agents' }],
+    ['meta', { property: 'og:description', content: 'Run your AI agents through the highbar. YAML specs, function call assertions, multi-turn testing.' }],
   ],
 
   themeConfig: {
@@ -57,7 +57,7 @@ export default defineConfig({
           { text: 'Execution Model', link: '/architecture/execution-model' },
           { text: 'Trace Boxes', link: '/architecture/trace-boxes' },
           { text: 'Design Decisions', link: '/architecture/design-decisions' },
-          { text: 'Extending Gauntlet', link: '/architecture/extending' },
+          { text: 'Extending Highbar', link: '/architecture/extending' },
         ],
       },
       {
@@ -73,12 +73,12 @@ export default defineConfig({
     ],
 
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/gauntlet-ai/gauntlet' },
+      { icon: 'github', link: 'https://github.com/highbar-ai/highbar' },
     ],
 
     footer: {
       message: 'Released under the MIT License.',
-      copyright: 'Copyright 2026 Gauntlet Contributors',
+      copyright: 'Copyright 2026 Highbar Contributors',
     },
 
     search: {
@@ -86,7 +86,7 @@ export default defineConfig({
     },
 
     editLink: {
-      pattern: 'https://github.com/gauntlet-ai/gauntlet/edit/main/site/:path',
+      pattern: 'https://github.com/highbar-ai/highbar/edit/main/site/:path',
       text: 'Edit this page on GitHub',
     },
   },

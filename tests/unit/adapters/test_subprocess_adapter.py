@@ -8,12 +8,12 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from gauntlet.adapters.subprocess_adapter import SubprocessAdapter
+from highbar.adapters.subprocess_adapter import SubprocessAdapter
 
 
 class TestSubprocessAdapter:
     def test_start_launches_process(self) -> None:
-        with patch("gauntlet.adapters.subprocess_adapter.subprocess.Popen") as mock_popen:
+        with patch("highbar.adapters.subprocess_adapter.subprocess.Popen") as mock_popen:
             mock_popen.return_value = MagicMock()
 
             adapter = SubprocessAdapter(start_cmd="python agent.py")
@@ -24,22 +24,22 @@ class TestSubprocessAdapter:
             assert args[0][0] == ["python", "agent.py"]
 
     def test_start_injects_env(self) -> None:
-        with patch("gauntlet.adapters.subprocess_adapter.subprocess.Popen") as mock_popen:
+        with patch("highbar.adapters.subprocess_adapter.subprocess.Popen") as mock_popen:
             mock_popen.return_value = MagicMock()
 
             adapter = SubprocessAdapter(
                 start_cmd="python agent.py",
-                env={"GAUNTLET_TRACES_URL": "/tmp/traces.jsonl"},
+                env={"HIGHBAR_TRACES_URL": "/tmp/traces.jsonl"},
             )
             adapter.start()
 
             call_kwargs = mock_popen.call_args[1]
-            assert call_kwargs["env"]["GAUNTLET_TRACES_URL"] == "/tmp/traces.jsonl"
+            assert call_kwargs["env"]["HIGHBAR_TRACES_URL"] == "/tmp/traces.jsonl"
 
     def test_stop_terminates_process(self) -> None:
         mock_proc = MagicMock()
 
-        with patch("gauntlet.adapters.subprocess_adapter.subprocess.Popen") as mock_popen:
+        with patch("highbar.adapters.subprocess_adapter.subprocess.Popen") as mock_popen:
             mock_popen.return_value = mock_proc
 
             adapter = SubprocessAdapter(start_cmd="python agent.py")
@@ -56,7 +56,7 @@ class TestSubprocessAdapter:
             None,  # second call after kill() succeeds
         ]
 
-        with patch("gauntlet.adapters.subprocess_adapter.subprocess.Popen") as mock_popen:
+        with patch("highbar.adapters.subprocess_adapter.subprocess.Popen") as mock_popen:
             mock_popen.return_value = mock_proc
 
             adapter = SubprocessAdapter(start_cmd="python agent.py")
@@ -75,8 +75,8 @@ class TestSubprocessAdapter:
         mock_response = MagicMock(status_code=200)
 
         with (
-            patch("gauntlet.adapters.subprocess_adapter.subprocess.Popen") as mock_popen,
-            patch("gauntlet.adapters.subprocess_adapter.httpx.get") as mock_get,
+            patch("highbar.adapters.subprocess_adapter.subprocess.Popen") as mock_popen,
+            patch("highbar.adapters.subprocess_adapter.httpx.get") as mock_get,
         ):
             mock_popen.return_value = mock_proc
             mock_get.return_value = mock_response
@@ -93,9 +93,9 @@ class TestSubprocessAdapter:
         mock_proc = MagicMock()
 
         with (
-            patch("gauntlet.adapters.subprocess_adapter.subprocess.Popen") as mock_popen,
-            patch("gauntlet.adapters.subprocess_adapter.httpx.get") as mock_get,
-            patch("gauntlet.adapters.subprocess_adapter.time.sleep"),
+            patch("highbar.adapters.subprocess_adapter.subprocess.Popen") as mock_popen,
+            patch("highbar.adapters.subprocess_adapter.httpx.get") as mock_get,
+            patch("highbar.adapters.subprocess_adapter.time.sleep"),
         ):
             mock_popen.return_value = mock_proc
             mock_get.side_effect = httpx.ConnectError("refused")

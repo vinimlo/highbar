@@ -85,7 +85,7 @@ suites:
 
 When the second turn executes:
 
-1. Gauntlet looks at all traces collected during the first turn
+1. Highbar looks at all traces collected during the first turn
 2. It resolves <code v-pre>{{previous.function_calls[0].result.order_id}}</code> by navigating: traces list -> first trace -> result dict -> order_id key
 3. If `search_orders` returned `{"order_id": "ORD-555", ...}`, the trigger becomes: `"Yes, order ORD-555, please refund it"`
 4. This resolved trigger is sent to the agent

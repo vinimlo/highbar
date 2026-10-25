@@ -2,10 +2,10 @@
 
 Build and test your first AI agent in 5 minutes.
 
-## 1. Install Gauntlet
+## 1. Install Highbar
 
 ```bash
-pip install gauntlet
+pip install highbar
 ```
 
 ## 2. Create Your Agent
@@ -14,13 +14,13 @@ Create a file called `agent.py` with a minimal FastAPI agent that looks up order
 
 ```python
 from fastapi import FastAPI
-from gauntlet import Gauntlet
+from highbar import Highbar
 import uvicorn
 
 app = FastAPI()
-gt = Gauntlet()
+hb = Highbar()
 
-@gt.tool
+@hb.tool
 def search_orders(order_id: str) -> dict:
     return {"order_id": order_id, "status": "shipped"}
 
@@ -41,11 +41,11 @@ if __name__ == "__main__":
     uvicorn.run(app, port=8000)
 ```
 
-The key line is `@gt.tool`. This decorator instruments the `search_orders` function so that every invocation is captured as a trace — function name, arguments, return value, and timing. When `GAUNTLET_TRACES_URL` is not set (i.e., normal production use), the decorator is a no-op.
+The key line is `@hb.tool`. This decorator instruments the `search_orders` function so that every invocation is captured as a trace — function name, arguments, return value, and timing. When `HIGHBAR_TRACES_URL` is not set (i.e., normal production use), the decorator is a no-op.
 
 ## 3. Write a Spec
 
-Create the file `specs/orders.gauntlet.yaml`:
+Create the file `specs/orders.highbar.yaml`:
 
 ```yaml
 agent:
@@ -66,7 +66,7 @@ suites:
             contains: "shipped"
 ```
 
-This spec tells Gauntlet:
+This spec tells Highbar:
 
 - **How to start the agent** — run `python agent.py` as a subprocess
 - **Where to send triggers** — POST to `http://localhost:8000/chat`
@@ -76,14 +76,14 @@ This spec tells Gauntlet:
 ## 4. Run the Tests
 
 ```bash
-gauntlet run specs/orders.gauntlet.yaml
+highbar run specs/orders.highbar.yaml
 ```
 
 Expected output:
 
 ```
-  Gauntlet v0.1.0
-  Running specs/orders.gauntlet.yaml
+  Highbar v0.1.0
+  Running specs/orders.highbar.yaml
 
   Order Lookup
     ✓ Where is my order #12345?
@@ -93,11 +93,11 @@ Expected output:
 
 ## 5. What Just Happened
 
-Here is exactly what Gauntlet did:
+Here is exactly what Highbar did:
 
-1. **Parsed the spec** — read `orders.gauntlet.yaml` and validated the schema.
+1. **Parsed the spec** — read `orders.highbar.yaml` and validated the schema.
 2. **Created a trace file** — generated a temporary JSONL file for trace collection.
-3. **Started the agent** — launched `python agent.py` as a subprocess with the `GAUNTLET_TRACES_URL` environment variable pointing to the trace file.
+3. **Started the agent** — launched `python agent.py` as a subprocess with the `HIGHBAR_TRACES_URL` environment variable pointing to the trace file.
 4. **Waited for health** — polled `GET /health` until the agent responded (up to 15 seconds by default).
 5. **Sent the trigger** — sent `POST /chat` with `{"message": "Where is my order #12345?"}`.
 6. **Waited for settle** — paused 500ms (configurable) to allow async tool calls to complete.
@@ -138,4 +138,4 @@ The `function_calls: []` assertion means "assert that no tools were called." Thi
 ## Next Steps
 
 - [Core Concepts](/getting-started/concepts) — understand specs, traces, and the execution model
-- [Introduction](/getting-started/introduction) — learn about Gauntlet's philosophy and design
+- [Introduction](/getting-started/introduction) — learn about Highbar's philosophy and design
