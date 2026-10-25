@@ -33,7 +33,9 @@ class TraceWriter:
 
     def write(self, path: str, record: dict[str, Any]) -> None:
         try:
-            line = json.dumps({"v": CONTRACT_VERSION, **record}, default=str, ensure_ascii=False)
+            line = json.dumps(
+                {"v": CONTRACT_VERSION, **record}, default=_as_text, ensure_ascii=False
+            )
             data = (line + "\n").encode("utf-8")
             with self._lock:
                 fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
@@ -41,5 +43,15 @@ class TraceWriter:
                     os.write(fd, data)
                 finally:
                     os.close(fd)
-        except (OSError, TypeError, ValueError) as e:
-            logger.warning("highbar: could not write a trace record to %s: %s", path, e)
+        except Exception as e:
+            # Serializing runs arbitrary __str__/__repr__ (a detached ORM row raises in
+            # it), and a value can nest too deep: none of that may reach the agent.
+            logger.warning("highbar: could not write a trace record to %s: %r", path, e)
+
+
+def _as_text(value: object) -> str:
+    """JSON fallback for values it does not know: their text, or a placeholder."""
+    try:
+        return str(value)
+    except Exception:
+        return f"<unserializable {type(value).__name__}>"

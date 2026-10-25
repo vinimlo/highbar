@@ -121,6 +121,10 @@ class Highbar:
         if the block raises: the message was received, which is what a turn proves.
         """
         handle = TurnHandle(message)
+        if not self.enabled:
+            # Nothing will be written, so there is no context to carry.
+            yield handle
+            return
         with context.pushed(context_fields) as current:
             try:
                 yield handle

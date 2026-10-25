@@ -34,8 +34,14 @@ def merged(extra: Mapping[str, Any]) -> dict[str, Any]:
 def pushed(extra: Mapping[str, Any]) -> Iterator[dict[str, Any]]:
     """Make ``merged(extra)`` the context until the block ends."""
     context = merged(extra)
+    previous = _CONTEXT.get()
     token = _CONTEXT.set(context)
     try:
         yield context
     finally:
-        _CONTEXT.reset(token)
+        try:
+            _CONTEXT.reset(token)
+        except ValueError:
+            # The block ended in another copy of the context than it began in: a sync
+            # generator that Starlette steps one next() per copied context.
+            _CONTEXT.set(previous)

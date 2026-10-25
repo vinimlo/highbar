@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import inspect
 import json
 import logging
 import os
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -321,3 +324,156 @@ class TestTurn:
             ("a", "a"),
             ("b", "b"),
         ]
+
+
+class TestReviewFindings:
+    """Paths the PR review found breaking the agent, or recording a failure as a success."""
+
+    def test_injecting_decorator_still_works_with_tracing_on(self, traces: Path) -> None:
+        """functools.wraps exposes the inner signature, which the caller never satisfies."""
+        hb = Highbar()
+
+        def with_db(fn: Any) -> Any:
+            @functools.wraps(fn)
+            def inner(*args: Any, **kwargs: Any) -> Any:
+                return fn(*args, db="DB", **kwargs)
+
+            return inner
+
+        @hb.tool
+        @with_db
+        def get_order(order_id: str, db: str) -> dict[str, str]:
+            return {"order_id": order_id, "db": db}
+
+        assert get_order(order_id="7") == {"order_id": "7", "db": "DB"}
+        (record,) = _of(traces, "tool")
+        assert record["args"] == {"order_id": "7"}
+        assert "error" not in record
+
+    def test_call_with_a_wrong_argument_is_recorded_and_raises(self, traces: Path) -> None:
+        """A model calls delete_account(id=1): the attempt is the finding, not a non-event."""
+        hb = Highbar()
+
+        @hb.tool
+        def delete_account(account_id: int) -> str:
+            return "deleted"
+
+        with pytest.raises(TypeError):
+            delete_account(id=1)  # type: ignore[call-arg]
+
+        (record,) = _of(traces, "tool")
+        assert record["fn"] == "delete_account"
+        assert record["args"] == {"id": 1}
+        assert record["error"].startswith("TypeError")
+
+    def test_value_whose_str_raises_never_reaches_the_agent(self, traces: Path) -> None:
+        """An ORM row detached from its session raises in __repr__."""
+
+        class Detached:
+            def __repr__(self) -> str:
+                raise RuntimeError("Instance is not bound to a Session")
+
+            __str__ = __repr__
+
+        hb = Highbar()
+        row = Detached()
+
+        @hb.tool
+        def load_customer(cid: int) -> Detached:
+            return row
+
+        assert load_customer(1) is row
+        hb.record("x", {"row": row})
+        tools = _of(traces, "tool")
+        assert tools[0]["result"] == "<unserializable Detached>"
+        assert tools[1]["args"] == {"row": "<unserializable Detached>"}
+
+    def test_deeply_nested_value_never_reaches_the_agent(
+        self, traces: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING, logger="highbar")
+        deep: list[Any] = []
+        for _ in range(100_000):
+            deep = [deep]
+        hb = Highbar()
+
+        @hb.tool
+        def build() -> list[Any]:
+            return deep
+
+        assert build() is deep
+        assert "could not write" in caplog.text
+
+    def test_exception_whose_str_raises_is_still_recorded_as_error(self, traces: Path) -> None:
+        class Weird(Exception):
+            def __str__(self) -> str:
+                raise ValueError("cannot render")
+
+        hb = Highbar()
+
+        @hb.tool
+        def flaky() -> None:
+            raise Weird()
+
+        with pytest.raises(Weird):
+            flaky()
+
+        (record,) = _of(traces, "tool")
+        assert record["error"] == "Weird"
+
+    def test_async_tool_behind_a_sync_decorator_records_the_awaited_outcome(
+        self, traces: Path
+    ) -> None:
+        """@hb.tool over a plain wraps() decorator of an async def sees a coroutine."""
+
+        def logged(fn: Any) -> Any:
+            @functools.wraps(fn)
+            def inner(*args: Any, **kwargs: Any) -> Any:
+                return fn(*args, **kwargs)
+
+            return inner
+
+        hb = Highbar()
+
+        @hb.tool
+        @logged
+        async def get_order(order_id: str) -> dict[str, str]:
+            await asyncio.sleep(0.02)
+            if order_id == "bad":
+                raise TimeoutError("upstream timed out")
+            return {"order_id": order_id}
+
+        assert asyncio.run(get_order("7")) == {"order_id": "7"}
+        with pytest.raises(TimeoutError):
+            asyncio.run(get_order("bad"))
+
+        ok, failed = _of(traces, "tool")
+        assert ok["result"] == {"order_id": "7"}
+        assert ok["ended_at"] - ok["started_at"] >= 0.02
+        assert failed["error"] == "TimeoutError: upstream timed out"
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_turn_in_a_generator_stepped_in_copied_contexts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool
+    ) -> None:
+        """Starlette steps a sync streaming body with each next() in a copy of the context."""
+        if enabled:
+            monkeypatch.setenv(ENV, str(tmp_path / "t.jsonl"))
+        else:
+            monkeypatch.delenv(ENV, raising=False)
+        hb = Highbar()
+
+        def stream() -> Iterator[str]:
+            with hb.turn(test="t1"):
+                yield "a"
+                yield "b"
+
+        chunks = stream()
+        received = []
+        while True:
+            try:
+                received.append(contextvars.copy_context().run(next, chunks))
+            except StopIteration:
+                break
+
+        assert received == ["a", "b"]
