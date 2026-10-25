@@ -11,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from highbar.cli.main import _discover_specs, app
+from highbar.domain.models import RunSummary
 
 runner = CliRunner()
 
@@ -61,6 +62,51 @@ class TestDiscoverSpecs:
 
     def test_no_argument_searches_specs(self, project: Path) -> None:
         assert _discover_specs("") == ["specs/menu/menu.highbar.yaml"]
+
+
+def _summary(**counts: int) -> RunSummary:
+    values = {"total": 1, "passed": 0, "failed": 0, "errored": 0} | counts
+    return RunSummary(duration_ms=10.0, **values)
+
+
+class TestExitCodes:
+    def test_version_flag(self) -> None:
+        result = runner.invoke(app, ["--version"])
+
+        assert result.exit_code == 0, result.output
+        assert result.output.startswith("highbar ")
+
+    def test_no_specs_found_exits_2(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["run"])
+
+        assert result.exit_code == 2, result.output
+
+    def test_errored_test_exits_1(self, project: Path) -> None:
+        with patch("highbar.cli.main.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(errored=1)
+            result = runner.invoke(app, ["run", "specs/"])
+
+        assert result.exit_code == 1, result.output
+
+    def test_all_passed_exits_0(self, project: Path) -> None:
+        with patch("highbar.cli.main.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/"])
+
+        assert result.exit_code == 0, result.output
+
+    def test_total_line_when_more_than_one_spec(self, project: Path) -> None:
+        second = project / "specs" / "menu" / "other.highbar.yaml"
+        second.write_text(textwrap.dedent(SPEC), encoding="utf-8")
+
+        with patch("highbar.cli.main.TestRunner") as fake:
+            fake.return_value.run.side_effect = [_summary(passed=1), _summary(failed=1)]
+            result = runner.invoke(app, ["run", "specs/"])
+
+        assert result.exit_code == 1, result.output
+        assert "Total: 1 passed | 1 failed | 0.02s" in result.output
 
 
 class TestVariationsCommand:

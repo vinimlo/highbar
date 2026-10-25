@@ -16,11 +16,18 @@ from highbar.adapters.http_client import HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
+from highbar.domain.models import RunSummary
 from highbar.engine.parser import parse_spec
 from highbar.engine.runner import TestRunner
-from highbar.reporters.terminal import TerminalReporter
+from highbar.reporters.terminal import TerminalReporter, format_summary
 from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
 from highbar.variations.generator import VariationError, VariationGenerator
+
+# Exit codes. CI tells "the agent misbehaved" (1) from "nothing could be checked" (2):
+# a broken spec or an agent that never came up is a different fix from a red test.
+EXIT_OK = 0
+EXIT_FAILED = 1
+EXIT_UNRUNNABLE = 2
 
 app = typer.Typer(
     name="highbar",
@@ -28,6 +35,43 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+
+def _version() -> str:
+    try:
+        return version("highbar")
+    except PackageNotFoundError:
+        return "dev"
+
+
+def _print_version(value: bool) -> None:
+    if value:
+        typer.echo(f"highbar {_version()}")
+        raise typer.Exit(EXIT_OK)
+
+
+@app.callback()
+def _main(
+    show_version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_print_version,
+        is_eager=True,
+        help="Show the version and exit.",
+    ),
+) -> None:
+    pass
+
+
+def _total(summaries: list[RunSummary]) -> RunSummary:
+    return RunSummary(
+        total=sum(s.total for s in summaries),
+        passed=sum(s.passed for s in summaries),
+        failed=sum(s.failed for s in summaries),
+        errored=sum(s.errored for s in summaries),
+        duration_ms=sum(s.duration_ms for s in summaries),
+        variations=sum(s.variations for s in summaries),
+    )
 
 
 @app.command()
@@ -52,19 +96,15 @@ def run(
     paths = _discover_specs(spec_path)
     if not paths:
         console.print("[red]No spec files found.[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_UNRUNNABLE)
 
-    try:
-        _ver = version("highbar")
-    except PackageNotFoundError:
-        _ver = "dev"
-    console.print(f"\n  [bold]Highbar v{_ver}[/bold]")
+    console.print(f"\n  [bold]Highbar v{_version()}[/bold]")
 
     # One cache for the whole run. It reads its file lazily, so specs that ask for no
     # variations never touch it.
     generator = VariationGenerator(VariationCache(find_cache_path()), frozen=frozen)
 
-    any_failed = False
+    summaries: list[RunSummary] = []
     for path in paths:
         console.print(f"  Running {escape(path)}")
         spec = parse_spec(path)
@@ -94,12 +134,14 @@ def run(
             variations=generator,
         )
 
-        summary = runner.run(spec)
-        if summary.failed > 0:
-            any_failed = True
+        summaries.append(runner.run(spec))
 
-    if any_failed:
-        raise typer.Exit(1)
+    total = _total(summaries)
+    if len(summaries) > 1:
+        console.print(f"  Total: {format_summary(total, styled=True)}\n")
+
+    # An error is not a pass: a run where a test could not be checked is not green.
+    raise typer.Exit(EXIT_FAILED if total.failed or total.errored else EXIT_OK)
 
 
 @app.command()

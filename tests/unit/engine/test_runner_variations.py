@@ -13,12 +13,14 @@ from highbar.domain.models import (
     Expect,
     FunctionCallExpect,
     Spec,
+    Status,
     Suite,
     Test,
     Trace,
 )
 from highbar.engine.runner import TestRunner
 from highbar.reporters.terminal import TerminalReporter
+from highbar.variations.generator import VariationError
 
 
 class _Collector:
@@ -234,8 +236,8 @@ class TestGeneratorFailure:
             ],
         )
 
-    def test_it_fails_that_test_and_the_run_goes_on(self) -> None:
-        """A missing cache is one red test, not a traceback that loses every other result."""
+    def test_it_errors_that_test_and_the_run_goes_on(self) -> None:
+        """A missing cache is one test in error, not a traceback that loses every other result."""
         collector = _Collector({"what's on the menu": ["list_categories"]})
         client = _Client(collector)
         reporter = Mock()
@@ -244,12 +246,30 @@ class TestGeneratorFailure:
 
         summary = runner.run(self._spec_with_two_tests())
 
-        assert (summary.total, summary.passed, summary.failed) == (2, 1, 1)
+        assert (summary.total, summary.passed, summary.failed, summary.errored) == (2, 1, 0, 1)
         _, failed = reporter.on_test_result.call_args_list[0][0]
         assert "Could not get variations" in failed.errors[0]
         assert "HIGHBAR_LLM_API_KEY" in failed.errors[0]
         # The agent is not sent a phrasing for a test whose variations are unavailable.
         assert client.sent == ["what's on the menu"]
+
+    def test_variation_generation_failure_is_error(self) -> None:
+        """Without the paraphrases the test was not run, so it cannot have failed."""
+
+        class _Refusing:
+            def generate(self, trigger: str, count: int) -> list[str]:
+                raise VariationError("No cached variations for 'show me the menu'")
+
+        collector = _Collector({})
+        client = _Client(collector)
+        reporter = Mock()
+        runner = _runner(collector, client, _Refusing())
+        runner._reporter = reporter
+
+        runner.run(_spec(3))
+
+        _, result = reporter.on_test_result.call_args[0]
+        assert result.status is Status.ERROR
 
 
 class TestTerminalOutput:
