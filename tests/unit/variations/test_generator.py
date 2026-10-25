@@ -154,6 +154,19 @@ class TestGenerate:
         with pytest.raises(VariationError, match="HIGHBAR_LLM_API_KEY"):
             generator.generate("hi", 10)
 
+    def test_r4_missing_key_points_to_env_var_and_cache(self, tmp_path: Path) -> None:
+        """The old text told you to run `highbar variations`, which fails the same way."""
+        cache_path = tmp_path / "v.json"
+        generator = VariationGenerator(VariationCache(str(cache_path)), api_key="", model="m")
+
+        with pytest.raises(VariationError) as raised:
+            generator.generate("hi", 10)
+
+        message = str(raised.value)
+        assert "HIGHBAR_LLM_API_KEY" in message
+        assert str(cache_path) in message
+        assert "Generate them once" not in message
+
     def test_more_variations_than_asked_are_trimmed(self, tmp_path: Path) -> None:
         generator = VariationGenerator(
             VariationCache(str(tmp_path / "v.json")), api_key="sk-test", model="m"

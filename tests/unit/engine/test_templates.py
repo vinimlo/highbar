@@ -1,9 +1,17 @@
 """Tests for {{previous.*}} template resolution."""
 
+from typing import Any
+
 import pytest
 
 from highbar.domain.models import Trace
-from highbar.engine.templates import resolve_template
+from highbar.engine.templates import TemplateError, resolve_template
+
+
+def _trace(result: Any) -> Trace:
+    return Trace(
+        id="t1", seq=0, fn="find_order", args={}, result=result, started_at=1.0, ended_at=1.1
+    )
 
 
 class TestResolveTemplate:
@@ -93,5 +101,47 @@ class TestResolveTemplate:
     def test_missing_index_raises(self) -> None:
         traces: list[Trace] = []
         template = "{{previous.function_calls[0].result.x}}"
-        with pytest.raises(IndexError):
+        with pytest.raises(TemplateError):
             resolve_template(template, traces)
+
+
+class TestHonestTemplates:
+    def test_d15_spaces_inside_braces(self) -> None:
+        template = "id {{ previous.function_calls[0].result.id }}"
+
+        assert resolve_template(template, [_trace({"id": 7})]) == "id 7"
+
+    def test_d15_list_value_renders_as_json(self) -> None:
+        """A Python repr (['sneakers']) is not what anyone would type to the agent."""
+        template = "{{previous.function_calls[0].result.items}}"
+
+        assert resolve_template(template, [_trace({"items": ["sneakers"]})]) == '["sneakers"]'
+
+    def test_dict_value_renders_as_json(self) -> None:
+        template = "{{previous.function_calls[0].result}}"
+
+        assert resolve_template(template, [_trace({"a": 1})]) == '{"a": 1}'
+
+    def test_a5_missing_call_raises_template_error(self) -> None:
+        template = "cancel {{previous.function_calls[0].result.id}}"
+
+        with pytest.raises(TemplateError, match=r"function_calls\[0\].*only 0 calls"):
+            resolve_template(template, [])
+
+    def test_a5_missing_key_lists_available_keys(self) -> None:
+        template = "{{previous.function_calls[0].result.nope}}"
+
+        with pytest.raises(TemplateError, match=r"no key 'nope' \(keys: id\)"):
+            resolve_template(template, [_trace({"id": 7})])
+
+    def test_nested_indices_resolve(self) -> None:
+        template = "{{previous.function_calls[0].result.m[1][0]}}"
+
+        assert resolve_template(template, [_trace({"m": [[1, 2], [3, 4]]})]) == "3"
+
+    def test_malformed_path_is_an_error(self) -> None:
+        """`m[1]x` used to drop the `x` and resolve to m[1]: a wrong value, silently."""
+        template = "{{previous.function_calls[0].result.m[1]x}}"
+
+        with pytest.raises(TemplateError, match="invalid path"):
+            resolve_template(template, [_trace({"m": [1, 2]})])

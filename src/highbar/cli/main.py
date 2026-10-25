@@ -16,11 +16,19 @@ from highbar.adapters.http_client import HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
+from highbar.domain.models import RunSummary, Spec
 from highbar.engine.parser import parse_spec
 from highbar.engine.runner import TestRunner
-from highbar.reporters.terminal import TerminalReporter
+from highbar.engine.schema import SpecError
+from highbar.reporters.terminal import TerminalReporter, format_summary
 from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
 from highbar.variations.generator import VariationError, VariationGenerator
+
+# Exit codes. CI tells "the agent misbehaved" (1) from "nothing could be checked" (2):
+# a broken spec or an agent that never came up is a different fix from a red test.
+EXIT_OK = 0
+EXIT_FAILED = 1
+EXIT_UNRUNNABLE = 2
 
 app = typer.Typer(
     name="highbar",
@@ -28,6 +36,43 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+
+def _version() -> str:
+    try:
+        return version("highbar")
+    except PackageNotFoundError:
+        return "dev"
+
+
+def _print_version(value: bool) -> None:
+    if value:
+        typer.echo(f"highbar {_version()}")
+        raise typer.Exit(EXIT_OK)
+
+
+@app.callback()
+def _main(
+    show_version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_print_version,
+        is_eager=True,
+        help="Show the version and exit.",
+    ),
+) -> None:
+    pass
+
+
+def _total(summaries: list[RunSummary]) -> RunSummary:
+    return RunSummary(
+        total=sum(s.total for s in summaries),
+        passed=sum(s.passed for s in summaries),
+        failed=sum(s.failed for s in summaries),
+        errored=sum(s.errored for s in summaries),
+        duration_ms=sum(s.duration_ms for s in summaries),
+        variations=sum(s.variations for s in summaries),
+    )
 
 
 @app.command()
@@ -52,22 +97,23 @@ def run(
     paths = _discover_specs(spec_path)
     if not paths:
         console.print("[red]No spec files found.[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_UNRUNNABLE)
 
-    try:
-        _ver = version("highbar")
-    except PackageNotFoundError:
-        _ver = "dev"
-    console.print(f"\n  [bold]Highbar v{_ver}[/bold]")
+    console.print(f"\n  [bold]Highbar v{_version()}[/bold]")
+
+    # Every spec is parsed before any agent starts: a typo in the third file must not
+    # cost the time of running the first two, nor leave half a run behind.
+    specs = _parse_all(paths)
+    if specs is None:
+        raise typer.Exit(EXIT_UNRUNNABLE)
 
     # One cache for the whole run. It reads its file lazily, so specs that ask for no
     # variations never touch it.
     generator = VariationGenerator(VariationCache(find_cache_path()), frozen=frozen)
 
-    any_failed = False
-    for path in paths:
+    summaries: list[RunSummary] = []
+    for path, spec in specs:
         console.print(f"  Running {escape(path)}")
-        spec = parse_spec(path)
 
         with tempfile.NamedTemporaryFile(
             suffix=".jsonl", prefix="highbar-traces-", delete=False
@@ -94,12 +140,14 @@ def run(
             variations=generator,
         )
 
-        summary = runner.run(spec)
-        if summary.failed > 0:
-            any_failed = True
+        summaries.append(runner.run(spec))
 
-    if any_failed:
-        raise typer.Exit(1)
+    total = _total(summaries)
+    if len(summaries) > 1:
+        console.print(f"  Total: {format_summary(total, styled=True)}\n")
+
+    # An error is not a pass: a run where a test could not be checked is not green.
+    raise typer.Exit(EXIT_FAILED if total.failed or total.errored else EXIT_OK)
 
 
 @app.command()
@@ -119,7 +167,7 @@ def variations(
     paths = _discover_specs(spec_path)
     if not paths:
         console.print("[red]No spec files found.[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_UNRUNNABLE)
 
     cache = VariationCache(find_cache_path())
     generator = VariationGenerator(cache)
@@ -127,8 +175,11 @@ def variations(
     reused = 0
     short = 0
 
-    for path in paths:
-        spec = parse_spec(path)
+    specs = _parse_all(paths)
+    if specs is None:
+        raise typer.Exit(EXIT_UNRUNNABLE)
+
+    for _, spec in specs:
         for suite in spec.suites:
             for test in suite.tests:
                 if not test.variations or not test.trigger:
@@ -180,19 +231,41 @@ def variations(
 
 @app.command()
 def validate(
-    spec_path: str = typer.Argument(help="Path to a .highbar.yaml spec file"),
+    spec_path: str = typer.Argument(
+        default="",
+        help="Spec file or directory to validate. If omitted, all specs in specs/",
+    ),
 ) -> None:
-    """Validate spec syntax without running tests."""
-    try:
-        spec = parse_spec(spec_path)
-        test_count = sum(len(s.tests) for s in spec.suites)
-        suite_count = len(spec.suites)
-        console.print(
-            f"  [green]\u2713[/green] Valid: {suite_count} suite(s), {test_count} test(s)"
-        )
-    except Exception as e:
-        console.print(f"  [red]\u2717[/red] Invalid: {e}")
-        raise typer.Exit(1) from e
+    """Validate specs without running tests."""
+    paths = _discover_specs(spec_path)
+    if not paths:
+        console.print("[red]No spec files found.[/red]")
+        raise typer.Exit(EXIT_UNRUNNABLE)
+
+    specs = _parse_all(paths, report_valid=True)
+    raise typer.Exit(EXIT_UNRUNNABLE if specs is None else EXIT_OK)
+
+
+def _parse_all(paths: list[str], *, report_valid: bool = False) -> list[tuple[str, Spec]] | None:
+    """Parse every spec, printing one line per invalid one. ``None`` if any is invalid."""
+    specs: list[tuple[str, Spec]] = []
+    invalid = False
+    for path in paths:
+        try:
+            spec = parse_spec(path)
+        except SpecError as e:
+            # The message already starts with the file's path.
+            console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)
+            invalid = True
+            continue
+        specs.append((path, spec))
+        if report_valid:
+            tests = sum(len(s.tests) for s in spec.suites)
+            console.print(
+                f"  [green]\u2713[/green] Valid: {escape(path)} "
+                f"({len(spec.suites)} suite(s), {tests} test(s))"
+            )
+    return None if invalid else specs
 
 
 @app.command()

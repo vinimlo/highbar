@@ -2,8 +2,37 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
+
+
+class Status(StrEnum):
+    """How a test ended.
+
+    ``ERROR`` means the behavior could not be checked (the agent was unreachable, the
+    paraphrases were missing): nothing was verified, so it is neither a pass nor a
+    failure of the agent, and it must never be reported as either.
+    """
+
+    PASSED = "passed"
+    FAILED = "failed"
+    ERROR = "error"
+
+
+def combine(statuses: Iterable[Status]) -> Status:
+    """The status of a test made of parts (turns, phrasings).
+
+    Any failure wins: the agent did something wrong, and that holds even if another
+    part could not be checked. Otherwise any error makes the whole unverified.
+    """
+    seen = set(statuses)
+    if Status.FAILED in seen:
+        return Status.FAILED
+    if Status.ERROR in seen:
+        return Status.ERROR
+    return Status.PASSED
 
 
 @dataclass(frozen=True)
@@ -82,6 +111,7 @@ class Turn:
 
     trigger: str
     expect: Expect
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +127,7 @@ class Test:
     expect: Expect | None = None
     turns: list[Turn] | None = None
     variations: int = 0
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -127,10 +158,14 @@ class AssertionResult:
 class TestResult:
     """Result of running a single test."""
 
-    passed: bool
+    status: Status
     errors: list[str]
     duration_ms: float
     traces: list[Trace] = field(default_factory=list)
+
+    @property
+    def passed(self) -> bool:
+        return self.status is Status.PASSED
 
 
 @dataclass(frozen=True)
@@ -144,5 +179,6 @@ class RunSummary:
     total: int
     passed: int
     failed: int
+    errored: int
     duration_ms: float
     variations: int = 0

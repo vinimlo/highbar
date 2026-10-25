@@ -6,10 +6,12 @@ from highbar.domain.models import (
     Expect,
     FunctionCallExpect,
     RunSummary,
+    Status,
     Test,
     TestResult,
     Trace,
     Turn,
+    combine,
 )
 
 
@@ -107,17 +109,29 @@ class TestTest:
 
 class TestTestResult:
     def test_passed(self) -> None:
-        result = TestResult(passed=True, errors=[], duration_ms=100.0)
+        result = TestResult(status=Status.PASSED, errors=[], duration_ms=100.0)
         assert result.passed
 
     def test_failed(self) -> None:
         result = TestResult(
-            passed=False,
+            status=Status.FAILED,
             errors=["expected search_orders, got none"],
             duration_ms=200.0,
         )
         assert not result.passed
         assert len(result.errors) == 1
+
+    def test_error_is_not_passed(self) -> None:
+        result = TestResult(status=Status.ERROR, errors=["HTTP error: refused"], duration_ms=1.0)
+        assert not result.passed
+
+
+class TestCombine:
+    def test_combine_prefers_failed_over_error(self) -> None:
+        """A wrong answer is the stronger finding: it holds even if another part errored."""
+        assert combine([Status.ERROR, Status.FAILED, Status.PASSED]) is Status.FAILED
+        assert combine([Status.PASSED, Status.ERROR]) is Status.ERROR
+        assert combine([]) is Status.PASSED
 
 
 class TestAssertionResult:
@@ -134,9 +148,11 @@ class TestRunSummary:
     def test_summary(self) -> None:
         summary = RunSummary(
             total=10,
-            passed=8,
+            passed=7,
             failed=2,
+            errored=1,
             duration_ms=5000.0,
         )
         assert summary.total == 10
         assert summary.failed == 2
+        assert summary.errored == 1

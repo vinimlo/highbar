@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import textwrap
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from highbar.cli.main import _discover_specs, app
+from highbar.domain.models import RunSummary
 
 runner = CliRunner()
 
@@ -63,7 +65,112 @@ class TestDiscoverSpecs:
         assert _discover_specs("") == ["specs/menu/menu.highbar.yaml"]
 
 
+def _summary(**counts: int) -> RunSummary:
+    values = {"total": 1, "passed": 0, "failed": 0, "errored": 0} | counts
+    return RunSummary(duration_ms=10.0, **values)
+
+
+class TestExitCodes:
+    def test_version_flag(self) -> None:
+        result = runner.invoke(app, ["--version"])
+
+        assert result.exit_code == 0, result.output
+        assert result.output.startswith("highbar ")
+
+    def test_no_specs_found_exits_2(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["run"])
+
+        assert result.exit_code == 2, result.output
+
+    def test_errored_test_exits_1(self, project: Path) -> None:
+        with patch("highbar.cli.main.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(errored=1)
+            result = runner.invoke(app, ["run", "specs/"])
+
+        assert result.exit_code == 1, result.output
+
+    def test_all_passed_exits_0(self, project: Path) -> None:
+        with patch("highbar.cli.main.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/"])
+
+        assert result.exit_code == 0, result.output
+
+    def test_total_line_when_more_than_one_spec(self, project: Path) -> None:
+        second = project / "specs" / "menu" / "other.highbar.yaml"
+        second.write_text(textwrap.dedent(SPEC), encoding="utf-8")
+
+        with patch("highbar.cli.main.TestRunner") as fake:
+            fake.return_value.run.side_effect = [_summary(passed=1), _summary(failed=1)]
+            result = runner.invoke(app, ["run", "specs/"])
+
+        assert result.exit_code == 1, result.output
+        assert "Total: 1 passed | 1 failed | 0.02s" in result.output
+
+
+class TestSpecErrors:
+    """A spec that cannot run is one line and exit code 2, before any agent starts."""
+
+    def test_run_missing_file_exits_2_without_traceback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["run", "nope.highbar.yaml"])
+
+        assert result.exit_code == 2, result.output
+        assert "no such file" in result.output
+        assert "Traceback" not in result.output
+
+    def test_run_invalid_spec_exits_2_before_starting_agent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        start = f"{sys.executable} -c \"open('MARKER', 'w')\""
+        (tmp_path / "bad.highbar.yaml").write_text(
+            textwrap.dedent(f"""\
+                agent:
+                  start: {json.dumps(start)}
+                  endpoint: "http://localhost:8000/chat"
+                  startup_timeout: 1000
+                suites:
+                  - name: S
+                    tests:
+                      - trigger: "hi"
+                        expect:
+                          responce: {{contains: "hello"}}
+                """),
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(app, ["run", "bad.highbar.yaml"])
+
+        assert result.exit_code == 2, result.output
+        assert "did you mean 'response'" in result.output
+        assert not (tmp_path / "MARKER").exists()
+
+    def test_validate_accepts_directory(self, project: Path) -> None:
+        bad = project / "specs" / "bad.highbar.yaml"
+        bad.write_text(textwrap.dedent(SPEC).replace("function_calls:", "function_call:"))
+
+        result = runner.invoke(app, ["validate", "specs/"])
+
+        assert result.exit_code == 2, result.output
+        lines = result.output.splitlines()
+        assert any("✓" in line and "menu.highbar.yaml" in line for line in lines)
+        assert any("✗" in line and "bad.highbar.yaml" in line for line in lines)
+
+
 class TestVariationsCommand:
+    def test_no_specs_found_exits_2(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["variations"])
+
+        assert result.exit_code == 2, result.output
+
     @pytest.mark.parametrize("argument", [["specs/"], [], ["specs/menu/menu.highbar.yaml"]])
     def test_generates_and_writes_the_cache(self, project: Path, argument: list[str]) -> None:
         """`highbar variations specs/` is the command the README documents."""

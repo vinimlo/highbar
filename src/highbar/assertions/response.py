@@ -7,6 +7,13 @@ import re
 from highbar.domain.models import AssertionResult, Expect, Trace
 
 
+def truncate(text: str, limit: int = 300) -> str:
+    """Cut ``text`` at ``limit`` characters, ending with an ellipsis only when it cut."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\u2026"
+
+
 class ResponseAssertion:
     """Evaluates response text against expected patterns."""
 
@@ -16,6 +23,8 @@ class ResponseAssertion:
 
         results: list[AssertionResult] = []
         resp = expect.response
+        # What the agent said is the first thing anyone asks when this fails.
+        got = repr(truncate(response))
 
         if resp.contains is not None:
             if resp.contains in response:
@@ -24,7 +33,7 @@ class ResponseAssertion:
                 results.append(
                     AssertionResult(
                         passed=False,
-                        message=f"Response does not contain '{resp.contains}'",
+                        message=f"Response does not contain '{resp.contains}'. Got: {got}",
                     )
                 )
 
@@ -33,7 +42,9 @@ class ResponseAssertion:
                 results.append(
                     AssertionResult(
                         passed=False,
-                        message=f"Response contains forbidden text '{resp.not_contains}'",
+                        message=(
+                            f"Response contains forbidden text '{resp.not_contains}'. Got: {got}"
+                        ),
                     )
                 )
             else:
@@ -46,7 +57,7 @@ class ResponseAssertion:
                 results.append(
                     AssertionResult(
                         passed=False,
-                        message=f"Response does not match pattern '{resp.matches}'",
+                        message=f"Response does not match pattern '{resp.matches}'. Got: {got}",
                     )
                 )
 

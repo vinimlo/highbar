@@ -103,10 +103,11 @@ class VariationGenerator:
 
     def _call_llm(self, trigger: str, count: int) -> list[str]:
         if not self._api_key:
+            # Pointing at `highbar variations` alone would send the user to a command
+            # that fails the same way: say what it needs, and the way around it.
             msg = (
-                f"No cached variations for {trigger!r} and HIGHBAR_LLM_API_KEY is not set.\n"
-                "Generate them once with `highbar variations <spec>` and commit the cache "
-                "file — runs are then deterministic and offline."
+                f"No cached variations for {trigger!r}. Set HIGHBAR_LLM_API_KEY to generate "
+                f"them with `highbar variations`, or write them by hand in {self._cache.path}."
             )
             raise VariationError(msg)
 

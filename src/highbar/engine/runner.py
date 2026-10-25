@@ -6,17 +6,20 @@ import time
 
 from highbar.adapters.http_client import HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
+from highbar.assertions.response import truncate
 from highbar.domain.models import (
     Expect,
     RunSummary,
     Spec,
+    Status,
     Test,
     TestResult,
     Trace,
     Turn,
+    combine,
 )
 from highbar.domain.protocols import Assertion, Reporter, TraceCollector, VariationGenerator
-from highbar.engine.templates import resolve_template
+from highbar.engine.templates import TemplateError, resolve_template
 
 
 def _test_name(test: Test, variations_run: int | None = None) -> str:
@@ -26,12 +29,24 @@ def _test_name(test: Test, variations_run: int | None = None) -> str:
     produced 3 of the 5 requested, saying "5 variations" overstates what was tested.
     """
     if test.turns:
-        return f"multi-turn ({len(test.turns)} turns)"
+        return test.name or f"multi-turn ({len(test.turns)} turns)"
+    label = test.name or test.trigger or ""
     if test.variations:
         if variations_run is None or variations_run == test.variations:
-            return f"{test.trigger} ({test.variations} variations)"
-        return f"{test.trigger} ({variations_run} of {test.variations} variations)"
-    return test.trigger or ""
+            return f"{label} ({test.variations} variations)"
+        return f"{label} ({variations_run} of {test.variations} variations)"
+    return label
+
+
+def _turn_label(turn: Turn, previous_traces: list[Trace]) -> str:
+    """The turn's ``name``, or the message it sends, cut at 80 characters."""
+    if turn.name:
+        return turn.name
+    try:
+        trigger = resolve_template(turn.trigger, previous_traces)
+    except TemplateError:
+        trigger = turn.trigger
+    return truncate(trigger, 80)
 
 
 class TestRunner:
@@ -59,9 +74,7 @@ class TestRunner:
 
     def run(self, spec: Spec) -> RunSummary:
         """Run all suites in the spec."""
-        total = 0
-        passed = 0
-        failed = 0
+        counts = dict.fromkeys(Status, 0)
         self._variations_run = 0
         run_start = time.time()
 
@@ -70,13 +83,9 @@ class TestRunner:
             for suite in spec.suites:
                 self._reporter.on_suite_start(suite)
                 for test in suite.tests:
-                    total += 1
                     self._last_variation_count = None
                     result = self._run_test(test)
-                    if result.passed:
-                        passed += 1
-                    else:
-                        failed += 1
+                    counts[result.status] += 1
                     self._reporter.on_test_result(
                         _test_name(test, self._last_variation_count), result
                     )
@@ -85,9 +94,10 @@ class TestRunner:
 
         run_duration = (time.time() - run_start) * 1000
         summary = RunSummary(
-            total=total,
-            passed=passed,
-            failed=failed,
+            total=sum(counts.values()),
+            passed=counts[Status.PASSED],
+            failed=counts[Status.FAILED],
+            errored=counts[Status.ERROR],
             duration_ms=run_duration,
             variations=self._variations_run,
         )
@@ -131,14 +141,14 @@ class TestRunner:
             )
             raise ValueError(msg)
 
-        # A missing cache, a missing key or a failed LLM call is this test's failure,
+        # A missing cache, a missing key or a failed LLM call leaves this test unverified,
         # not a reason to abort the run and lose the results of every other test.
         try:
             paraphrases = self._variations.generate(trigger, count)
         except Exception as e:
             self._last_variation_count = 0
             return TestResult(
-                passed=False,
+                status=Status.ERROR,
                 errors=[f"Could not get variations: {e}"],
                 duration_ms=(time.time() - start) * 1000,
             )
@@ -148,10 +158,12 @@ class TestRunner:
 
         errors: list[str] = []
         traces: list[Trace] = []
+        statuses: list[Status] = []
 
         for index, phrasing in enumerate(triggers):
             result = self._run_single_turn(phrasing, expect, time.time(), [])
             traces.extend(result.traces)
+            statuses.append(result.status)
 
             if index > 0:
                 self._variations_run += 1
@@ -163,7 +175,7 @@ class TestRunner:
             errors.extend(f'[{label}: "{phrasing}"] {error}' for error in result.errors)
 
         return TestResult(
-            passed=not errors,
+            status=combine(statuses),
             errors=errors,
             duration_ms=(time.time() - start) * 1000,
             traces=traces,
@@ -173,15 +185,24 @@ class TestRunner:
         self, trigger: str, expect: Expect, start: float, previous_traces: list[Trace]
     ) -> TestResult:
         """Run a single trigger-expect pair."""
-        resolved_trigger = resolve_template(trigger, previous_traces)
+        try:
+            resolved_trigger = resolve_template(trigger, previous_traces)
+        except TemplateError as e:
+            # Sending the raw "{{...}}" would test a message nobody meant to write; the
+            # turn is unverified, and the rest of the run goes on.
+            duration = (time.time() - start) * 1000
+            return TestResult(status=Status.ERROR, errors=[str(e)], duration_ms=duration)
 
         checkpoint = self._collector.checkpoint()
 
         try:
             response = self._client.send(resolved_trigger)
         except Exception as e:
+            # The message never reached the agent, so its behavior was not checked.
             duration = (time.time() - start) * 1000
-            return TestResult(passed=False, errors=[f"HTTP error: {e}"], duration_ms=duration)
+            return TestResult(
+                status=Status.ERROR, errors=[f"HTTP error: {e}"], duration_ms=duration
+            )
 
         time.sleep(self._settle_time)
         traces = self._collector.collect(since=checkpoint)
@@ -195,29 +216,36 @@ class TestRunner:
 
         duration = (time.time() - start) * 1000
         return TestResult(
-            passed=len(errors) == 0,
+            status=Status.FAILED if errors else Status.PASSED,
             errors=errors,
             duration_ms=duration,
             traces=traces,
         )
 
     def _run_multi_turn(self, turns: list[Turn], start: float) -> TestResult:
-        """Run a multi-turn test, threading traces between turns."""
+        """Run a multi-turn test, threading traces between turns.
+
+        It stops at the first turn that does not pass: later turns build on that one's
+        state, so running them would test a conversation that did not happen.
+        """
         all_traces: list[Trace] = []
         all_errors: list[str] = []
+        statuses: list[Status] = []
 
-        for turn in turns:
+        for number, turn in enumerate(turns, start=1):
+            # Which turn broke is the finding: "Expected X" alone does not say where.
+            prefix = f"turn {number}/{len(turns)} ({_turn_label(turn, all_traces)}): "
             result = self._run_single_turn(turn.trigger, turn.expect, start, all_traces)
             all_traces.extend(result.traces)
-            all_errors.extend(result.errors)
+            all_errors.extend(prefix + error for error in result.errors)
+            statuses.append(result.status)
 
             if not result.passed:
                 break
 
         duration = (time.time() - start) * 1000
-        failed = len(all_errors) > 0
         return TestResult(
-            passed=not failed,
+            status=combine(statuses),
             errors=all_errors,
             duration_ms=duration,
             traces=all_traces,
