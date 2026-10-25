@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -20,6 +21,7 @@ from highbar.domain.models import (
     TestResult,
     Trace,
     Turn,
+    Window,
     combine,
 )
 from highbar.domain.protocols import Assertion, Reporter, TraceCollector, VariationGenerator
@@ -32,7 +34,7 @@ from highbar.engine.observation import (
     classify,
     describe,
 )
-from highbar.engine.placeholders import PlaceholderError, Values
+from highbar.engine.placeholders import PlaceholderError, Values, render
 from highbar.engine.session import SessionContext, SessionError, SessionHooks
 from highbar.engine.templates import TemplateError, resolve_template
 
@@ -137,6 +139,7 @@ class TestRunner:
         managed: bool = True,
         session: SessionHooks | None = None,
         spec_path: str = "",
+        correlate: Mapping[str, Any] | None = None,
     ) -> None:
         self._adapter = adapter
         self._client = client
@@ -148,6 +151,8 @@ class TestRunner:
         self._managed = managed
         self._session = session
         self._spec_path = spec_path
+        # Which context keys identify a test's records (agent.correlate in the spec).
+        self._correlate = dict(correlate) if correlate is not None else {"test": "{{test.id}}"}
         self._variations_run = 0
         self._last_variation_count: int | None = None
         self._warned_no_context = False
@@ -302,10 +307,32 @@ class TestRunner:
         return (
             f"not observed: no trace record in {self._collector.path} matches this test "
             f"({describe(correlate)}); the {len(records)} read while it ran belong to other "
-            f"executions (context keys: {', '.join(keys)}). highbar.asgi.Middleware tags "
-            "what the agent writes for a message from its X-Highbar-Test header, as "
-            "hb.turn(test=<that header>) does. Run with --keep-traces to inspect the file"
+            f"executions (context keys: {', '.join(keys)}). The context the agent writes "
+            "must carry the keys of agent.correlate; the default, 'test', comes from the "
+            "X-Highbar-Test header, which highbar.asgi.Middleware and "
+            "hb.turn(test=<that header>) write. Run with --keep-traces to inspect the file"
         )
+
+    def _not_observed_attached(self, window: Window, correlate: dict[str, Any]) -> str | None:
+        """Why a window with nothing tagged cannot be trusted in attach mode, if it can't."""
+        records = [*window.tools, *window.turns]
+        keys = sorted({key for record in records for key in record.context})
+        if keys:
+            # The agent tags its records, but not with these keys: what it wrote cannot be
+            # told apart from other traffic on the same agent.
+            return (
+                f"not observed: no trace record in {self._collector.path} carries the keys "
+                f"of agent.correlate ({describe(correlate)}); the ones read while this test "
+                f"ran have context keys: {', '.join(keys)}"
+            )
+        if not records:
+            # An empty window cannot tell "no tool was called" from "the agent records
+            # nothing".
+            return (
+                f"not observed: nothing was written to {self._collector.path} while this "
+                "test ran; the agent must write a turn per message it handles"
+            )
+        return None
 
     def _check(self, tools: list[Trace], response: str, expect: Expect) -> list[str]:
         return [
@@ -522,6 +549,13 @@ class TestRunner:
             return unverified(str(e))
 
         try:
+            execution.correlate = dict(
+                render(self._correlate, replace(values, message=resolved_trigger))
+            )
+        except PlaceholderError as e:
+            return unverified(f"agent.correlate: {e}")
+
+        try:
             response = self._client.send(
                 resolved_trigger, values=replace(values, message=resolved_trigger)
             )
@@ -550,6 +584,12 @@ class TestRunner:
             self._reporter.on_warning(NO_CONTEXT_WARNING)
 
         if not classified.correlated:
+            if expect.requires_observation and not self._managed:
+                # Attach mode: the agent may serve other traffic, and there is no
+                # `hello` from a fresh file to rely on.
+                unobserved = self._not_observed_attached(window, execution.correlate)
+                if unobserved:
+                    return unverified(unobserved)
             # Nothing in the window is tagged: it is all there is to go by.
             traces = window.tools
             errors = self._check(traces, response, expect)

@@ -18,8 +18,9 @@ from highbar.adapters.subprocess_adapter import AgentStartError
 from highbar.domain.models import RunSummary, Spec
 from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.parser import parse_spec
-from highbar.engine.run_spec import run_spec
+from highbar.engine.run_spec import load_session_hooks, run_spec
 from highbar.engine.schema import SpecError
+from highbar.engine.session import SessionError, SessionHooks
 from highbar.reporters.terminal import format_summary
 from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
 from highbar.variations.generator import VariationError, VariationGenerator
@@ -112,6 +113,10 @@ def run(
     specs = _parse_all(paths)
     if specs is None:
         raise typer.Exit(EXIT_UNRUNNABLE)
+    # Python session hooks are imported before any agent starts, like the specs parsed.
+    hooks = _load_all_hooks(specs)
+    if hooks is None:
+        raise typer.Exit(EXIT_UNRUNNABLE)
 
     # One cache for the whole run. It reads its file lazily, so specs that ask for no
     # variations never touch it.
@@ -129,6 +134,7 @@ def run(
                         generator=generator,
                         keep_traces=keep_traces,
                         console=console,
+                        session=hooks[current],
                     )
                 )
     except AgentStartError as e:
@@ -250,6 +256,19 @@ def validate(
 
     specs = _parse_all(paths, report_valid=True)
     raise typer.Exit(EXIT_UNRUNNABLE if specs is None else EXIT_OK)
+
+
+def _load_all_hooks(specs: list[tuple[str, Spec]]) -> dict[str, SessionHooks | None] | None:
+    """Each spec's session hooks, loaded. ``None`` (after one line each) if any fails."""
+    hooks: dict[str, SessionHooks | None] = {}
+    failed = False
+    for path, spec in specs:
+        try:
+            hooks[path] = load_session_hooks(path, spec)
+        except SessionError as e:
+            console.print(f"  [red]\u2717[/red] {escape(path)}: {escape(str(e))}", soft_wrap=True)
+            failed = True
+    return None if failed else hooks
 
 
 def _parse_all(paths: list[str], *, report_valid: bool = False) -> list[tuple[str, Spec]] | None:
