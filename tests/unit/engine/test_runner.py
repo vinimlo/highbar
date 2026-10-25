@@ -13,6 +13,7 @@ from highbar.domain.models import (
     AssertionResult,
     Expect,
     FunctionCallExpect,
+    Hello,
     Spec,
     Status,
     Suite,
@@ -37,7 +38,7 @@ def _make_runner(
 
     collector = MagicMock()
     collector.checkpoint.return_value = 0
-    collector.collect.return_value = Window(tools=traces or [])
+    collector.collect.return_value = Window(tools=traces or [], hellos=[Hello(ts=0.0)])
 
     assertion = MagicMock()
     assertion.evaluate.return_value = assertion_results or [
@@ -219,7 +220,7 @@ class TestTestRunner:
     def test_summary_counts_errors_separately(self) -> None:
         runner, _, client, _, _ = _make_runner()
 
-        def send(trigger: str) -> str:
+        def send(trigger: str, **_: object) -> str:
             if trigger == "unreachable":
                 raise httpx.ConnectError("connection refused")
             return trigger
@@ -267,7 +268,7 @@ class TestTestRunner:
     def test_r2_multi_turn_failure_names_the_turn(self) -> None:
         found = Trace(fn="find_order", args={}, result={"id": 7}, started_at=1.0, ended_at=1.1)
         runner, _, client, _, reporter = _make_runner(traces=[found])
-        client.send.side_effect = lambda trigger: trigger
+        client.send.side_effect = lambda trigger, **_: trigger
         assertion = MagicMock()
         assertion.evaluate.side_effect = lambda traces, response, expect: [
             AssertionResult(passed=response != "refund order 7", message="Expected X")

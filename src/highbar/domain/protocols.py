@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol
 
 from highbar.domain.models import (
@@ -32,6 +33,8 @@ class Reporter(Protocol):
 
     def on_run_end(self, summary: RunSummary) -> None: ...
 
+    def on_warning(self, message: str) -> None: ...
+
 
 class AgentAdapter(Protocol):
     """Manages the agent process lifecycle."""
@@ -49,6 +52,9 @@ class VariationGenerator(Protocol):
 
 class TraceCollector(Protocol):
     """Reads the records an instrumented agent writes (the trace contract)."""
+
+    @property
+    def path(self) -> Path: ...
 
     def checkpoint(self) -> int: ...
 

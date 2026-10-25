@@ -5,10 +5,11 @@ from __future__ import annotations
 import uvicorn
 from fastapi import FastAPI
 
-from highbar import Highbar
+from highbar import Highbar, asgi
 
 app = FastAPI()
 hb = Highbar()
+app.add_middleware(asgi.Middleware, hb=hb)
 
 
 @hb.tool

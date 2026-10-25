@@ -16,6 +16,7 @@ from rich.markup import escape
 
 from highbar.adapters.subprocess_adapter import AgentStartError
 from highbar.domain.models import RunSummary, Spec
+from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.parser import parse_spec
 from highbar.engine.run_spec import run_spec
 from highbar.engine.schema import SpecError
@@ -137,6 +138,10 @@ def run(
             f"  [red]\u2717[/red] {escape(current)}: could not start the agent: {escape(str(e))}",
             soft_wrap=True,
         )
+        raise typer.Exit(EXIT_UNRUNNABLE) from None
+    except AgentNotObservedError as e:
+        # Nothing could be checked: the agent is up but not instrumented (or not ours).
+        console.print(f"  [red]\u2717[/red] {escape(current)}: {escape(str(e))}", soft_wrap=True)
         raise typer.Exit(EXIT_UNRUNNABLE) from None
     except KeyboardInterrupt:
         # The runner's finally has already stopped the agent's process group.

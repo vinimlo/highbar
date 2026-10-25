@@ -56,6 +56,9 @@ class TerminalReporter:
         for error in result.errors:
             self._console.print(f"      [{color}]→ {escape(error)}[/{color}]")
 
+    def on_warning(self, message: str) -> None:
+        self._console.print(f"  [yellow]! {escape(message)}[/yellow]", soft_wrap=True)
+
     def on_run_end(self, summary: RunSummary) -> None:
         self._console.print()
         self._console.print(f"  {format_summary(summary, styled=True)}")

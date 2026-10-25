@@ -136,6 +136,15 @@ class Expect:
     function_calls: list[FunctionCallExpect] | None = None
     response: ResponseExpect | None = None
 
+    @property
+    def requires_observation(self) -> bool:
+        """Checks tool calls, so it needs proof the instrumented agent saw the message.
+
+        ``function_calls: []`` included: "no tool was called" means nothing unless the
+        message reached an agent that would have recorded one.
+        """
+        return self.function_calls is not None
+
 
 @dataclass(frozen=True)
 class Turn:
@@ -160,6 +169,12 @@ class Test:
     turns: list[Turn] | None = None
     variations: int = 0
     name: str | None = None
+
+    @property
+    def requires_observation(self) -> bool:
+        if self.turns:
+            return any(turn.expect.requires_observation for turn in self.turns)
+        return self.expect is not None and self.expect.requires_observation
 
 
 @dataclass(frozen=True)
