@@ -89,7 +89,9 @@ class SubprocessAdapter:
 
         try:
             self._wait_until_ready(host, port)
-        except AgentStartError:
+        except BaseException:
+            # Startup failed or was interrupted (Ctrl-C lands here too): take the group
+            # down before the error leaves, or nothing else will.
             self.stop()
             raise
 
