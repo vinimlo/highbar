@@ -137,6 +137,15 @@ def test_trace_file_removed_after_run(project: _Project) -> None:
 
 
 @pytest.mark.timeout(30)
+def test_trace_file_removed_when_the_agent_cannot_start(project: _Project) -> None:
+    """Exit 2 cleans up too: PR 1 and 2 left one empty trace file per failed start."""
+    result = project.run(project.spec("--exit-code", "3"))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert project.leftover_traces() == []
+
+
+@pytest.mark.timeout(30)
 def test_keep_traces_keeps_the_file(project: _Project) -> None:
     result = project.run(project.spec(), "--keep-traces")
 
