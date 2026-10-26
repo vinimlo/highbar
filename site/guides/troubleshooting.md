@@ -31,6 +31,14 @@ The whole log stays in `.highbar/logs/`. When a run has failures, the last line 
 
 The agent must create `highbar.Highbar()` after `HIGHBAR_TRACES_URL` is in its environment. A start script that resets the environment, or a `Highbar(traces=...)` pointing elsewhere, gives this message.
 
+**The attached agent's trace file does not exist.**
+
+```text
+  ✗ specs/support.highbar.yaml: the trace file /home/me/support/var/trace.jsonl does not exist, so no test could see what the agent does; nothing was sent. Check agent.traces (a relative path starts where highbar runs). A writer that creates the file only with its first record needs it created empty before the run
+```
+
+`agent.traces` is relative to where you run highbar, not to the spec. Compare the path in the message with the file the agent writes.
+
 **The spec is invalid.** The message names the key and the likely fix: `unknown key 'orderd' — did you mean 'ordered'?`. Run `highbar validate` to check every spec without running anything.
 
 ## A test is `error`, not `failed`
@@ -48,7 +56,7 @@ The agent must create `highbar.Highbar()` after `HIGHBAR_TRACES_URL` is in its e
   ! some tool calls carry no test context, so each counts for the test whose window it falls in, and a call that ends after the response can land in the next test. highbar.asgi.Middleware or hb.turn(test=...) tags them; a thread the agent starts itself needs contextvars.copy_context() to keep the tag
 ```
 
-The tests still run, but a slow call can be counted for the wrong test. Add `highbar.asgi.Middleware`, or wrap message handling in `hb.turn()`. See [connecting your agent](/guides/connecting-your-agent#tag-each-message-with-its-test).
+The tests still run, but a slow call can be counted for the wrong test. Add `highbar.asgi.Middleware`, or wrap message handling in `hb.turn()`. Against an attached agent, an untagged call counts only next to tagged records: a test with no tagged record is an `error` that says what its records lack, and this warning does not appear. See [connecting your agent](/guides/connecting-your-agent#tag-each-message-with-its-test).
 
 ## A call recorded after the test's window closed
 

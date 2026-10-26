@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0rc3
+
+### Fixed
+
+- Attach mode no longer sends a single message when the trace file does not exist. When a test checks tool calls, the run stops before the first test with exit code 2 and the file's absolute path. In the rc1 onboarding rehearsal, a wrong `traces` path sent every message, real transfers included, and only then said nothing was observed.
+- Against an attached agent, records without context no longer bring a warning that they count by time window: there they do not count, and the test is an `error`. That error now says which keys `agent.correlate` needs (`hb.turn(conversation_id=...)`), instead of always pointing at the test id.
+
+### Upgrading from 0.1.0rc2
+
+- An attach-mode spec that checks tool calls now needs the trace file to exist before the run. highbar's SDK creates it when the agent registers its tools; a writer that creates it only with its first record (such as a v0 emitter on a new file) needs it created empty first.
+
 ## 0.1.0rc2
 
 ### Fixed
@@ -16,13 +27,13 @@
 - The connecting guide checks a connection with one `function_calls` test per tool, not with a guardrail.
 - When the agent has declared nothing, the warning about guardrails comes once, at the end of the run, and names every one.
 - The SDK writes its `hello` and its tools again when the trace file is emptied or replaced.
+- Every GitHub Action in CI, Pages and the release runs on Node 24.
 
 ### Upgrading from 0.1.0rc1
 
 A spec that was green on 0.1.0rc1 can now end in `error`:
 - `forbid` of a tool the agent does not have. Remove the name.
 - An agent that mixes `@hb.tool` with tools written by `hb.record()`. The decorated tools give it an inventory, and the funnel's tools are unknown until it calls them. Declare them with `hb.declare()`.
-- Every GitHub Action in CI, Pages and the release runs on Node 24.
 
 ## 0.1.0rc1
 

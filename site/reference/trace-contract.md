@@ -65,7 +65,7 @@ A `turn` record is the proof that the agent handled a message. Against an attach
 {"v": 1, "type": "hello", "ts": 1792983750.122, "sdk": "my-agent/1.0", "pid": 94015, "tools": ["get_order", "cancel_order"]}
 ```
 
-Write it once, when the agent starts. When highbar starts the agent and a test checks tool calls, highbar waits up to 2 seconds after the agent is ready for a `hello` in the new file; without one, the run stops with exit code 2. Records of other types do not count: a `hello` says the writer started, before any message arrives.
+Write it once, when the agent starts. When highbar starts the agent and a test checks tool calls, highbar waits up to 2 seconds after the agent is ready for a `hello` in the new file; without one, the run stops with exit code 2. Records of other types do not count: a `hello` says the writer started, before any message arrives. Against an attached agent, highbar checks that the file exists before it sends the first message.
 
 ## `tools`: the tools it records
 
@@ -134,4 +134,4 @@ The agent calls `hello(TOOLS)` before it listens, with the tools it records, `to
 
 ## Version 0
 
-A line without `v` (or with `"v": 0`) is read as a v0 tool call: `fn`, `args`, `result`, `error`, `started_at` and `ended_at`, with every other top-level field (such as `conversation_id`) as its `context`. Version 0 has no `turn` records, so in attach mode its tests can check replies and calls, but a guardrail that expects no call needs the emitter to add a v1 `turn` line per message.
+A line without `v` (or with `"v": 0`) is read as a v0 tool call: `fn`, `args`, `result`, `error`, `started_at` and `ended_at`, with every other top-level field (such as `conversation_id`) as its `context`. Version 0 has no `turn` records, so in attach mode its tests can check replies and calls, but a guardrail that expects no call needs the emitter to add a v1 `turn` line per message. Version 0 has no `hello` either: if the emitter creates the file only with its first call, create it empty before running highbar against the agent.
