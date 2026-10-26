@@ -17,13 +17,11 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import pytest
-import yaml
 
 from highbar.engine.parser import parse_spec
-from tests.docs.blocks import Block, blocks
+from tests.docs.blocks import Block, blocks, spec_for
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = [
@@ -38,12 +36,6 @@ JSON = [b for b in ALL_BLOCKS if b.lang in ("json", "jsonl")]
 QUICKSTARTS = [b for b in ALL_BLOCKS if b.marker == "quickstart"]
 OUTPUTS = [b for b in ALL_BLOCKS if b.marker.startswith("output:")]
 
-# What a fragment is wrapped in to become a spec that can be validated.
-_AGENT = {"start": "python agent.py", "endpoint": "http://127.0.0.1:8731/chat"}
-_TEST = {"trigger": "hi", "expect": {"response": {"contains": "hi"}}}
-# YAML that is not a spec, declared as such in the fence: ```yaml workflow
-OTHER_YAML_ROLES = {"workflow"}
-
 # The scenarios an output block can name, and the edit that sets each one up.
 SCENARIOS: dict[str, tuple[str, str] | None] = {
     "quickstart": None,
@@ -55,8 +47,26 @@ def _ids(items: list[Block]) -> list[str]:
     return [b.where for b in items]
 
 
-def _validate(spec: Any, block: Block, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    text = yaml.safe_dump(spec, sort_keys=False) if not isinstance(spec, str) else spec
+def test_every_yaml_block_is_checked() -> None:
+    """A block that is neither a spec nor declared would be skipped in silence."""
+    refused: list[str] = []
+    for block in YAML:
+        try:
+            spec_for(block)
+        except ValueError as e:
+            refused.append(str(e))
+    assert not refused, refused
+
+
+@pytest.mark.parametrize("block", YAML, ids=_ids(YAML))
+def test_yaml_block_is_valid(block: Block, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    try:
+        text = spec_for(block)
+    except ValueError:
+        return  # reported by test_every_yaml_block_is_checked
+    if text is None:
+        return
     # ${VAR} in a doc stands for the reader's own secret.
     for name in re.findall(r"\$\{(\w+)\}", text):
         monkeypatch.setenv(name, f"docs-test-{name.lower()}-value")
@@ -66,42 +76,6 @@ def _validate(spec: Any, block: Block, tmp_path: Path, monkeypatch: pytest.Monke
         parse_spec(str(path))
     except Exception as e:  # the block's location is what the reader needs
         pytest.fail(f"{block.where}: {e}")
-
-
-def test_every_yaml_block_is_checked() -> None:
-    """A block that is neither a spec nor declared would be skipped in silence."""
-    undeclared = [
-        b.where
-        for b in YAML
-        if b.role == ""
-        and "suites" not in (yaml.safe_load(b.text) or {})
-        or b.role not in ("", "test", "agent", *OTHER_YAML_ROLES)
-    ]
-    assert not undeclared, (
-        "YAML blocks that are not a whole spec must declare a role in the fence "
-        f"(```yaml test, ```yaml agent, ```yaml workflow): {undeclared}"
-    )
-
-
-@pytest.mark.parametrize("block", YAML, ids=_ids(YAML))
-def test_yaml_block_is_valid(block: Block, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    if block.role in OTHER_YAML_ROLES:
-        yaml.safe_load(block.text)
-        return
-    data = yaml.safe_load(block.text)
-    if block.role == "":
-        _validate(block.text, block, tmp_path, monkeypatch)
-    elif block.role == "test":
-        tests = data if isinstance(data, list) else [data]
-        spec = {"agent": _AGENT, "suites": [{"name": "S", "tests": tests}]}
-        _validate(spec, block, tmp_path, monkeypatch)
-    elif block.role == "agent":
-        assert isinstance(data, dict) and "agent" in data, (
-            f"{block.where}: a ```yaml agent block starts with the agent: key"
-        )
-        spec = {**data, "suites": [{"name": "S", "tests": [_TEST]}]}
-        _validate(spec, block, tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("block", PYTHON, ids=_ids(PYTHON))
