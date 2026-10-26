@@ -14,7 +14,9 @@ concurrency:
 jobs:
   check:
     # A self-hosted runner when the CI_RUNNER variable names one; GitHub's otherwise.
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # A pull request from a fork always runs on GitHub's: its code is not trusted, and a
+    # self-hosted runner keeps state between jobs, the release job's among them.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -52,7 +54,7 @@ jobs:
 
   # The documentation site builds, and VitePress fails the build on a dead link.
   site:
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: site
