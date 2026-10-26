@@ -285,8 +285,9 @@ class TestResult:
 class RunSummary:
     """Summary of a complete test run.
 
-    ``variations`` counts the generated paraphrases that were executed. They are extra
-    *executions*, not extra tests: a test with 5 variations still passes or fails as one.
+    ``variations`` counts the paraphrases that ran, each once however many ``runs`` it
+    had. They are extra phrasings of a test, not extra tests: a test with 5 variations
+    still passes or fails as one.
     """
 
     total: int
