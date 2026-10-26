@@ -568,8 +568,12 @@ class TestResponseMatchers:
         with pytest.raises(SpecError, match="equals must be a string"):
             parse_spec(path)
 
-    def test_order_support_example_guardrail_is_a_regex(self) -> None:
-        example = Path(__file__).resolve().parents[3] / "specs/examples/order-support.highbar.yaml"
+    def test_quickstart_card_guardrail_is_a_regex(self) -> None:
+        """D5: the example's card-number guardrail is a regex, not literal text."""
+        example = (
+            Path(__file__).resolve().parents[3]
+            / "examples/quickstart/specs/quickstart.highbar.yaml"
+        )
 
         responses = [
             test.expect.response.matcher

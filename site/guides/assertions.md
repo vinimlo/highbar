@@ -1,255 +1,115 @@
 # Assertions
 
-Highbar provides two categories of assertions: **function call assertions** that validate tool invocations, and **response assertions** that validate the agent's text output.
+Everything a test checks goes under `expect`. A test needs at least one check, and every check must hold for the test to pass.
 
-## Function Call Assertions
+## Tool calls: `function_calls`
 
-The `function_calls` field in the `expect` block asserts that specific tools were called with the expected arguments and return values.
+Each entry describes a call the agent must make:
 
-### Fields
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | Yes | The function name to match against trace records, or a list of names of which any one satisfies the expectation |
-| `params` | No | Expected arguments -- uses subset matching |
-| `result` | No | Expected return value -- uses subset matching |
-
-### Basic Usage
-
-Assert that a function was called, regardless of its arguments:
-
-```yaml
+```yaml test
+trigger: "Compare the two cheapest laptops"
 expect:
   function_calls:
-    - name: get_weather
+    - name: search_products
+      params: {category: "laptop"}
+    - name: search_products
+    - name: compare
 ```
 
-### With Parameter Matching
+- **Each entry needs a call of its own.** Two `search_products` entries need two calls. highbar pairs entries with calls so that a call that fits a narrow entry is not spent on a broad one first.
+- **`name`** is a tool name, or a list of names when any of them will do: `name: [search, search_products]`.
+- **`params`** must be contained in the call's arguments: keys you leave out are not checked, and nested objects are compared the same way.
+- **`result`** works like `params`, on what the tool returned.
+- **Other calls are allowed** unless the test says `exclusive: true`.
 
-Assert that a function was called with specific arguments:
+A value in `params` or `result` is compared as is, or with a matcher:
 
-```yaml
+```yaml test
+trigger: "Find me a red dress under 200"
 expect:
   function_calls:
     - name: search_products
       params:
-        category: "electronics"
-        max_price: 500
+        query: {icontains: "dress"}
+        color: "red"
+        max_price: {matches: "^(1[0-9]{2}|200)$"}
 ```
 
-### With Result Matching
+| Matcher | Holds when the value |
+|---|---|
+| `equals` | is exactly the operand. Use it to compare a whole object, or an object that looks like a matcher. |
+| `contains`, `icontains` | contains the text (`icontains` ignores case). For a list: has the item. |
+| `not_contains`, `not_icontains` | does not contain it. |
+| `matches`, `not_matches` | matches the regular expression somewhere (Python's `re.search`), or does not. |
 
-Assert that a function returned specific values:
+A value that has no text form (an object, a list) never satisfies a negative matcher: "it does not contain the card number" is not evidence when there is no text to look at.
 
-```yaml
+### A call that failed
+
+A call with an `error` does not satisfy an entry, because calling a tool is not the same as getting what it does. `@hb.tool` records an `error` when the tool raises. A tool that returns its failure as data (`{"error": "upstream timed out"}`) has returned a result, and the call counts: raise instead, or record the call with `hb.record(..., error=...)`. When the failure is the behavior under test, say so:
+
+```yaml test
+trigger: "Where is order 1042?"
 expect:
   function_calls:
     - name: get_order
-      params:
-        order_id: "ORD-123"
-      result:
-        status: "shipped"
+      error: true
+  response:
+    icontains: "try again"
 ```
 
-### Multiple Function Calls
+`error` takes `true`, `false` (the default), or a matcher the error text must meet: `error: {contains: "Timeout"}`.
 
-Assert that multiple tools were called in the same turn:
+### Order and nothing else: `ordered`, `exclusive`
 
-```yaml
+```yaml test
+trigger: "Cancel order 1042"
 expect:
+  ordered: true
+  exclusive: true
   function_calls:
     - name: get_order
-      params:
-        order_id: "ORD-789"
-    - name: track_shipment
+    - name: cancel_order
 ```
 
-Each expected call is matched independently against the collected traces. Order does not matter -- Highbar finds any trace with a matching function name, then checks params and result.
+- **`ordered: true`**: the calls happened in this order, by when they ran. Each must start after the one before it ended, so two calls the agent fires at the same time are not "in order". Other calls may come in between unless the test is also exclusive.
+- **`exclusive: true`**: no call beyond the expected ones.
 
-### Alternative Tools
+### Calls that must not happen: `forbid`
 
-Some intents have more than one correct answer. Give `name` a list and any one of the listed tools satisfies the expectation:
-
-```yaml
+```yaml test
+trigger: "Delete my account right now"
 expect:
-  function_calls:
-    - name: [open_catalog, list_categories]
+  forbid: [delete_account, close_account]
 ```
 
-`params` and `result` are shared by every alternative: the expectation passes when any listed tool was called with a matching payload. "Tool A with X, or tool B with Y" cannot be expressed -- only list tools together when the same `params`/`result` (or none) apply to all of them.
+A forbidden tool fails the test even when the call itself failed: trying is the defect. `function_calls: []` is the stricter form, no tool at all. See [guardrails](/guides/guardrails).
 
-When none of them was called, the failure reads: `Expected call to one of ('open_catalog' or 'list_categories'), but the agent called: search_products`.
+## The reply: `response`
 
-### Matching Behavior
+`response` takes the same matchers, applied to the agent's reply text:
 
-For each expected function call, Highbar:
-
-1. Filters all traces to find those where `trace.fn` is `expected.name` (or, when `name` is a list, any of the listed names)
-2. If no trace matches, the assertion fails naming what was expected and what the agent actually called: `Expected call to 'get_order', but the agent called: track_shipment` (or `called: nothing` when no tool ran)
-3. For each matching trace, checks whether `params` and `result` pass subset matching
-4. If any matching trace satisfies both checks, the assertion passes
-
-### Empty List: The Guardrail Pattern
-
-An empty `function_calls` list asserts that the agent called **no tools at all**:
-
-```yaml
-expect:
-  function_calls: []
-```
-
-If any tool was called, the assertion fails with a message listing the functions that were invoked. See the [Guardrails](./guardrails.md) guide for detailed patterns.
-
-## Response Assertions
-
-The `response` field validates the text content of the agent's HTTP response.
-
-### `contains`
-
-Asserts that the response includes a specific substring (case-sensitive):
-
-```yaml
+```yaml test
+trigger: "Where is order 1042?"
 expect:
   response:
-    contains: "Your order has been shipped"
+    contains: "1042"
+    not_icontains: "sorry"
+    not_matches: '\b4[0-9]{3}([ -]?[0-9]{4}){3}\b'
 ```
 
-### `not_contains`
+Each condition that fails gets its own line in the output, ending with what the agent said, cut at 300 characters.
 
-Asserts that the response does NOT include a specific substring:
+## What a failure says
 
-```yaml
-expect:
-  response:
-    not_contains: "error"
-```
+The message gives the most basic reason first:
 
-### `matches`
-
-Asserts that the response matches a regular expression pattern. Uses Python's `re.search`, so the pattern can match anywhere in the response:
-
-```yaml
-expect:
-  response:
-    matches: "order #[A-Z]+-\\d+"
-```
-
-### Combining Response Assertions
-
-You can use multiple response assertions together:
-
-```yaml
-expect:
-  response:
-    contains: "refund"
-    not_contains: "denied"
-    matches: "\\$\\d+\\.\\d{2}"
-```
-
-All specified assertions must pass for the test to succeed.
-
-## Subset Matching
-
-Both `params` and `result` use **subset matching**. This means you only need to specify the keys you care about -- any additional keys in the actual data are ignored.
-
-### How It Works
-
-If you write:
-
-```yaml
-params:
-  order_id: "123"
-```
-
-And the actual arguments captured in the trace are:
-
-```json
-{"order_id": "123", "format": "json", "include_history": true}
-```
-
-The assertion **passes**. Only the keys you listed (`order_id`) are checked. The extra keys (`format`, `include_history`) are not considered.
-
-### Nested Subset Matching
-
-Subset matching works recursively for nested objects:
-
-```yaml
-result:
-  order:
-    status: "shipped"
-```
-
-This passes if the actual result contains an `order` key with a dict that has `status: "shipped"`, regardless of any other keys in the `order` object or the top-level result.
-
-A nested dict is subset-matched too, at every level. To require an exact nested dict, use the `equals` matcher described below.
-
-## Matchers
-
-A plain expected value compares by equality. When the value is written by the model -- and its case or wording is not something the agent should be failed for -- use a **matcher** instead: a dict whose keys are all matcher names.
-
-```yaml
-expect:
-  function_calls:
-    - name: search_products
-      params:
-        product_name: {icontains: "coca"}
-        order_id: {matches: "^[0-9]+$"}
-      result:
-        order:
-          status: {contains: "ship"}       # matchers work at any depth
-```
-
-| Matcher | Passes when |
-|---------|-------------|
-| `equals` | The actual value equals the operand exactly. The operand is always a literal |
-| `contains` | The operand is a substring of the actual text (**case-sensitive**, same as `response: contains`), or an item of the actual list |
-| `icontains` | Same as `contains`, ignoring case |
-| `not_contains` | The actual value was checked and does not contain the operand (case-sensitive) |
-| `not_icontains` | Same as `not_contains`, ignoring case |
-| `matches` | The operand, a regular expression, is found in the actual text (`re.search`) |
-
-Several matchers in one dict must all hold: `{icontains: "coca", not_icontains: "zero"}`.
-
-### What a matcher can be applied to
-
-- **Text and numbers.** Numbers are compared through their text form, so `{contains: "123"}` and `{matches: "123"}` both pass on `12345`.
-- **Lists**, for the `contains` family: membership instead of substring.
-- **`null` and nested objects are never matched by a text matcher.** `matches`, `contains` and `icontains` fail on them -- and so do `not_contains` and `not_icontains`. A negative assertion that could not be evaluated fails rather than passing without having checked anything: `error: {not_contains: "timeout"}` is red when `error` is `null` or an object.
-
-### Literal dicts that look like a matcher
-
-::: warning Behaviour change
-Any dict whose keys are **all** matcher names is read as a matcher. If a tool takes an argument that is literally shaped like one (a Prisma- or Notion-style filter such as `{contains: "shoes"}`), an existing spec that compared it by equality changes meaning. Wrap the literal in `equals`:
-
-```yaml
-params:
-  filter: {equals: {contains: "shoes"}}
-```
-:::
-
-### Validation
-
-`highbar validate` (and `highbar run`, before starting the agent) rejects:
-
-- an invalid regular expression in `matches`;
-- a dict that mixes matcher names with other keys, such as `{contains: "coca", size: "L"}`;
-- a near miss of a matcher name -- `contain`, `match`, `Contains`, `not-contains` -- which would otherwise be silently compared as a literal dict. If the key really is literal, wrap the dict in `equals`.
-
-Matchers inside a list (`items: [{name: {contains: "x"}}]`) are not supported; a list compares by equality.
-
-## Combining Function Calls and Response Assertions
-
-You can use both assertion types in the same `expect` block:
-
-```yaml
-expect:
-  function_calls:
-    - name: search_orders
-      params:
-        customer_id: "cust-456"
-  response:
-    contains: "Found 3 orders"
-    not_contains: "error"
-```
-
-All assertions must pass for the test to succeed. This lets you verify both that the agent called the right tools and that it communicated the results correctly to the user.
+| The agent | highbar says |
+|---|---|
+| never called the tool | `Expected call to 'get_order', but the agent called: search` |
+| called it, and every call failed | `'get_order' was called but failed: TimeoutError: upstream timed out` |
+| called it fewer times than the entries need | `expected 2 calls to 'search', got 1 that fit; 1 more failed: TimeoutError: slow` |
+| called it with other arguments | the `params` or `result` that differ, with what it got |
+| called them in another order | `calls matched but out of order: expected get_order, cancel_order; got cancel_order, get_order` |
+| made a call nobody expected (`exclusive`) | `unexpected calls: delete_account` |
+| called a forbidden tool | `forbidden tool 'delete_account' was called` |

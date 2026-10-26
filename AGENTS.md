@@ -32,7 +32,7 @@ Before a commit: `make lint`, `uv run ruff format --check src/ tests/`, `make ty
 4. **Observation.** The collector reads the trace file from a byte offset: `tool`, `turn` and `hello` records (contract v1; v0 lines are read too). `engine/observation.py` keeps the records whose `context` matches `agent.correlate` (default `{test: "{{test.id}}"}`). A test that checks tool calls needs a record of its own; without one it is `error` ("not observed").
 5. **Assertions.** `function_calls` pairs each expectation with a distinct call (bipartite matching), with `error`, `ordered`, `exclusive` and `forbid`; `response` uses the matchers of `params` (`contains`, `matches`, `not_matches`...). A call's `error` field is the only signal that a tool failed.
 6. **Repetition.** Each phrasing runs `runs` times and must reach `min_pass`. A late call (recorded after its window) fails its own run, and the test is judged again.
-7. **Results.** Three states: `passed`, `failed` (the agent did something else), `error` (could not verify). Exit codes: 0 all passed, 1 something failed or errored, 2 could not run at all.
+7. **Results.** Three states: `passed`, `failed` (the agent did something else), `error` (could not verify). Exit codes: 0 all passed, 1 something failed or errored, 2 could not run at all. Interrupted runs stop the agent first and exit with 130 (Ctrl-C), 143 (SIGTERM) or 129 (SIGHUP).
 
 ## Modules
 
@@ -60,7 +60,9 @@ src/highbar/
 └── cli/main.py            # run, validate, init, variations
 tests/
 ├── unit/                  # one directory per package
-├── integration/           # the real CLI against tests/fixtures/server.py
+├── integration/           # the real CLI end to end; test_api.py drives highbar.run()
+│   └── fixtures/agent.py  # a FastAPI agent instrumented with the real SDK (test_full_run.py)
+├── docs/                  # every spec in README.md and site/ is validated; the quick start runs
 └── fixtures/server.py     # a stand-in agent with switches for each failure mode
 ```
 

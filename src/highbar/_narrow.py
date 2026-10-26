@@ -2,8 +2,7 @@
 
 ``isinstance(value, dict)`` on such a value tells the type checker it is a dict, but
 not of what, and the unknown spreads to everything read from it. These say "a mapping
-(or a list) of anything", which is what a parsed document is. Standard library only:
-the SDK uses them too.
+(or a list) of anything", which is what a parsed document is.
 """
 
 from __future__ import annotations
