@@ -9,9 +9,7 @@ from highbar.engine.templates import TemplateError, resolve_template
 
 
 def _trace(result: Any) -> Trace:
-    return Trace(
-        id="t1", seq=0, fn="find_order", args={}, result=result, started_at=1.0, ended_at=1.1
-    )
+    return Trace(fn="find_order", args={}, result=result, started_at=1.0, ended_at=1.1)
 
 
 class TestResolveTemplate:
@@ -21,8 +19,6 @@ class TestResolveTemplate:
     def test_simple_result_access(self) -> None:
         traces = [
             Trace(
-                id="t1",
-                seq=0,
                 fn="search_orders",
                 args={},
                 result={"order_id": "ORD-123"},
@@ -37,8 +33,6 @@ class TestResolveTemplate:
     def test_nested_result(self) -> None:
         traces = [
             Trace(
-                id="t1",
-                seq=0,
                 fn="get_user",
                 args={},
                 result={"user": {"name": "Alice", "email": "alice@example.com"}},
@@ -52,12 +46,8 @@ class TestResolveTemplate:
 
     def test_second_function_call(self) -> None:
         traces = [
-            Trace(
-                id="t1", seq=0, fn="fn_a", args={}, result={"x": "A"}, started_at=1.0, ended_at=1.1
-            ),
-            Trace(
-                id="t2", seq=1, fn="fn_b", args={}, result={"x": "B"}, started_at=1.0, ended_at=1.1
-            ),
+            Trace(fn="fn_a", args={}, result={"x": "A"}, started_at=1.0, ended_at=1.1),
+            Trace(fn="fn_b", args={}, result={"x": "B"}, started_at=1.0, ended_at=1.1),
         ]
         template = "Value: {{previous.function_calls[1].result.x}}"
         result = resolve_template(template, traces)
@@ -66,8 +56,6 @@ class TestResolveTemplate:
     def test_function_name_access(self) -> None:
         traces = [
             Trace(
-                id="t1",
-                seq=0,
                 fn="search_orders",
                 args={},
                 result=None,
@@ -82,8 +70,6 @@ class TestResolveTemplate:
     def test_multiple_templates_in_one_string(self) -> None:
         traces = [
             Trace(
-                id="t1",
-                seq=0,
                 fn="lookup",
                 args={},
                 result={"id": "123", "name": "Test"},

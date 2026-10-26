@@ -181,6 +181,17 @@ def test_typo_in_start_command_exits_2(project: _Project) -> None:
     assert "Traceback" not in result.stdout + result.stderr
 
 
+@pytest.mark.timeout(30)
+def test_uninstrumented_agent_exits_2(project: _Project) -> None:
+    """An agent that writes no traces cannot pass a guardrail: nothing was checked."""
+    result = project.run(project.spec("--no-traces"))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "nothing was written to" in result.stdout
+    assert "Traceback" not in result.stdout + result.stderr
+    assert _wait_until(lambda: not accepts_connections("127.0.0.1", project.port), 6)
+
+
 @pytest.mark.timeout(40)
 @pytest.mark.parametrize(("sig", "code"), [(signal.SIGTERM, 143), (signal.SIGHUP, 129)])
 def test_termination_signal_stops_agent_and_cleans_up(

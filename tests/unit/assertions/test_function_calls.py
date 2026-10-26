@@ -6,8 +6,6 @@ from highbar.domain.models import Expect, FunctionCallExpect, Trace
 
 def _make_trace(fn: str, args: dict | None = None, result: object = None, seq: int = 0) -> Trace:
     return Trace(
-        id=f"trace_{seq}",
-        seq=seq,
         fn=fn,
         args=args or {},
         result=result,

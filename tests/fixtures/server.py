@@ -9,12 +9,18 @@ Serves ``GET /health`` -> 200 and ``POST /chat`` -> ``{"response": "ok"}``.
     --exit-code N    print "boom-marker" and exit with N, without listening
     --slow-chat S    POST /chat takes S seconds to answer
     --ignore-term    ignore SIGTERM (only SIGKILL stops it), like a server mid-request
+    --no-traces      write no trace records, like an agent without the SDK
+
+With HIGHBAR_TRACES_URL set (and no --no-traces), it writes the trace contract the
+way any emitter would, without the SDK: a `hello` when it starts and a `turn` per
+POST, whose context has the X-Highbar-Test header and the body's conversation_id.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sys
 import time
@@ -30,7 +36,14 @@ def main() -> None:
     parser.add_argument("--exit-code", type=int, default=None)
     parser.add_argument("--slow-chat", type=float, default=0.0)
     parser.add_argument("--ignore-term", action="store_true")
+    parser.add_argument("--no-traces", action="store_true")
     args = parser.parse_args()
+    traces = None if args.no_traces else os.environ.get("HIGHBAR_TRACES_URL")
+
+    def record(entry: dict[str, object]) -> None:
+        if traces:
+            with open(traces, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"v": 1, "ts": time.time(), **entry}) + "\n")
 
     if args.ignore_term:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -47,6 +60,7 @@ def main() -> None:
     sys.stdout.buffer.flush()
 
     time.sleep(args.delay)
+    record({"type": "hello", "sdk": "test-server/1", "pid": os.getpid()})
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *values: object) -> None:
@@ -58,8 +72,19 @@ def main() -> None:
             self.wfile.write(b"ok")
 
         def do_POST(self) -> None:
-            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             time.sleep(args.slow_chat)
+            try:
+                payload = json.loads(raw or b"{}")
+            except ValueError:
+                payload = {}
+            context = {
+                "test": self.headers.get("X-Highbar-Test"),
+                "conversation_id": payload.get("conversation_id")
+                if isinstance(payload, dict)
+                else None,
+            }
+            record({"type": "turn", "context": {k: v for k, v in context.items() if v is not None}})
             body = json.dumps({"response": "ok"}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

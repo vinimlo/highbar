@@ -37,20 +37,54 @@ def combine(statuses: Iterable[Status]) -> Status:
 
 @dataclass(frozen=True)
 class Trace:
-    """An atomic box capturing a single tool invocation."""
+    """One tool call, from a `tool` record of the trace contract.
 
-    id: str
-    seq: int
+    ``error`` is the only signal that the call failed: ``result`` is never inspected,
+    because a tool may legitimately return an object with an ``error`` key.
+    ``context`` holds the record's correlation fields (``test``, ``conversation_id``...).
+    """
+
     fn: str
     args: dict[str, Any]
     result: Any
     started_at: float
     ended_at: float
     error: str | None = None
+    context: dict[str, Any] = field(default_factory=dict)
 
     @property
     def duration_ms(self) -> float:
         return (self.ended_at - self.started_at) * 1000
+
+
+@dataclass(frozen=True)
+class TurnRecord:
+    """A `turn` record: the instrumented agent received and handled a message."""
+
+    ts: float
+    context: dict[str, Any] = field(default_factory=dict)
+    message: str | None = None
+    response: str | None = None
+
+
+@dataclass(frozen=True)
+class Hello:
+    """A `hello` record: an emitter started writing to the trace file."""
+
+    ts: float
+    sdk: str | None = None
+    pid: int | None = None
+
+
+@dataclass(frozen=True)
+class Window:
+    """The records written to the trace file between two points of a run."""
+
+    tools: list[Trace] = field(default_factory=list)
+    turns: list[TurnRecord] = field(default_factory=list)
+    hellos: list[Hello] = field(default_factory=list)
+    # Where the next read starts: every record is read once, none falls between reads.
+    end: int = 0
 
 
 @dataclass(frozen=True)
@@ -104,6 +138,15 @@ class Expect:
     function_calls: list[FunctionCallExpect] | None = None
     response: ResponseExpect | None = None
 
+    @property
+    def requires_observation(self) -> bool:
+        """Checks tool calls, so it needs proof the instrumented agent saw the message.
+
+        ``function_calls: []`` included: "no tool was called" means nothing unless the
+        message reached an agent that would have recorded one.
+        """
+        return self.function_calls is not None
+
 
 @dataclass(frozen=True)
 class Turn:
@@ -128,6 +171,12 @@ class Test:
     turns: list[Turn] | None = None
     variations: int = 0
     name: str | None = None
+
+    @property
+    def requires_observation(self) -> bool:
+        if self.turns:
+            return any(turn.expect.requires_observation for turn in self.turns)
+        return self.expect is not None and self.expect.requires_observation
 
 
 @dataclass(frozen=True)

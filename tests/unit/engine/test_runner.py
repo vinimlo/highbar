@@ -6,18 +6,21 @@ from unittest.mock import MagicMock
 
 import httpx
 
+from highbar.adapters.file_collector import TraceFormatError
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.domain.models import (
     AgentConfig,
     AssertionResult,
     Expect,
     FunctionCallExpect,
+    Hello,
     Spec,
     Status,
     Suite,
     Test,
     Trace,
     Turn,
+    Window,
 )
 from highbar.engine.runner import TestRunner
 
@@ -35,7 +38,7 @@ def _make_runner(
 
     collector = MagicMock()
     collector.checkpoint.return_value = 0
-    collector.collect.return_value = traces or []
+    collector.collect.return_value = Window(tools=traces or [], hellos=[Hello(ts=0.0)])
 
     assertion = MagicMock()
     assertion.evaluate.return_value = assertion_results or [
@@ -164,7 +167,7 @@ class TestTestRunner:
         client.send.return_value = "ok"
         collector = MagicMock()
         collector.checkpoint.return_value = 0
-        collector.collect.return_value = []
+        collector.collect.return_value = Window()
         reporter = MagicMock()
 
         runner = TestRunner(
@@ -203,7 +206,7 @@ class TestTestRunner:
         assert "connection refused" in result.errors[0]
 
     def test_assertion_failure_is_failed(self) -> None:
-        called_b = Trace(id="t1", seq=1, fn="b", args={}, result={}, started_at=1.0, ended_at=1.1)
+        called_b = Trace(fn="b", args={}, result={}, started_at=1.0, ended_at=1.1)
         runner, _, _, _, reporter = _make_runner(traces=[called_b])
         runner._assertions = [FunctionCallsAssertion()]
         expect = Expect(function_calls=[FunctionCallExpect(name="a")])
@@ -217,7 +220,7 @@ class TestTestRunner:
     def test_summary_counts_errors_separately(self) -> None:
         runner, _, client, _, _ = _make_runner()
 
-        def send(trigger: str) -> str:
+        def send(trigger: str, **_: object) -> str:
             if trigger == "unreachable":
                 raise httpx.ConnectError("connection refused")
             return trigger
@@ -263,11 +266,9 @@ class TestTestRunner:
         assert client.send.call_count == 2
 
     def test_r2_multi_turn_failure_names_the_turn(self) -> None:
-        found = Trace(
-            id="t1", seq=1, fn="find_order", args={}, result={"id": 7}, started_at=1.0, ended_at=1.1
-        )
+        found = Trace(fn="find_order", args={}, result={"id": 7}, started_at=1.0, ended_at=1.1)
         runner, _, client, _, reporter = _make_runner(traces=[found])
-        client.send.side_effect = lambda trigger: trigger
+        client.send.side_effect = lambda trigger, **_: trigger
         assertion = MagicMock()
         assertion.evaluate.side_effect = lambda traces, response, expect: [
             AssertionResult(passed=response != "refund order 7", message="Expected X")
@@ -318,6 +319,25 @@ class TestTestRunner:
 
         name, _ = reporter.on_test_result.call_args[0]
         assert name == "cancel order"
+
+    def test_broken_trace_line_errors_that_test_and_the_run_goes_on(self) -> None:
+        """A trace line that cannot be read leaves that test unverified, not the run aborted."""
+        runner, _, _, collector, reporter = _make_runner()
+        collector.collect.side_effect = [
+            TraceFormatError("/tmp/t.jsonl line 2: not valid JSON (Expecting value)"),
+            Window(),
+        ]
+        spec = _make_spec(
+            [Test(trigger="one", expect=Expect()), Test(trigger="two", expect=Expect())]
+        )
+
+        summary = runner.run(spec)
+
+        (_, first), (_, second) = [c[0] for c in reporter.on_test_result.call_args_list]
+        assert first.status is Status.ERROR
+        assert "line 2" in first.errors[0]
+        assert second.status is Status.PASSED
+        assert summary.errored == 1
 
     def test_reporter_methods_called(self) -> None:
         runner, _, _, _, reporter = _make_runner()

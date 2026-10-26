@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import signal
-import tempfile
 import textwrap
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
@@ -16,16 +14,13 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
-from highbar.adapters.file_collector import FileTraceCollector
-from highbar.adapters.http_client import HTTPClient
-from highbar.adapters.subprocess_adapter import AgentStartError, SubprocessAdapter
-from highbar.assertions.function_calls import FunctionCallsAssertion
-from highbar.assertions.response import ResponseAssertion
+from highbar.adapters.subprocess_adapter import AgentStartError
 from highbar.domain.models import RunSummary, Spec
+from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.parser import parse_spec
-from highbar.engine.runner import TestRunner
+from highbar.engine.run_spec import run_spec
 from highbar.engine.schema import SpecError
-from highbar.reporters.terminal import TerminalReporter, format_summary
+from highbar.reporters.terminal import format_summary
 from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
 from highbar.variations.generator import VariationError, VariationGenerator
 
@@ -127,7 +122,15 @@ def run(
     try:
         with _terminate_as_exit():
             for current, spec in specs:
-                summaries.append(_run_spec(current, spec, generator, keep_traces))
+                summaries.append(
+                    run_spec(
+                        current,
+                        spec,
+                        generator=generator,
+                        keep_traces=keep_traces,
+                        console=console,
+                    )
+                )
     except AgentStartError as e:
         # The next specs are not run: an agent that cannot start is not a test result,
         # and a second agent on the same machine usually fails the same way.
@@ -135,6 +138,10 @@ def run(
             f"  [red]\u2717[/red] {escape(current)}: could not start the agent: {escape(str(e))}",
             soft_wrap=True,
         )
+        raise typer.Exit(EXIT_UNRUNNABLE) from None
+    except AgentNotObservedError as e:
+        # Nothing could be checked: the agent is up but not instrumented (or not ours).
+        console.print(f"  [red]\u2717[/red] {escape(current)}: {escape(str(e))}", soft_wrap=True)
         raise typer.Exit(EXIT_UNRUNNABLE) from None
     except KeyboardInterrupt:
         # The runner's finally has already stopped the agent's process group.
@@ -147,49 +154,6 @@ def run(
 
     # An error is not a pass: a run where a test could not be checked is not green.
     raise typer.Exit(EXIT_FAILED if total.failed or total.errored else EXIT_OK)
-
-
-def _run_spec(
-    path: str, spec: Spec, generator: VariationGenerator, keep_traces: bool
-) -> RunSummary:
-    """Run one spec against its own agent; the trace file is removed unless kept."""
-    console.print(f"  Running {escape(path)}")
-
-    with tempfile.NamedTemporaryFile(
-        suffix=".jsonl", prefix="highbar-traces-", delete=False
-    ) as traces_fd:
-        traces_file = traces_fd.name
-
-    adapter = SubprocessAdapter(
-        start_cmd=spec.agent.start,
-        endpoint=spec.agent.endpoint,
-        log_path=_agent_log_path(path),
-        health_url=spec.agent.health,
-        startup_timeout=spec.agent.startup_timeout,
-        env={"HIGHBAR_TRACES_URL": traces_file},
-    )
-    runner = TestRunner(
-        adapter=adapter,
-        client=HTTPClient(endpoint=spec.agent.endpoint),
-        collector=FileTraceCollector(traces_file),
-        assertions=[FunctionCallsAssertion(), ResponseAssertion()],
-        reporter=TerminalReporter(),
-        settle_time=spec.agent.settle_time / 1000.0,
-        variations=generator,
-    )
-
-    try:
-        summary = runner.run(spec)
-    finally:
-        if keep_traces:
-            console.print(f"  Traces kept at {escape(traces_file)}")
-        else:
-            Path(traces_file).unlink(missing_ok=True)
-
-    if summary.failed or summary.errored:
-        # What the agent printed while failing is usually the explanation.
-        console.print(f"  Agent log: {escape(str(adapter.log_path))}\n", soft_wrap=True)
-    return summary
 
 
 @app.command()
@@ -339,21 +303,6 @@ def init() -> None:
         console.print(f"  [green]Created[/green] {example}")
 
     console.print("\n  Edit the spec and run: [bold]highbar run specs/example.highbar.yaml[/bold]")
-
-
-def _agent_log_path(spec_path: str) -> Path:
-    """``.highbar/logs/<spec stem>-<timestamp>.log``, relative to where highbar runs.
-
-    Never an existing file: two specs with the same name in the same second would
-    share a log, and one's failure would show the other agent's output.
-    """
-    stem = Path(spec_path).name.removesuffix(".yaml").removesuffix(".highbar")
-    base = Path(".highbar") / "logs" / f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}"
-    path, n = base.with_suffix(".log"), 1
-    while path.exists():
-        n += 1
-        path = base.parent / f"{base.name}-{n}.log"
-    return path
 
 
 @contextmanager

@@ -12,12 +12,17 @@ class HTTPClient:
         self._endpoint = endpoint
         self._timeout = timeout
 
-    def send(self, trigger: str) -> str:
-        """Send a trigger message and return the response text."""
+    def send(self, trigger: str, *, test_id: str) -> str:
+        """Send a trigger message and return the response text.
+
+        ``X-Highbar-Test`` carries the id of this test execution, so the agent can tag
+        what it records with it (highbar.asgi.Middleware does).
+        """
         with httpx.Client(timeout=self._timeout) as client:
             resp = client.post(
                 self._endpoint,
                 json={"message": trigger},
+                headers={"X-Highbar-Test": test_id},
             )
             resp.raise_for_status()
             data = resp.json()

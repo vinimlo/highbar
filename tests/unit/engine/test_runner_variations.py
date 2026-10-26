@@ -12,11 +12,13 @@ from highbar.domain.models import (
     AssertionResult,
     Expect,
     FunctionCallExpect,
+    Hello,
     Spec,
     Status,
     Suite,
     Test,
     Trace,
+    Window,
 )
 from highbar.engine.runner import TestRunner
 from highbar.reporters.terminal import TerminalReporter
@@ -31,12 +33,12 @@ class _Collector:
     def checkpoint(self) -> int:
         return 0
 
-    def collect(self, since: int) -> list[Trace]:
+    def collect(self, since: int) -> Window:
         tools = self._by_trigger.get(self.last_trigger, [])
-        return [
-            Trace(id=f"t{i}", seq=i, fn=fn, args={}, result={}, started_at=1.0, ended_at=1.1)
-            for i, fn in enumerate(tools)
-        ]
+        return Window(
+            tools=[Trace(fn=fn, args={}, result={}, started_at=1.0, ended_at=1.1) for fn in tools],
+            hellos=[Hello(ts=0.0)],
+        )
 
 
 class _Client:
@@ -44,7 +46,7 @@ class _Client:
         self._collector = collector
         self.sent: list[str] = []
 
-    def send(self, trigger: str) -> str:
+    def send(self, trigger: str, *, test_id: str) -> str:
         self.sent.append(trigger)
         self._collector.last_trigger = trigger
         return "ok"

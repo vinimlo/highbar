@@ -18,8 +18,6 @@ from highbar.domain.models import (
 class TestTrace:
     def test_create_trace(self) -> None:
         trace = Trace(
-            id="abc123",
-            seq=1,
             fn="search_orders",
             args={"order_id": "12345"},
             result={"status": "shipped"},
@@ -32,8 +30,6 @@ class TestTrace:
 
     def test_trace_duration(self) -> None:
         trace = Trace(
-            id="abc123",
-            seq=1,
             fn="fast_fn",
             args={},
             result=None,

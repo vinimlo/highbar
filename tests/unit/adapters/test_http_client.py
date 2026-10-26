@@ -27,16 +27,17 @@ def mock_httpx():
 
 
 class TestHTTPClient:
-    def test_send_posts_json_body(self, mock_httpx: tuple) -> None:
+    def test_send_posts_json_body_with_the_test_id(self, mock_httpx: tuple) -> None:
         mock_client, mock_response = mock_httpx
         mock_response.json.return_value = {"response": "hello"}
 
         client = HTTPClient(endpoint="http://localhost:8000/chat")
-        client.send("hello")
+        client.send("hello", test_id="t1")
 
         mock_client.post.assert_called_once_with(
             "http://localhost:8000/chat",
             json={"message": "hello"},
+            headers={"X-Highbar-Test": "t1"},
         )
 
     def test_send_extracts_response_key(self, mock_httpx: tuple) -> None:
@@ -44,7 +45,7 @@ class TestHTTPClient:
         mock_response.json.return_value = {"response": "world"}
 
         client = HTTPClient(endpoint="http://localhost:8000/chat")
-        result = client.send("hi")
+        result = client.send("hi", test_id="t1")
 
         assert result == "world"
 
@@ -53,7 +54,7 @@ class TestHTTPClient:
         mock_response.json.return_value = {"message": "from message key"}
 
         client = HTTPClient(endpoint="http://localhost:8000/chat")
-        result = client.send("hi")
+        result = client.send("hi", test_id="t1")
 
         assert result == "from message key"
 
@@ -62,7 +63,7 @@ class TestHTTPClient:
         mock_response.json.return_value = "plain string"
 
         client = HTTPClient(endpoint="http://localhost:8000/chat")
-        result = client.send("hi")
+        result = client.send("hi", test_id="t1")
 
         assert result == "plain string"
 
@@ -76,4 +77,4 @@ class TestHTTPClient:
 
         client = HTTPClient(endpoint="http://localhost:8000/chat")
         with pytest.raises(httpx.HTTPStatusError):
-            client.send("hi")
+            client.send("hi", test_id="t1")

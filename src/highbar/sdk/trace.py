@@ -1,69 +1,57 @@
-"""Trace writer — writes atomic boxes to JSONL file."""
+"""Trace writer — appends one record of the trace contract (v1) per line.
+
+Standard library only: this runs inside the agent, often in production images.
+"""
 
 from __future__ import annotations
 
-import hashlib
 import json
+import logging
+import os
 import threading
-import time
-import uuid
+from typing import Any
+
+CONTRACT_VERSION = 1
+
+logger = logging.getLogger("highbar")
 
 
 class TraceWriter:
-    """Writes tool invocation traces to a JSONL file.
+    """Appends records to a JSONL file, one ``os.write`` per line.
 
-    Each trace is an atomic "box" with a unique fingerprint ID
-    and auto-incrementing sequence number.
+    A single write to a file opened with ``O_APPEND`` keeps lines from different
+    threads and processes (uvicorn workers) from interleaving. The file is opened on
+    every write because its path comes from the environment and may change.
+
+    Writing never raises: a trace that cannot be written must not break the agent's
+    conversation. It is logged, and the run's proof of observation turns the loss
+    into an error instead of a green.
     """
 
-    def __init__(self, path: str) -> None:
-        self._path = path
-        self._seq = 0
+    def __init__(self) -> None:
         self._lock = threading.Lock()
 
-    def write(
-        self,
-        fn: str,
-        args: dict[str, object],
-        result: object,
-        started_at: float | None = None,
-        ended_at: float | None = None,
-        error: str | None = None,
-    ) -> str:
-        """Write a trace box. Returns the fingerprint ID."""
-        now = time.time()
-        if started_at is None:
-            started_at = now
-        if ended_at is None:
-            ended_at = now
+    def write(self, path: str, record: dict[str, Any]) -> None:
+        try:
+            line = json.dumps(
+                {"v": CONTRACT_VERSION, **record}, default=_as_text, ensure_ascii=False
+            )
+            data = (line + "\n").encode("utf-8")
+            with self._lock:
+                fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+                try:
+                    os.write(fd, data)
+                finally:
+                    os.close(fd)
+        except Exception as e:
+            # Serializing runs arbitrary __str__/__repr__ (a detached ORM row raises in
+            # it), and a value can nest too deep: none of that may reach the agent.
+            logger.warning("highbar: could not write a trace record to %s: %r", path, e)
 
-        nonce = uuid.uuid4().hex
-        fingerprint = self._make_fingerprint(fn, args, nonce)
 
-        with self._lock:
-            seq = self._seq
-            self._seq += 1
-
-            trace = {
-                "id": fingerprint,
-                "seq": seq,
-                "fn": fn,
-                "args": args,
-                "result": result,
-                "started_at": started_at,
-                "ended_at": ended_at,
-            }
-
-            if error is not None:
-                trace["error"] = error
-
-            line = json.dumps(trace, default=str) + "\n"
-            with open(self._path, "a") as f:
-                f.write(line)
-
-        return fingerprint
-
-    @staticmethod
-    def _make_fingerprint(fn: str, args: dict[str, object], nonce: str) -> str:
-        payload = json.dumps({"fn": fn, "args": args, "nonce": nonce}, sort_keys=True, default=str)
-        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+def _as_text(value: object) -> str:
+    """JSON fallback for values it does not know: their text, or a placeholder."""
+    try:
+        return str(value)
+    except Exception:
+        return f"<unserializable {type(value).__name__}>"
