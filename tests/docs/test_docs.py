@@ -26,7 +26,10 @@ from highbar.engine.parser import parse_spec
 from tests.docs.blocks import Block, blocks
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCES = [ROOT / "README.md", *sorted((ROOT / "site" / "getting-started").glob("*.md"))]
+SOURCES = [
+    ROOT / "README.md",
+    *sorted(p for p in (ROOT / "site").rglob("*.md") if "node_modules" not in p.parts),
+]
 
 ALL_BLOCKS = [block for source in SOURCES for block in blocks(source)]
 YAML = [b for b in ALL_BLOCKS if b.lang in ("yaml", "yml")]
@@ -195,7 +198,45 @@ def test_output_shown_is_the_output_printed(block: Block) -> None:
     assert _normalized(block.text) == _normalized(printed)
 
 
+FILES = [b for b in ALL_BLOCKS if b.marker.startswith("file:")]
+
+
+@pytest.mark.parametrize("block", FILES, ids=_ids(FILES))
+def test_file_shown_is_the_file(block: Block) -> None:
+    """A block marked <!-- file: path --> is that file, as it is in the repository."""
+    path = ROOT / block.marker.removeprefix("file:").strip()
+    assert block.text == path.read_text(encoding="utf-8"), f"{block.where} differs from {path}"
+
+
 def test_the_readme_has_a_quick_start_and_its_output() -> None:
     readme = [b for b in ALL_BLOCKS if b.path.name == "README.md"]
     assert [b.marker for b in readme if b.marker == "quickstart"] == ["quickstart"]
     assert "output: quickstart" in [b.marker for b in readme]
+
+
+def test_site_prose_has_no_bare_placeholders() -> None:
+    """VitePress compiles each page as a Vue template: a bare {{x}} in prose breaks the build.
+
+    Code fences are left alone by VitePress; prose needs <code v-pre> or ::: v-pre.
+    """
+    found: list[str] = []
+    for page in SOURCES:
+        if page.name == "README.md":
+            continue
+        in_fence = in_vpre = False
+        for number, line in enumerate(page.read_text(encoding="utf-8").splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith(("```", "~~~")):
+                in_fence = not in_fence
+            elif stripped == "::: v-pre":
+                in_vpre = True
+            elif stripped == ":::" and in_vpre:
+                in_vpre = False
+            elif not (in_fence or in_vpre):
+                raw_code = re.findall(r"<code v-pre>(.*?)</code>", line)
+                # Inside raw HTML, <path> is a tag to Vue: it must be &lt;path&gt;.
+                if "{{" in re.sub(r"<code v-pre>.*?</code>", "", line) or any(
+                    "<" in code or ">" in code for code in raw_code
+                ):
+                    found.append(f"{page.relative_to(ROOT)}:{number}")
+    assert not found, f"wrap these in <code v-pre> (with &lt; &gt;) or ::: v-pre: {found}"

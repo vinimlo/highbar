@@ -7,14 +7,13 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Só cancela em PR: em main/develop cada commit de merge precisa do seu próprio
-  # resultado, senão não dá para saber qual deles quebrou a suíte.
+  # Cancel only on pull requests: on main and develop each merge commit needs its own
+  # result, or there is no telling which one broke the suite.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
-    # Runners do Mac (infra/ci-runners) quando a variável CI_RUNNER existe;
-    # sem ela, o job volta para o GitHub.
+    # A self-hosted runner when the CI_RUNNER variable names one; GitHub's otherwise.
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
@@ -50,3 +49,22 @@ jobs:
       # SubprocessAdapter e o health check.
       - name: Test
         run: uv run pytest -v
+
+  # The documentation site builds, and VitePress fails the build on a dead link.
+  site:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run build

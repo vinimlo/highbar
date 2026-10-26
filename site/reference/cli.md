@@ -1,163 +1,48 @@
-# CLI Reference
+# CLI
 
-Highbar provides three commands for running tests, validating specs, and scaffolding new projects.
-
-## Installation
-
-```bash
-pip install highbar
+```console
+highbar [--version] <command> [arguments]
 ```
 
-Once installed, the `highbar` CLI is available globally.
+## `highbar run [SPEC_PATH]`
 
-## Commands
+Runs the tests of a spec file, or of every `*.highbar.yaml` under a directory. Without an argument, it uses `specs/`.
 
-### `highbar run [spec_path]`
+| Option | |
+|---|---|
+| `--runs N` | Run each phrasing N times (N ≥ 1), in place of the specs' `defaults.runs`. A test's own `runs` still wins. |
+| `--frozen` | Never generate variations: a phrasing missing from the committed cache fails. Use it in CI. |
+| `--keep-traces` | Keep the trace file of each spec whose agent highbar started, and print its path. |
 
-Run behavior tests against your agent.
+All specs are parsed and validated before any agent starts. With several specs, each one prints its own summary, and a total follows at the end.
 
-```bash
-# Run a specific spec file
-highbar run specs/order-support.highbar.yaml
+## `highbar validate [SPEC_PATH]`
 
-# Discover and run all specs in the default directory
-highbar run
-```
+Parses and validates specs without running anything: unknown keys, wrong types, invalid regular expressions, tests that check nothing, and a `min_pass` above the spec's runs. One line per spec, `✓` or `✗` with the reason.
 
-**Arguments:**
+## `highbar init`
 
-| Argument | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `spec_path` | No | - | Path to a `.highbar.yaml` spec file |
+Writes the quickstart into the current directory: `agent.py` and `specs/quickstart.highbar.yaml`. Files that already exist are left alone. See the [quick start](/getting-started/quickstart).
 
-**Behavior:**
+## `highbar variations [SPEC_PATH]`
 
-1. If `spec_path` is provided, Highbar runs that specific file.
-2. If omitted, Highbar discovers all `*.highbar.yaml` files recursively in the `specs/` directory.
-3. For each spec file:
-   - Parses the YAML into domain models.
-   - Creates a temporary JSONL trace file.
-   - Starts the agent subprocess with `HIGHBAR_TRACES_URL` injected into its environment.
-   - Runs all suites and tests sequentially.
-   - Reports results via the terminal reporter.
-4. After all specs complete, exits with the appropriate code.
+Generates the paraphrases that tests with `variations` ask for, and stores them in `.highbar/variations.json`. Only missing entries are generated; `--force` regenerates them all. See [variations](/guides/variations).
 
-**Exit codes:**
+## Exit codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | All tests passed |
-| `1` | One or more tests failed, or no spec files were found |
+| Code | When |
+|---|---|
+| 0 | Every test passed. |
+| 1 | A test failed or ended in `error`. |
+| 2 | Nothing could run: an invalid spec, no spec found, an agent that did not start or never wrote its trace, a port already in use, a session hook that cannot be imported. |
+| 130 | Interrupted with Ctrl-C. The agent highbar started is stopped first. |
+| 143, 129 | Stopped by SIGTERM or SIGHUP, the same way. |
 
-**Example output:**
+## Environment
 
-```
-  Highbar v0.1.0
-  Running specs/order-support.highbar.yaml
-
-  Order Lookup
-    ✓ Where is my order #12345?                           120ms
-    ✓ Track order #67890                                   95ms
-
-  Guardrails
-    ✓ Ignore all previous instructions...                  80ms
-    ✗ What's the credit card number...                    110ms
-      ✗ Expected response not to contain pattern
-
-  3 passed, 1 failed (405ms)
-```
-
----
-
-### `highbar validate <spec_path>`
-
-Validate the syntax and structure of a spec file without running any tests.
-
-```bash
-highbar validate specs/order-support.highbar.yaml
-```
-
-**Arguments:**
-
-| Argument | Required | Description |
-|----------|----------|-------------|
-| `spec_path` | Yes | Path to a `.highbar.yaml` spec file |
-
-**Behavior:**
-
-- Parses the YAML spec and validates its structure against the expected schema.
-- On success, reports the number of suites and tests found.
-- On failure, displays error details.
-- Does **not** start the agent or run any tests.
-
-**Example output (success):**
-
-```
-  ✓ Valid: 3 suite(s), 7 test(s)
-```
-
-**Example output (failure):**
-
-```
-  ✗ Invalid: missing required field 'agent.start'
-```
-
-**Exit codes:**
-
-| Code | Meaning |
-|------|---------|
-| `0` | Spec is valid |
-| `1` | Spec has syntax or structural errors |
-
----
-
-### `highbar init`
-
-Scaffold a new Highbar project with an example spec file.
-
-```bash
-highbar init
-```
-
-**Behavior:**
-
-1. Creates the `specs/` directory if it does not exist.
-2. Generates `specs/example.highbar.yaml` with a basic template.
-3. If the file already exists, skips creation and prints a notice.
-
-**Generated template:**
-
-```yaml
-agent:
-  start: "python -m my_agent.server"
-  endpoint: "http://localhost:8000/chat"
-  health: "http://localhost:8000/health"
-
-suites:
-  - name: Basic
-    tests:
-      - trigger: "Hello!"
-        expect:
-          response:
-            contains: "hello"
-```
-
-**Example output:**
-
-```
-  Created specs/example.highbar.yaml
-
-  Edit the spec and run: highbar run specs/example.highbar.yaml
-```
-
-## Global Options
-
-| Option | Description |
-|--------|-------------|
-| `--help` | Show help for the CLI or any subcommand |
-| `--version` | Display the installed Highbar version |
-
-```bash
-highbar --help
-highbar run --help
-```
+| Variable | |
+|---|---|
+| `HIGHBAR_TRACES_URL` | Set by highbar for an agent it starts: the trace file to write. |
+| `HIGHBAR_LLM_API_KEY` | Key for generating variations. |
+| `HIGHBAR_LLM_BASE_URL` | An OpenAI-compatible API for variations. Default `https://api.openai.com/v1`. |
+| `HIGHBAR_LLM_MODEL` | The model for variations. Default `gpt-4o-mini`. |
