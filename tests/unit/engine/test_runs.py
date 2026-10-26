@@ -413,7 +413,8 @@ class TestLateCallsAndMinPass:
                 Case(trigger="first", expect=NEVER_DELETES, runs=3, min_pass=2),
                 Case(trigger="second", expect=CALLS_LOOKUP),
             ],
-            FakeAgent(_late_delete({3})),
+            # Declares its tools, as the SDK does: the warning under test is the only one.
+            FakeAgent(_late_delete({3}), declares=("delete_account", "lookup")),
         )
 
         summary = reporter.on_run_end.call_args[0][0]
@@ -428,7 +429,8 @@ class TestLateCallsAndMinPass:
                 Case(trigger="first", expect=NEVER_DELETES, runs=3, min_pass=3),
                 Case(trigger="second", expect=CALLS_LOOKUP),
             ],
-            FakeAgent(_late_delete({3})),
+            # Declares its tools, as the SDK does: the warning under test is the only one.
+            FakeAgent(_late_delete({3}), declares=("delete_account", "lookup")),
         )
 
         summary = reporter.on_run_end.call_args[0][0]

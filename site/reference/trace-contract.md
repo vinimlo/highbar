@@ -5,7 +5,7 @@ The trace file is how an agent tells highbar what it did. The Python SDK writes 
 ## The file
 
 - One JSON object per line (JSON Lines), UTF-8, each line ending in a newline.
-- The agent appends; highbar reads from where it stopped last time. A line not yet ended by a newline is left for the next read, so a writer may be in the middle of one.
+- The agent appends; highbar reads from where it stopped last time. At the start of a run it also scans the file once, for the tools declared since the last `hello`. A line not yet ended by a newline is left for the next read, so a writer may be in the middle of one.
 - A file that becomes smaller than where highbar stopped was recreated (a restarted agent, a rotated log), and is read from the start.
 - A line that is not valid JSON, a `tool` record without `fn`, or `args` or `context` that are not objects, is an error for the test that read it, naming the line. It is never skipped: it may be the call the test is about. A timestamp that is not a number falls back to `ts`.
 
@@ -14,7 +14,7 @@ The trace file is how an agent tells highbar what it did. The Python SDK writes 
 | Field | Type | |
 |---|---|---|
 | `v` | integer | `1`. A version newer than highbar reads is an error that says to upgrade highbar. |
-| `type` | string | Required: `"tool"`, `"turn"` or `"hello"`. A line with another type, or none, is skipped, so emitters can add new types; a tool call written without `type` is lost. |
+| `type` | string | Required: `"tool"`, `"turn"`, `"hello"` or `"tools"`. A line with another type, or none, is skipped, so emitters can add new types; a tool call written without `type` is lost. |
 | `ts` | number | When the record was written, in seconds since the epoch. |
 | `context` | object | Optional. What links the record to a test: `test` (the `X-Highbar-Test` header) and any key `agent.correlate` uses, like `conversation_id`. |
 
@@ -59,12 +59,25 @@ A `turn` record is the proof that the agent handled a message. Against an attach
 |---|---|---|
 | `sdk` | string | The writer and its version, like `"highbar-python/0.1.0"`. |
 | `pid` | integer | The writer's process id. |
+| `tools` | list of strings | Optional: the tools it records, as in a `tools` record. |
 
 ```json
-{"v": 1, "type": "hello", "ts": 1792983750.122, "sdk": "highbar-python/0.1.0", "pid": 94015}
+{"v": 1, "type": "hello", "ts": 1792983750.122, "sdk": "my-agent/1.0", "pid": 94015, "tools": ["get_order", "cancel_order"]}
 ```
 
 Write it once, when the agent starts. When highbar starts the agent and a test checks tool calls, highbar waits up to 2 seconds after the agent is ready for a `hello` in the new file; without one, the run stops with exit code 2. Records of other types do not count: a `hello` says the writer started, before any message arrives.
+
+## `tools`: the tools it records
+
+| Field | Type | |
+|---|---|---|
+| `names` | list of strings | Required: tool names, as they appear in `fn`. |
+
+```json
+{"v": 1, "type": "tools", "ts": 1792983750.124, "names": ["cancel_order", "get_order"]}
+```
+
+A writer may write several. highbar joins those written since the writer's last `hello`, since earlier ones are another process's, and adds every name it sees in a `tool` record during the run. The Python SDK writes one each time a tool is decorated or declared, since its `hello` comes first. A name in a spec's `forbid` or `function_calls` that is in none of them makes the test an `error`: a guardrail on a tool the agent never records could not fail. A writer that declares nothing gets a warning instead, and older versions of highbar ignore the record.
 
 ## Matching records to a test
 
@@ -101,9 +114,9 @@ def _write(record: dict, test: str | None = None) -> None:
         os.close(fd)
 
 
-def hello() -> None:
-    """When the agent starts: highbar waits for it before any test runs."""
-    _write({"type": "hello", "sdk": "reference-emitter/1", "pid": os.getpid()})
+def hello(tools: list[str]) -> None:
+    """When the agent starts, with the tools it records: highbar waits for it."""
+    _write({"type": "hello", "sdk": "reference-emitter/1", "pid": os.getpid(), "tools": tools})
 
 
 def tool(fn, args, *, result=None, error=None, started_at, test=None) -> None:
@@ -117,7 +130,7 @@ def turn(test: str | None) -> None:
     _write({"type": "turn"}, test)
 ```
 
-The agent calls `hello()` before it listens, `tool()` for each call, and `turn()` for each message, with the `X-Highbar-Test` header it received.
+The agent calls `hello(TOOLS)` before it listens, with the tools it records, `tool()` for each call, and `turn()` for each message, with the `X-Highbar-Test` header it received.
 
 ## Version 0
 

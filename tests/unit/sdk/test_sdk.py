@@ -73,7 +73,8 @@ class TestHello:
         ping()
 
         assert hb.enabled
-        assert [r["type"] for r in _records(path)] == ["hello", "tool"]
+        # The file is new to the SDK: hello, then the tools it records (spec D4).
+        assert [r["type"] for r in _records(path)] == ["hello", "tools", "tool"]
 
     def test_explicit_path_wins_over_the_variable(
         self, traces: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -492,3 +493,113 @@ def test_c1_a_failure_returned_as_data_is_a_result_not_an_error(tmp_path: Path) 
     (call,) = [json.loads(line) for line in traces.read_text().splitlines() if '"tool"' in line]
     assert call["result"] == {"error": "upstream timed out"}
     assert call.get("error") is None
+
+
+class TestInventory:
+    """The SDK declares the tools it records, so a guardrail on another name is caught (D4)."""
+
+    @staticmethod
+    def _declared(path: Path) -> list[list[str]]:
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        return [r["names"] for r in records if r["type"] == "tools"]
+
+    def test_each_decorated_tool_is_declared(self, tmp_path: Path) -> None:
+        traces = tmp_path / "t.jsonl"
+        hb = Highbar(traces=str(traces))
+
+        @hb.tool
+        def get_order(order_id: str) -> str:
+            return order_id
+
+        @hb.tool
+        def cancel_order(order_id: str) -> str:
+            return order_id
+
+        assert self._declared(traces)[-1] == ["cancel_order", "get_order"]
+
+    def test_declare_adds_tools_recorded_through_a_funnel(self, tmp_path: Path) -> None:
+        traces = tmp_path / "t.jsonl"
+        hb = Highbar(traces=str(traces))
+
+        @hb.tool
+        def get_order(order_id: str) -> str:
+            return order_id
+
+        hb.declare("search_products", "add_to_cart")
+
+        assert self._declared(traces)[-1] == ["add_to_cart", "get_order", "search_products"]
+
+    def test_a_new_trace_file_gets_the_inventory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HIGHBAR_TRACES_URL", str(tmp_path / "first.jsonl"))
+        hb = Highbar()
+
+        @hb.tool
+        def get_order(order_id: str) -> str:
+            return order_id
+
+        monkeypatch.setenv("HIGHBAR_TRACES_URL", str(tmp_path / "second.jsonl"))
+        get_order("1042")
+
+        assert self._declared(tmp_path / "second.jsonl") == [["get_order"]]
+
+    def test_nothing_is_written_when_highbar_is_off(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HIGHBAR_TRACES_URL", raising=False)
+        monkeypatch.chdir(tmp_path)
+        hb = Highbar()
+        hb.declare("search_products")
+
+        assert list(tmp_path.iterdir()) == []
+
+
+class TestInventoryFollowsTheFile:
+    """PR 12 review I3: a rotated or emptied file gets hello and the tools again."""
+
+    @staticmethod
+    def _types(path: Path) -> list[str]:
+        return [json.loads(line)["type"] for line in path.read_text().splitlines()]
+
+    def _agent(self, traces: Path):  # type: ignore[no-untyped-def]
+        hb = Highbar(traces=str(traces))
+
+        @hb.tool
+        def get_order(order_id: str) -> str:
+            return order_id
+
+        return get_order
+
+    def test_i3_an_emptied_file_gets_hello_and_tools_again(self, tmp_path: Path) -> None:
+        traces = tmp_path / "t.jsonl"
+        get_order = self._agent(traces)
+        get_order("1")
+        traces.write_text("")  # `: > traces.jsonl` on the running agent
+
+        get_order("2")
+
+        assert self._types(traces) == ["hello", "tools", "tool"]
+
+    def test_i3_a_replaced_file_gets_hello_and_tools_again(self, tmp_path: Path) -> None:
+        traces = tmp_path / "t.jsonl"
+        get_order = self._agent(traces)
+        get_order("1")
+        traces.rename(tmp_path / "t.jsonl.1")  # rotated
+
+        get_order("2")
+
+        assert self._types(traces) == ["hello", "tools", "tool"]
+
+    def test_m1_declare_takes_any_name_as_text_and_never_raises(self, tmp_path: Path) -> None:
+        traces = tmp_path / "t.jsonl"
+        hb = Highbar(traces=str(traces))
+        hb.declare(1)  # type: ignore[arg-type]
+
+        @hb.tool
+        def get_order(order_id: str) -> str:
+            return order_id
+
+        get_order("1")
+        names = [json.loads(line) for line in traces.read_text().splitlines()]
+        assert ["1", "get_order"] in [r.get("names") for r in names]

@@ -83,6 +83,8 @@ class Window:
     tools: list[Trace] = field(default_factory=list[Trace])
     turns: list[TurnRecord] = field(default_factory=list[TurnRecord])
     hellos: list[Hello] = field(default_factory=list[Hello])
+    # The tools the agent declared it records, one tuple per declaration (spec D4).
+    declarations: list[tuple[str, ...]] = field(default_factory=list[tuple[str, ...]])
     # Where the next read starts: every record is read once, none falls between reads.
     end: int = 0
 

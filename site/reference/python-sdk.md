@@ -31,6 +31,8 @@ async def search_products(query: str, limit: int = 10) -> list[dict]: ...
 
 Records each call as a `tool` record: the arguments bound to their names (defaults included), the result, the start and end times, and the context of the message being handled. When the function raises, the record gets `error: "TypeName: message"` and the exception propagates unchanged. A coroutine is awaited before its result is recorded.
 
+Decorating a function also declares it: the SDK writes a `tools` record with every tool it records, which highbar checks a spec's tool names against. When the trace file is emptied or replaced while the agent runs, the SDK writes its `hello` and the tools again.
+
 ## `hb.record(fn, args=None, *, result=None, error=None, started_at=None, ended_at=None, **context)`
 
 ```python
@@ -38,6 +40,14 @@ hb.record("search_products", {"query": "dress"}, result=rows, conversation_id=ci
 ```
 
 Records a call made where no function can be decorated, such as a dispatch funnel. Keyword arguments beyond the named ones go into the record's `context`, on top of the current message's context. A failure the tool returned as data belongs in `error`: highbar never reads `result` to decide whether a call failed. Times default to now.
+
+## `hb.declare(*names)`
+
+```python
+hb.declare("search_products", "add_to_cart")
+```
+
+Declares tools that `hb.record()` writes, which no decorator announces. highbar checks every name in a spec's `forbid` and `function_calls` against the tools the agent declared or was seen calling: a name it cannot see makes the test an `error`, because a guardrail on a tool the agent never records could not fail. Call it when the agent starts, with every tool the funnel can dispatch.
 
 ## `hb.turn(*, message=None, **context)`
 
