@@ -45,3 +45,17 @@ def test_the_repository_version_has_a_tag_form() -> None:
         _script().main([f"v{_script().version(ROOT / 'pyproject.toml')}"], ROOT / "pyproject.toml")
         == 0
     )
+
+
+def test_i1_the_release_runs_only_on_githubs_runners() -> None:
+    """PR 9 review, I1: a self-hosted runner can be named by a fork's own workflow copy.
+
+    The jobs that build and publish the package never run on one, whatever CI_RUNNER says.
+    """
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "release.yml").read_text())
+    assert {name: job["runs-on"] for name, job in workflow["jobs"].items()} == {
+        "build": "ubuntu-latest",
+        "publish": "ubuntu-latest",
+    }

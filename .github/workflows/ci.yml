@@ -13,9 +13,10 @@ concurrency:
 
 jobs:
   check:
-    # A self-hosted runner when the CI_RUNNER variable names one; GitHub's otherwise.
-    # A pull request from a fork always runs on GitHub's: its code is not trusted, and a
-    # self-hosted runner keeps state between jobs, the release job's among them.
+    # A self-hosted runner when the CI_RUNNER variable names one; GitHub's otherwise, and
+    # always for a fork's pull request. That only steers this file: a fork's pull request
+    # runs its own copy of it and can name any runner. Delete CI_RUNNER before the
+    # repository is public; GitHub's runners are free for public repositories.
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false

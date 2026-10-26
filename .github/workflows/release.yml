@@ -4,9 +4,10 @@ name: Release
 # and publishes to PyPI by trusted publishing (no token). The PyPI project trusts
 # this repository, this workflow (release.yml) and the environment "pypi".
 #
-# Only maintainers push tags, and ci.yml never runs a fork's pull request on the
-# self-hosted runner, so no untrusted code runs where these jobs do. Actions are
-# pinned to commits: this is the workflow that can publish.
+# Both jobs run on GitHub's runners, never on a self-hosted one: a fork's pull request
+# runs its own copy of a workflow and can name any runner, so a self-hosted runner is
+# not a place to publish from. GitHub's runners are free once the repository is
+# public. Actions are pinned to commits: this is the workflow that can publish.
 on:
   push:
     tags: ["v*"]
@@ -16,7 +17,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
@@ -44,7 +45,7 @@ jobs:
 
   publish:
     needs: build
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write

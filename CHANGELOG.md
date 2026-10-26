@@ -17,14 +17,14 @@ The first release candidate of highbar: evals for AI agents that behave like tes
 ### Running the agent
 
 - Managed mode: highbar starts the agent in its own process group, waits for it, logs its output to `.highbar/logs/`, and stops it, even when interrupted. A busy port or an agent that dies at start stops the run with the reason.
-- Attach mode: tests run against an agent that is already up, with a configurable request (`method`, `headers`, `body`), a reply path, a timeout, and `${VAR}` values that never appear in the output.
+- Attach mode: tests run against an agent that is already up, with a configurable request (`method`, `headers`, `body`), a reply path, a timeout, and `${VAR}` values: one of 6 characters or more never appears in the output.
 - Session hooks (commands or Python functions) open a clean session per test execution.
 
 ### Results
 
 - Three states: `passed`, `failed`, and `error` when the behavior could not be verified. A test that checks tool calls needs proof that the agent recorded its message.
 - Each test execution has an id, sent in `X-Highbar-Test`; trace records are matched to their test by it, or by `agent.correlate`. A late call fails the run it belongs to.
-- Exit codes: 0 all passed, 1 a test failed or errored, 2 nothing could run.
+- Exit codes: 0 all passed, 1 a test failed or errored, 2 nothing could run; 130, 143 and 129 when interrupted (Ctrl-C, SIGTERM, SIGHUP), after the agent is stopped.
 
 ### Connecting an agent
 
