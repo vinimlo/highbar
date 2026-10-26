@@ -1,175 +1,84 @@
-# Core Concepts
+# Core concepts
 
-## Glossary
+## Specs, suites and tests
 
-### Spec
+A spec is a `.highbar.yaml` file. It names the agent under test and groups its tests in suites. `highbar run` with no argument runs every spec under `specs/`.
 
-A `.highbar.yaml` file that contains the full definition of a test run: agent configuration and one or more test suites. Each spec targets a single agent.
+A test is a message (`trigger`) and what must follow from it (`expect`):
 
-```yaml
-agent:
-  start: "python agent.py"
-  endpoint: "http://localhost:8000/chat"
-  health: "http://localhost:8000/health"
-  startup_timeout: 15000   # ms, default: 15000
-  settle_time: 500          # ms, default: 500
-
-suites:
-  - name: ...
-    tests: [...]
-```
-
-### Suite
-
-A named group of related tests. Use suites to organize tests by feature, concern, or risk area.
-
-```yaml
-suites:
-  - name: Order Management
-    tests: [...]
-  - name: Guardrails
-    tests: [...]
-```
-
-### Test
-
-A single behavioral assertion. A test can be **single-turn** (one trigger and one set of expectations) or **multi-turn** (a sequence of turns that share conversational state).
-
-Single-turn test:
-
-```yaml
-- trigger: "Where is my order #12345?"
-  expect:
-    function_calls:
-      - name: search_orders
-        params:
-          order_id: "12345"
-    response:
-      contains: "shipped"
-```
-
-Multi-turn test:
-
-```yaml
-- turns:
-    - trigger: "Create an order for 3 widgets"
-      expect:
-        function_calls:
-          - name: create_order
-            params:
-              item: "widgets"
-              quantity: 3
-    - trigger: "Now cancel that order"
-      expect:
-        function_calls:
-          - name: cancel_order
-```
-
-### Turn
-
-One exchange in a multi-turn test. Each turn has its own trigger and expectations. Turns execute sequentially against the same agent session, so conversational state carries forward.
-
-### Trigger
-
-The message sent to the agent's HTTP endpoint. Highbar sends it as a POST request with a JSON body:
-
-```json
-{"message": "Where is my order #12345?"}
-```
-
-### Expect
-
-The assertions to evaluate after a trigger. Two assertion types are supported:
-
-- **`function_calls`** — assert which tools were called, with what parameters, and optionally what they returned. Uses **subset matching**: you only need to specify the parameters you care about.
-- **`response`** — assert properties of the agent's text response: `contains`, `not_contains`, or `matches` (regex).
-
-```yaml
+```yaml test
+name: looks the order up
+trigger: "Where is order 1042?"
 expect:
   function_calls:
-    - name: search_orders
-      params:
-        order_id: "12345"
-      result:
-        status: "shipped"
+    - name: get_order
+      params: {order_id: "1042"}
   response:
-    contains: "shipped"
-    not_contains: "error"
+    contains: "1042"
 ```
 
-### Trace
+`expect` can check the tool calls (`function_calls`, with `ordered`, `exclusive` and `error`), tools that must not be called (`forbid`), and the reply (`response`). A test that checks nothing is a spec error, and so is any key highbar does not know: a typo never turns into a check that is silently skipped. [Writing specs](/guides/writing-specs) has the whole vocabulary.
 
-An atomic record capturing a single tool invocation. Each trace contains:
+A conversation is a test with `turns`, each with its own trigger and expectations. See [multi-turn tests](/guides/multi-turn).
 
-| Field | Description |
-|-------|-------------|
-| `id` | SHA-256 fingerprint (first 16 hex chars) derived from function name, arguments, and a random nonce |
-| `seq` | Auto-incrementing sequence number for ordering |
-| `fn` | The function name (e.g., `search_orders`) |
-| `args` | The bound arguments as a dictionary |
-| `result` | The return value |
-| `started_at` | Unix timestamp when the call started |
-| `ended_at` | Unix timestamp when the call completed |
-| `error` | Error string, if the call raised an exception |
+## The agent: started or attached
 
-### Trace Box
+With `start`, highbar starts the agent itself, waits for `health` to answer, runs the tests and stops it. The agent's output goes to a log file under `.highbar/logs/`.
 
-The JSONL record written by `@hb.tool` to disk. Each line in the trace file is one JSON object representing a single tool invocation. The trace file path is controlled by the `HIGHBAR_TRACES_URL` environment variable, which Highbar injects automatically when starting the agent subprocess.
-
-Example trace box (one line in the JSONL file):
-
-```json
-{"id": "a1b2c3d4e5f6a7b8", "seq": 0, "fn": "search_orders", "args": {"order_id": "12345"}, "result": {"order_id": "12345", "status": "shipped"}, "started_at": 1710000000.123, "ended_at": 1710000000.456}
+```yaml agent
+agent:
+  start: "python agent.py"
+  endpoint: "http://127.0.0.1:8731/chat"
+  health: "http://127.0.0.1:8731/health"
 ```
 
-## Architecture
+Without `start`, highbar attaches to an agent that is already running and never stops it. The agent writes its trace file where `traces` says:
 
-```mermaid
-graph LR
-    A[Spec YAML] --> B[Parser]
-    B --> C[Runner]
-    C --> D[Assertions]
-    D --> E[Reporter]
-    C --> F[SubprocessAdapter]
-    F -->|starts| G[Agent]
-    G -->|"@hb.tool writes"| H[JSONL Traces]
-    H --> I[FileTraceCollector]
-    I -->|reads| D
+```yaml agent
+agent:
+  endpoint: "https://staging.example.com/api/chat"
+  traces: "/var/log/support-agent/traces.jsonl"
 ```
 
-## Execution Flow
+By default highbar sends `{"message": "..."}` and reads the reply from the first of the keys `response`, `message`, `content`, `text` and `reply`, or takes the body itself when it is plain text. Both sides are configurable, and a session hook can open a fresh conversation for each test: see [attach mode and sessions](/guides/attach-mode).
 
-Here is what happens when you run `highbar run specs/my-agent.highbar.yaml`:
+## Traces
 
-1. **Parse** — The Parser reads the YAML spec file, validates the schema, and produces domain model objects (`Spec`, `Suite`, `Test`, `Expect`).
+The agent records what it does in a trace file, one JSON line per event:
 
-2. **Start Agent** — The `SubprocessAdapter` launches the agent command (e.g., `python agent.py`) as a child process. It injects the `HIGHBAR_TRACES_URL` environment variable pointing to a temporary JSONL file.
+- a `tool` record for each tool call, with its arguments, its result, and its `error` if it failed;
+- a `turn` record for each message it handled;
+- a `hello` record when the SDK starts writing.
 
-3. **Health Check** — If a `health` URL is configured, Highbar polls it with GET requests until it receives a successful response, up to `startup_timeout` milliseconds.
+The Python SDK writes these for you (`@hb.tool`, `hb.record()`, and `highbar.asgi.Middleware` for the turns). Any other language can write them directly: the format is the [trace contract](/reference/trace-contract).
 
-4. **Send Trigger** — For each test, the `HTTPClient` sends a POST request to the agent's `endpoint` with the trigger message.
+## Which calls belong to a test
 
-5. **Settle** — Highbar waits for `settle_time` milliseconds after receiving the response. This gives the agent time to complete any asynchronous tool calls that happen after the HTTP response is sent.
+Each execution of a test gets its own id, sent in the `X-Highbar-Test` header. The SDK puts it in the `context` of every record written while that request is handled. highbar keeps only the records whose context matches, so a slow call from the previous test cannot count for this one.
 
-6. **Collect Traces** — The `FileTraceCollector` reads the JSONL trace file and parses each line into a `Trace` object. It returns all traces written since the last collection.
+When the test id cannot travel to the agent's tools, `agent.correlate` names another key, such as a `conversation_id` opened by the session hook.
 
-7. **Assert** — The assertion engines (`FunctionCallsAssertion`, `ResponseAssertion`) compare the collected traces and response against the expected values defined in the spec. Function call assertions use subset matching on parameters — you only need to assert the fields you care about.
+A test that checks tool calls needs proof that the agent handled its message: at least one record of its own. Without it the test is an `error` that says what was read, never a pass. That is how an agent that was never instrumented, or a stale server on the port, is caught.
 
-8. **Report** — The `TerminalReporter` outputs results to the terminal using rich formatting. Passing tests show a green checkmark, failing tests show a red cross with details about what went wrong.
+## Three results
 
-9. **Cleanup** — After all tests complete, the agent subprocess is terminated and the temporary trace file is cleaned up. The CLI exits with code 0 if all tests passed, or code 1 if any test failed.
+- **passed**: the agent did what the spec says, and highbar saw it.
+- **failed**: the agent did something else.
+- **error**: highbar could not verify it.
 
-## Key Design Decisions
+`highbar run` exits with 0 when every test passed, 1 when any failed or errored, and 2 when nothing could run: an invalid spec, an agent that did not start, a port already in use.
 
-**Test the agent, not the LLM.** Highbar does not evaluate prompt quality or model accuracy. It asserts that given an input, the agent calls the right tools with the right parameters and produces the right output.
+## Runs
 
-**Subset matching by default.** When asserting function call parameters, you only specify the fields that matter. If the tool receives additional parameters, the assertion still passes. This keeps specs resilient to implementation changes.
+An agent built on an LLM can pass once by chance. `runs` sends the message several times, each as its own execution, and `min_pass` says how many must pass (every run, by default):
 
-**Zero overhead in production.** The `@hb.tool` decorator checks for the `HIGHBAR_TRACES_URL` environment variable at initialization time. When the variable is not set, the decorator returns the original function unwrapped — no trace writing, no performance impact, no extra dependencies with the `[sdk]` install.
+```yaml test
+trigger: "I want to cancel my order"
+runs: 5
+min_pass: 4
+expect:
+  function_calls:
+    - name: cancel_order
+```
 
-**YAML over code.** Specs are declarative YAML files, not Python test code. This makes them readable by anyone on the team, diffable in pull requests, and easy to generate from documentation or conversation logs.
-
-## Next Steps
-
-- [Quickstart](/getting-started/quickstart) — build and test your first agent in 5 minutes
-- [Installation](/getting-started/installation) — install Highbar via pip or uv
+`--runs N` on the command line sets the default for every test that does not set its own. See [repetition and CI gates](/guides/repetition).
