@@ -56,7 +56,10 @@ export default defineConfig({
       },
       {
         text: 'Examples',
-        items: [{ text: 'Quickstart agent', link: '/examples/quickstart' }],
+        items: [
+          { text: 'Quickstart agent', link: '/examples/quickstart' },
+          { text: 'OpenAI-compatible agent', link: '/examples/openai-agent' },
+        ],
       },
       {
         items: [
