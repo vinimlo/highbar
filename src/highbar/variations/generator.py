@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from highbar._narrow import as_list
 from highbar.variations.cache import VariationCache, fingerprint
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -171,13 +172,15 @@ def _parse_variations(content: str, count: int, trigger: str = "") -> list[str]:
         msg = f"Model reply is not valid JSON: {content[:200]!r}"
         raise VariationError(msg) from exc
 
-    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+    items = as_list(parsed)
+    if items is None or not all(isinstance(item, str) for item in items):
         msg = f"Expected a JSON array of strings, got: {content[:200]!r}"
         raise VariationError(msg)
+    sentences: list[str] = items
 
     seen = {_normalize(trigger)}
     variations: list[str] = []
-    for item in parsed:
+    for item in sentences:
         sentence = item.strip()
         if not sentence or _normalize(sentence) in seen:
             continue

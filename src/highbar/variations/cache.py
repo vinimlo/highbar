@@ -36,6 +36,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from highbar._narrow import as_dict, as_list
+
 DEFAULT_CACHE_PATH = ".highbar/variations.json"
 
 
@@ -73,19 +75,19 @@ class VariationCache:
 
     def __init__(self, path: str = DEFAULT_CACHE_PATH) -> None:
         self._path = Path(path)
-        self._loaded: dict[str, dict[str, Any]] | None = None
+        self._loaded: dict[str, Any] | None = None
 
     @property
     def path(self) -> Path:
         return self._path
 
     @property
-    def _entries(self) -> dict[str, dict[str, Any]]:
+    def _entries(self) -> dict[str, Any]:
         if self._loaded is None:
             self._loaded = self._load()
         return self._loaded
 
-    def _load(self) -> dict[str, dict[str, Any]]:
+    def _load(self) -> dict[str, Any]:
         if not self._path.exists():
             return {}
 
@@ -105,18 +107,20 @@ class VariationCache:
             )
             raise CacheError(msg) from exc
 
-        if not isinstance(data, dict):
+        entries = as_dict(data)
+        if entries is None:
             msg = f"{self._path} must contain a JSON object, got {type(data).__name__}"
             raise CacheError(msg)
-        return data
+        return entries
 
     def get(self, key: str) -> list[str] | None:
         entry = self._entries.get(key)
         if entry is None:
             return None
 
-        variations: Any = entry.get("variations") if isinstance(entry, dict) else None
-        if not isinstance(variations, list) or not all(isinstance(v, str) for v in variations):
+        fields = as_dict(entry)
+        variations = as_list(fields.get("variations")) if fields is not None else None
+        if variations is None or not all(isinstance(v, str) for v in variations):
             msg = f"{self._path}: entry {key!r} has no valid 'variations' list"
             raise CacheError(msg)
         return variations

@@ -50,7 +50,7 @@ class Trace:
     started_at: float
     ended_at: float
     error: str | None = None
-    context: dict[str, Any] = field(default_factory=dict)
+    context: dict[str, Any] = field(default_factory=dict[str, Any])
 
     @property
     def duration_ms(self) -> float:
@@ -62,7 +62,7 @@ class TurnRecord:
     """A `turn` record: the instrumented agent received and handled a message."""
 
     ts: float
-    context: dict[str, Any] = field(default_factory=dict)
+    context: dict[str, Any] = field(default_factory=dict[str, Any])
     message: str | None = None
     response: str | None = None
 
@@ -80,9 +80,9 @@ class Hello:
 class Window:
     """The records written to the trace file between two points of a run."""
 
-    tools: list[Trace] = field(default_factory=list)
-    turns: list[TurnRecord] = field(default_factory=list)
-    hellos: list[Hello] = field(default_factory=list)
+    tools: list[Trace] = field(default_factory=list[Trace])
+    turns: list[TurnRecord] = field(default_factory=list[TurnRecord])
+    hellos: list[Hello] = field(default_factory=list[Hello])
     # Where the next read starts: every record is read once, none falls between reads.
     end: int = 0
 
@@ -92,7 +92,7 @@ class RequestConfig:
     """How a trigger is sent. Values may hold {{message}}, {{test.*}} and {{session.*}}."""
 
     method: str = "POST"
-    headers: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict[str, str])
     body: Any = field(default_factory=lambda: {"message": "{{message}}"})
 
 
@@ -141,7 +141,7 @@ class AgentConfig:
     session: SessionConfig | None = None
     correlate: dict[str, Any] = field(default_factory=lambda: {"test": "{{test.id}}"})
     # Each value expanded from ${NAME}, and the name: what output must never show.
-    secrets: dict[str, str] = field(default_factory=dict)
+    secrets: dict[str, str] = field(default_factory=dict[str, str])
 
     @property
     def managed(self) -> bool:
@@ -272,7 +272,7 @@ class TestResult:
     status: Status
     errors: list[str]
     duration_ms: float
-    traces: list[Trace] = field(default_factory=list)
+    traces: list[Trace] = field(default_factory=list[Trace])
     # (passed, runs, min_pass) when a test without variations ran more than once.
     counts: tuple[int, int, int] | None = None
 

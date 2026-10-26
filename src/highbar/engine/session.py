@@ -27,8 +27,9 @@ import tempfile
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
+from highbar._narrow import as_dict
 from highbar.assertions.response import truncate
 from highbar.domain.models import CommandHook, PythonHook, SessionConfig
 from highbar.engine.placeholders import PlaceholderError, Values, render
@@ -74,7 +75,7 @@ class SessionHooks:
                 raise SessionError(
                     f"session.setup must return a mapping, got {type(result).__name__}"
                 )
-            session = dict(result)
+            session: dict[str, Any] = dict(cast("Mapping[str, Any]", result))
         else:
             session = _last_json_object(self._run(hook, "setup", ctx, {}))
         if "headers" in session and not isinstance(session["headers"], Mapping):
@@ -231,12 +232,13 @@ def _last_json_object(stdout: str) -> dict[str, Any]:
         value = json.loads(last)
     except ValueError:
         value = None
-    if not isinstance(value, dict):
+    mapping = as_dict(value)
+    if mapping is None:
         raise SessionError(
             "session.setup must print a JSON object as its last line of output, "
             f"got {truncate(last, 200)!r}"
         )
-    return value
+    return mapping
 
 
 def _as_argument(value: Any) -> str:

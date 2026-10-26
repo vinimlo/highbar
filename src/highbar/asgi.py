@@ -50,7 +50,7 @@ class Middleware:
                     and not message.get("more_body", False)
                 ):
                     written = True
-                    self._hb._write_turn(turn_context)
+                    self._hb._write_turn(turn_context)  # pyright: ignore[reportPrivateUsage]  # the SDK's own
                 await send(message)
 
             try:
@@ -58,7 +58,7 @@ class Middleware:
             finally:
                 if not written:
                     # The handler raised, or never answered: the message was still received.
-                    self._hb._write_turn(turn_context)
+                    self._hb._write_turn(turn_context)  # pyright: ignore[reportPrivateUsage]  # the SDK's own
 
 
 def _test_id(scope: Scope) -> str | None:

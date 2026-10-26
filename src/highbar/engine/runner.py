@@ -65,7 +65,7 @@ class _Execution:
     run: int = 0
     expect: Expect | None = None  # of its last turn
     response: str = ""
-    tools: list[Trace] = field(default_factory=list)
+    tools: list[Trace] = field(default_factory=list[Trace])
     passed: bool = False
 
 
@@ -128,7 +128,7 @@ class _Gate:
 
     min_pass: int
     counted: bool  # the title shows passed/runs: no variations, more than one run
-    runs: list[list[Status]] = field(default_factory=list)
+    runs: list[list[Status]] = field(default_factory=list[list[Status]])
 
     @property
     def status(self) -> Status:

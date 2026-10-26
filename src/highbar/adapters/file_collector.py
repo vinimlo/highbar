@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from highbar._narrow import as_dict
 from highbar.domain.models import Hello, Trace, TurnRecord, Window
 
 CONTRACT_VERSION = 1
@@ -120,15 +121,16 @@ def _add(window: Window, raw: bytes) -> None:
     if not raw.strip():
         return
     try:
-        record = json.loads(raw)
+        parsed: Any = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         reason = e.msg if isinstance(e, json.JSONDecodeError) else "not UTF-8"
         raise _BadLine(f"not valid JSON ({reason})") from None
-    if not isinstance(record, dict):
-        raise _BadLine(f"not a JSON object, got {type(record).__name__}")
+    record = as_dict(parsed)
+    if record is None:
+        raise _BadLine(f"not a JSON object, got {type(parsed).__name__}")
 
     version = record.get("v")
-    if version is None or (version == 0 and not isinstance(version, bool)):
+    if version is None or (not isinstance(version, bool) and version == 0):
         window.tools.append(_tool(record, context=_v0_context(record)))
         return
     if isinstance(version, bool) or not isinstance(version, int) or version < 0:
@@ -167,9 +169,10 @@ def _tool(record: dict[str, Any], *, context: dict[str, Any]) -> Trace:
     fn = record.get("fn")
     if not isinstance(fn, str) or not fn:
         raise _BadLine("tool record without 'fn'")
-    args = record.get("args", {})
-    if not isinstance(args, dict):
-        raise _BadLine(f"'args' must be an object, got {type(args).__name__}")
+    raw_args = record.get("args", {})
+    args = as_dict(raw_args)
+    if args is None:
+        raise _BadLine(f"'args' must be an object, got {type(raw_args).__name__}")
     ts = _number(record, "ts", 0.0)
     error = record.get("error")
     if not error:
@@ -188,9 +191,10 @@ def _tool(record: dict[str, Any], *, context: dict[str, Any]) -> Trace:
 
 
 def _context(record: dict[str, Any]) -> dict[str, Any]:
-    context = record.get("context", {})
-    if not isinstance(context, dict):
-        raise _BadLine(f"'context' must be an object, got {type(context).__name__}")
+    raw = record.get("context", {})
+    context = as_dict(raw)
+    if context is None:
+        raise _BadLine(f"'context' must be an object, got {type(raw).__name__}")
     return context
 
 

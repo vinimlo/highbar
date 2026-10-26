@@ -55,7 +55,7 @@ def _print_version(value: bool) -> None:
 
 
 @app.callback()
-def _main(
+def _main(  # pyright: ignore[reportUnusedFunction]  # registered by the decorator
     show_version: bool = typer.Option(
         False,
         "--version",

@@ -133,7 +133,7 @@ def _out_of_order(
 def _per_expectation(
     expected: list[FunctionCallExpect], traces: list[Trace], assignment: list[int | None]
 ) -> list[AssertionResult]:
-    results = []
+    results: list[AssertionResult] = []
     seen: set[str] = set()
     for index, (e, call) in enumerate(zip(expected, assignment, strict=True)):
         message = "" if call is not None else _unmet(e, index, expected, traces, assignment)

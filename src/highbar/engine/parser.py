@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from highbar._narrow import as_dict, as_list
 from highbar.assertions._match import MATCHER_KEYS, validate_expected
 from highbar.domain.models import (
     AgentConfig,
@@ -77,7 +78,7 @@ def _mapping_without_duplicates(loader: _StrictLoader, node: yaml.MappingNode) -
     for key_node, _ in node.value:
         if key_node.tag == "tag:yaml.org,2002:merge":
             continue
-        key = loader.construct_object(key_node, deep=True)
+        key: Any = loader.construct_object(key_node, deep=True)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # PyYAML's stubs
         if key in seen:
             line = key_node.start_mark.line + 1
             raise SpecError(f"line {line}: duplicate key '{key}' — YAML would keep only the last")
@@ -233,10 +234,10 @@ def _expand_env(value: Any, where: str, found: dict[str, str]) -> Any:
     ``Authorization: Bearer `` and read as the agent refusing a correct request.
     Each value expanded goes in ``found``, to be masked in every message.
     """
-    if isinstance(value, dict):
-        return {key: _expand_env(item, f"{where}.{key}", found) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_expand_env(item, f"{where}[{index}]", found) for index, item in enumerate(value)]
+    if (mapping := as_dict(value)) is not None:
+        return {key: _expand_env(item, f"{where}.{key}", found) for key, item in mapping.items()}
+    if (items := as_list(value)) is not None:
+        return [_expand_env(item, f"{where}[{index}]", found) for index, item in enumerate(items)]
     if not isinstance(value, str):
         return value
 
@@ -350,16 +351,17 @@ def _parse_hook(raw: Any, where: str, allowed: frozenset[str]) -> Hook:
 
 def _parse_correlate(raw: Any, has_session: bool) -> dict[str, Any]:
     where = "agent.correlate"
-    if not isinstance(raw, dict) or not raw:
+    correlate = as_dict(raw)
+    if not correlate:
         raise SpecError(
             "agent: correlate must be a non-empty mapping of context key to value "
             '(e.g. {conversation_id: "{{session.conversation_id}}"})'
         )
-    for key, value in raw.items():
+    for key, value in correlate.items():
         if isinstance(value, bool) or not isinstance(value, (str, int, float)):
             raise SpecError(f"{where}.{key}: must be text, a number or a placeholder")
-    check_placeholders(raw, where, allowed=placeholders.ALL, has_session=has_session)
-    return dict(raw)
+    check_placeholders(correlate, where, allowed=placeholders.ALL, has_session=has_session)
+    return dict(correlate)
 
 
 def _check_url(url: str, key: str) -> None:
@@ -499,7 +501,7 @@ def _parse_expect(raw: Any, where: str) -> Expect:
             _parse_function_call(fc, f"{where}.function_calls[{n}]") for n, fc in enumerate(calls)
         ]
 
-    flags = {}
+    flags: dict[str, bool] = {}
     for key in ("ordered", "exclusive"):
         if key not in raw:
             continue
@@ -510,12 +512,8 @@ def _parse_expect(raw: Any, where: str) -> Expect:
 
     forbid: tuple[str, ...] = ()
     if "forbid" in raw:
-        names = raw["forbid"]
-        if (
-            not isinstance(names, list)
-            or not names
-            or not all(isinstance(name, str) and name for name in names)
-        ):
+        names = as_list(raw["forbid"])
+        if not names or not all(isinstance(name, str) and name for name in names):
             raise SpecError(f"{where}: forbid must be a non-empty list of tool names")
         forbid = tuple(names)
 
@@ -527,12 +525,12 @@ def _parse_expect(raw: Any, where: str) -> Expect:
 
 
 def _parse_response(raw: Any, where: str) -> ResponseExpect:
-    if raw is None or (isinstance(raw, dict) and not user_keys(raw)):
+    if raw is None or ((mapping := as_dict(raw)) is not None and not user_keys(mapping)):
         raise SpecError(f"{where}: response has no matcher (use {', '.join(sorted(MATCHER_KEYS))})")
     require_type(raw, dict, where, "response must be a mapping")
     response_where = f"{where}.response"
     check_keys(raw, "response", response_where)
-    matcher = {key: value for key, value in raw.items() if key in MATCHER_KEYS}
+    matcher: dict[str, Any] = {key: value for key, value in raw.items() if key in MATCHER_KEYS}
     for key, value in matcher.items():
         require_type(value, str, response_where, f"{key} must be a string")
         if not value and key != "equals":
@@ -586,25 +584,26 @@ def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
     """``true``, ``false``, or a matcher the error text must satisfy."""
     if isinstance(raw, bool):
         return raw
-    if not (isinstance(raw, dict) and raw and set(raw) <= MATCHER_KEYS):
+    matcher = as_dict(raw)
+    if not matcher or not set(matcher) <= MATCHER_KEYS:
         raise SpecError(
             f"{where}.error: error must be true, false or a matcher such as "
             '{contains: "Timeout"}; a bare text would be ambiguous between equals and contains'
         )
     try:
-        validate_expected(raw, f"{where}.error")
+        validate_expected(matcher, f"{where}.error")
     except ValueError as e:
         raise SpecError(str(e)) from None
-    return raw
+    return matcher
 
 
 def _has_template(value: Any) -> bool:
     if isinstance(value, str):
         return "{{" in value
-    if isinstance(value, dict):
-        return any(_has_template(v) for v in value.values())
-    if isinstance(value, list):
-        return any(_has_template(v) for v in value)
+    if (mapping := as_dict(value)) is not None:
+        return any(_has_template(v) for v in mapping.values())
+    if (items := as_list(value)) is not None:
+        return any(_has_template(v) for v in items)
     return False
 
 
@@ -620,14 +619,14 @@ def _parse_call_name(raw: Any, where: str) -> str | list[str]:
             raise SpecError(f"{where}: function_call 'name' cannot be empty")
         return raw
 
-    if isinstance(raw, list):
-        if not raw:
+    if (names := as_list(raw)) is not None:
+        if not names:
             raise SpecError(f"{where}: function_call 'name' cannot be an empty list")
-        if not all(isinstance(name, str) and name.strip() for name in raw):
+        if not all(isinstance(name, str) and name.strip() for name in names):
             msg = f"function_call 'name' list must contain only non-empty strings, got {raw!r}"
             raise SpecError(f"{where}: {msg}")
         # Listing a tool twice adds nothing, and would repeat it in failure messages.
-        return list(dict.fromkeys(raw))
+        return list(dict.fromkeys(names))
 
     raise SpecError(
         f"{where}: function_call 'name' must be a string or a list of strings, "
