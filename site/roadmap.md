@@ -6,7 +6,8 @@ highbar 0.1 does what the rest of this site describes. These are the things it d
 - **Machine-readable reports.** JSON and JUnit output for CI dashboards. Today the gate is the exit code.
 - **Variations in multi-turn tests.**
 - **SDKs in other languages.** The [trace contract](/reference/trace-contract) is the stable interface; an SDK is a convenience over it.
+- **LLM-graded checks, kept apart.** A judge for the quality of an answer, as its own kind of check. The deterministic verdict stays what it is: a spec without a judge never needs a model, and a judge never changes what a deterministic assertion decided.
 
-highbar will not grade answers with an LLM. Its verdicts are deterministic, so the same behavior always gives the same result; for graded quality, see the [comparison](/comparison).
+For graded quality today, see the [comparison](/comparison).
 
 Ideas and requests: [GitHub issues](https://github.com/vinimlo/highbar/issues).

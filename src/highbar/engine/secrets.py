@@ -1,7 +1,7 @@
 """Values that came from ``${VAR}`` in the spec never reach the output (D5).
 
 Tokens go in headers and API keys in URLs, and highbar's output ends up in CI logs. A
-message that would carry one shows the variable instead: ``Bearer ${SAIA_EVAL_TOKEN}``
+message that would carry one shows the variable instead: ``Bearer ${AGENT_TOKEN}``
 is as useful to read, and safe to print.
 """
 
