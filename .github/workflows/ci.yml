@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Cancel only on pull requests: on main and develop each merge commit needs its own
+  # result, or there is no telling which one broke the suite.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    # A self-hosted runner when the CI_RUNNER variable names one; GitHub's otherwise, and
+    # always for a fork's pull request. That only steers this file: a fork's pull request
+    # runs its own copy of it and can name any runner. Delete CI_RUNNER before the
+    # repository is public; GitHub's runners are free for public repositories.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ matrix.python }}
+
+      - name: Install dependencies
+        run: uv sync --locked --all-extras --dev
+
+      - name: Lint
+        run: uv run ruff check src/ tests/
+
+      - name: Format
+        run: uv run ruff format --check src/ tests/
+
+      - name: Typecheck
+        run: uv run pyright src
+
+      # Cobre unit + integration. O teste de integração sobe um agente FastAPI de
+      # verdade e roda a CLI ponta a ponta contra ele, então também exercita o
+      # SubprocessAdapter e o health check.
+      - name: Test
+        run: uv run pytest -v
+
+  # The documentation site builds, and VitePress fails the build on a dead link.
+  site:
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run build

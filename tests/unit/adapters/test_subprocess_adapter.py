@@ -1,111 +1,267 @@
-"""Tests for subprocess adapter."""
+"""Tests for the managed agent process, against a real stand-in server.
+
+Mocks hid every bug the review found here (a pipe nobody drained, orphans left on
+the port, an exit nobody noticed), so these tests start real processes.
+"""
 
 from __future__ import annotations
 
-import subprocess
-from unittest.mock import MagicMock, patch
+import socket
+import sys
+import time
+from collections.abc import Callable, Iterator
+from pathlib import Path
 
-import httpx
 import pytest
 
-from gauntlet.adapters.subprocess_adapter import SubprocessAdapter
+from highbar.adapters.ports import accepts_connections
+from highbar.adapters.subprocess_adapter import AgentStartError, SubprocessAdapter
+
+SERVER = Path(__file__).resolve().parents[2] / "fixtures" / "server.py"
+PYTHON = sys.executable
+
+MakeAdapter = Callable[..., tuple[SubprocessAdapter, int]]
 
 
-class TestSubprocessAdapter:
-    def test_start_launches_process(self) -> None:
-        with patch("gauntlet.adapters.subprocess_adapter.subprocess.Popen") as mock_popen:
-            mock_popen.return_value = MagicMock()
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
-            adapter = SubprocessAdapter(start_cmd="python agent.py")
-            adapter.start()
 
-            mock_popen.assert_called_once()
-            args = mock_popen.call_args
-            assert args[0][0] == ["python", "agent.py"]
+def _wait_until(condition: Callable[[], bool], seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.1)
+    return condition()
 
-    def test_start_injects_env(self) -> None:
-        with patch("gauntlet.adapters.subprocess_adapter.subprocess.Popen") as mock_popen:
-            mock_popen.return_value = MagicMock()
 
-            adapter = SubprocessAdapter(
-                start_cmd="python agent.py",
-                env={"GAUNTLET_TRACES_URL": "/tmp/traces.jsonl"},
-            )
-            adapter.start()
+@pytest.fixture
+def make_adapter(tmp_path: Path) -> Iterator[MakeAdapter]:
+    """Build adapters for the stand-in server; every one is stopped after the test."""
+    made: list[SubprocessAdapter] = []
 
-            call_kwargs = mock_popen.call_args[1]
-            assert call_kwargs["env"]["GAUNTLET_TRACES_URL"] == "/tmp/traces.jsonl"
+    def make(
+        *server_args: str,
+        start_cmd: str | None = None,
+        health: bool = True,
+        host: str = "127.0.0.1",
+        startup_timeout: int = 15000,
+        env: dict[str, str] | None = None,
+    ) -> tuple[SubprocessAdapter, int]:
+        port = _free_port()
+        command = start_cmd or " ".join([PYTHON, str(SERVER), "--port", str(port), *server_args])
+        adapter = SubprocessAdapter(
+            start_cmd=command.format(port=port),
+            endpoint=f"http://{host}:{port}/chat",
+            log_path=tmp_path / "logs" / "agent.log",
+            health_url=f"http://127.0.0.1:{port}/health" if health else None,
+            startup_timeout=startup_timeout,
+            env=env,
+        )
+        made.append(adapter)
+        return adapter, port
 
-    def test_stop_terminates_process(self) -> None:
-        mock_proc = MagicMock()
+    yield make
+    for adapter in made:
+        adapter.stop()
 
-        with patch("gauntlet.adapters.subprocess_adapter.subprocess.Popen") as mock_popen:
-            mock_popen.return_value = mock_proc
 
-            adapter = SubprocessAdapter(start_cmd="python agent.py")
-            adapter.start()
-            adapter.stop()
+class TestStart:
+    def test_p2_busy_port_is_refused(self, make_adapter: MakeAdapter) -> None:
+        """An agent already on the port would answer for this one, and a guardrail passes."""
+        adapter, port = make_adapter()
+        with socket.socket() as squatter:
+            squatter.bind(("127.0.0.1", port))
+            squatter.listen()
 
-            mock_proc.terminate.assert_called_once()
-            mock_proc.wait.assert_called_once_with(timeout=5)
-
-    def test_stop_kills_on_timeout(self) -> None:
-        mock_proc = MagicMock()
-        mock_proc.wait.side_effect = [
-            subprocess.TimeoutExpired(cmd="python", timeout=5),
-            None,  # second call after kill() succeeds
-        ]
-
-        with patch("gauntlet.adapters.subprocess_adapter.subprocess.Popen") as mock_popen:
-            mock_popen.return_value = mock_proc
-
-            adapter = SubprocessAdapter(start_cmd="python agent.py")
-            adapter.start()
-            adapter.stop()
-
-            mock_proc.terminate.assert_called_once()
-            mock_proc.kill.assert_called_once()
-
-    def test_stop_noop_before_start(self) -> None:
-        adapter = SubprocessAdapter(start_cmd="python agent.py")
-        adapter.stop()  # Should not raise
-
-    def test_health_check_success(self) -> None:
-        mock_proc = MagicMock()
-        mock_response = MagicMock(status_code=200)
-
-        with (
-            patch("gauntlet.adapters.subprocess_adapter.subprocess.Popen") as mock_popen,
-            patch("gauntlet.adapters.subprocess_adapter.httpx.get") as mock_get,
-        ):
-            mock_popen.return_value = mock_proc
-            mock_get.return_value = mock_response
-
-            adapter = SubprocessAdapter(
-                start_cmd="python agent.py",
-                health_url="http://localhost:8000/health",
-            )
-            adapter.start()  # Should not raise
-
-            mock_get.assert_called()
-
-    def test_health_check_timeout(self) -> None:
-        mock_proc = MagicMock()
-
-        with (
-            patch("gauntlet.adapters.subprocess_adapter.subprocess.Popen") as mock_popen,
-            patch("gauntlet.adapters.subprocess_adapter.httpx.get") as mock_get,
-            patch("gauntlet.adapters.subprocess_adapter.time.sleep"),
-        ):
-            mock_popen.return_value = mock_proc
-            mock_get.side_effect = httpx.ConnectError("refused")
-
-            adapter = SubprocessAdapter(
-                start_cmd="python agent.py",
-                health_url="http://localhost:8000/health",
-                startup_timeout=200,  # 200ms = very short timeout
-            )
-            with pytest.raises(TimeoutError, match="health check failed"):
+            with pytest.raises(AgentStartError, match=f"port {port} is already in use"):
                 adapter.start()
 
-            mock_proc.terminate.assert_called()
+        assert not adapter.log_path.exists(), "no process may be started"
+
+    def test_p4_early_exit_shows_log_tail_fast(self, make_adapter: MakeAdapter) -> None:
+        adapter, _ = make_adapter("--exit-code", "3", startup_timeout=15000)
+        started = time.monotonic()
+
+        with pytest.raises(AgentStartError) as raised:
+            adapter.start()
+
+        assert time.monotonic() - started < 3
+        assert "exited with code 3" in str(raised.value)
+        assert "boom-marker" in str(raised.value)
+
+    def test_start_that_exits_zero_suggests_attach_mode(self, make_adapter: MakeAdapter) -> None:
+        """`docker compose up -d` returns 0 at once: waiting out the timeout helps nobody."""
+        adapter, _ = make_adapter("--exit-code", "0")
+
+        with pytest.raises(AgentStartError, match="attach"):
+            adapter.start()
+
+    def test_p1_chatty_agent_does_not_block(self, make_adapter: MakeAdapter) -> None:
+        """Output goes to a file: an undrained pipe used to freeze the agent at 64 KB."""
+        adapter, _ = make_adapter("--print-bytes", "1000000")
+
+        adapter.start()
+
+        assert adapter.log_path.stat().st_size >= 1_000_000
+
+    def test_p5_without_health_waits_for_port(self, make_adapter: MakeAdapter) -> None:
+        adapter, port = make_adapter("--delay", "1", health=False)
+
+        adapter.start()
+
+        assert accepts_connections("127.0.0.1", port)
+
+    def test_localhost_endpoint_reaches_ipv4_only_listener(self, make_adapter: MakeAdapter) -> None:
+        adapter, port = make_adapter(health=False, host="localhost")
+
+        adapter.start()
+
+        assert accepts_connections("localhost", port)
+
+    def test_timeout_reports_the_log_tail(self, make_adapter: MakeAdapter) -> None:
+        adapter, _ = make_adapter("--print-bytes", "10", "--delay", "30", startup_timeout=1000)
+
+        with pytest.raises(AgentStartError, match="not ready after 1.0s") as raised:
+            adapter.start()
+
+        assert "xxxxxxxxxx" in str(raised.value)
+
+    def test_env_is_injected(self, make_adapter: MakeAdapter) -> None:
+        server = f"{PYTHON} {SERVER} --port {{port}}"
+        adapter, _ = make_adapter(
+            start_cmd=f"sh -c 'echo traces=$HIGHBAR_TRACES_URL; exec {server}'",
+            env={"HIGHBAR_TRACES_URL": "/tmp/traces.jsonl"},
+        )
+
+        adapter.start()
+
+        assert "traces=/tmp/traces.jsonl" in adapter.tail()
+
+    def test_logs_dir_gets_gitignore(self, make_adapter: MakeAdapter) -> None:
+        adapter, _ = make_adapter()
+
+        adapter.start()
+
+        assert (adapter.log_path.parent / ".gitignore").read_text().strip() == "*"
+
+
+class TestStop:
+    def test_p3_stop_kills_whole_process_group(self, make_adapter: MakeAdapter) -> None:
+        """`sh -c`, `npm run` and `make` used to leave the real agent behind on the port."""
+        adapter, port = make_adapter(
+            start_cmd=f"sh -c '{PYTHON} {SERVER} --port {{port}}; echo done'"
+        )
+        adapter.start()
+
+        adapter.stop()
+
+        assert _wait_until(lambda: not accepts_connections("127.0.0.1", port), 6)
+
+    def test_stop_is_idempotent(self, make_adapter: MakeAdapter) -> None:
+        adapter, _ = make_adapter()
+        adapter.start()
+
+        adapter.stop()
+        adapter.stop()
+
+    def test_stop_before_start_is_a_no_op(self, make_adapter: MakeAdapter) -> None:
+        adapter, _ = make_adapter()
+
+        adapter.stop()
+
+
+class TestTail:
+    def test_tail_reads_only_the_end_of_a_large_log(self, tmp_path: Path) -> None:
+        """Hundreds of MB of log must not be loaded to show the last 40 lines."""
+        log = tmp_path / "agent.log"
+        line_body = "y" * 990
+        with log.open("w") as f:
+            for number in range(5000):  # ~5 MB
+                f.write(f"{number:06d} {line_body}\n")
+        adapter = SubprocessAdapter(start_cmd="true", endpoint="http://127.0.0.1:1/", log_path=log)
+
+        last_40 = adapter.tail(40).splitlines()
+        as_many_as_fit = adapter.tail(1000).splitlines()
+
+        assert [line[:6] for line in last_40] == [f"{n:06d}" for n in range(4960, 5000)]
+        # Only the last 64 KB are read: with 1 KB lines, about 65 of them.
+        assert len(as_many_as_fit) <= 66
+        assert as_many_as_fit[-1].startswith("004999")
+
+    def test_tail_of_a_missing_log_is_empty(self, tmp_path: Path) -> None:
+        adapter = SubprocessAdapter(
+            start_cmd="true", endpoint="http://127.0.0.1:1/", log_path=tmp_path / "none.log"
+        )
+
+        assert adapter.tail() == ""
+
+
+class TestReviewFindings:
+    """Paths the PR review found leaving an agent behind, or crashing instead of exit 2."""
+
+    def test_unknown_start_command_is_an_agent_start_error(self, make_adapter: MakeAdapter) -> None:
+        """A typo in `start` is the most common way an agent fails to come up."""
+        adapter, _ = make_adapter(start_cmd="definitely-not-a-highbar-command --port {port}")
+
+        with pytest.raises(
+            AgentStartError, match="could not run 'definitely-not-a-highbar-command'"
+        ):
+            adapter.start()
+
+    def test_unwritable_log_directory_is_an_agent_start_error(self, tmp_path: Path) -> None:
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o500)
+        try:
+            adapter = SubprocessAdapter(
+                start_cmd="true",
+                endpoint=f"http://127.0.0.1:{_free_port()}/chat",
+                log_path=locked / "logs" / "agent.log",
+            )
+            with pytest.raises(AgentStartError, match="cannot write the agent log"):
+                adapter.start()
+        finally:
+            locked.chmod(0o700)
+
+    def test_second_interrupt_during_stop_still_kills_the_group(
+        self, make_adapter: MakeAdapter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl-C again while a slow agent shuts down used to leave it on the port."""
+        adapter, port = make_adapter("--ignore-term")
+        adapter.start()
+
+        def interrupted(seconds: float) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("highbar.adapters.subprocess_adapter.time.sleep", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            adapter.stop()
+        monkeypatch.undo()
+
+        assert _wait_until(lambda: not accepts_connections("127.0.0.1", port), 3)
+
+    def test_start_that_backgrounds_the_agent_is_always_an_error(
+        self, make_adapter: MakeAdapter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """It passed or failed depending on whether the health check won the race.
+
+        The first check is made slow (as httpx's first request is), so `sh` has exited
+        and the backgrounded agent is up by the time the check answers.
+        """
+        ready = SubprocessAdapter._ready
+
+        def slow_ready(self: SubprocessAdapter, host: str, port: int) -> bool:
+            time.sleep(0.5)
+            return ready(self, host, port)
+
+        monkeypatch.setattr(SubprocessAdapter, "_ready", slow_ready)
+        adapter, port = make_adapter(start_cmd=f"sh -c '{PYTHON} {SERVER} --port {{port}} &'")
+
+        with pytest.raises(AgentStartError, match="attach"):
+            adapter.start()
+
+        assert _wait_until(lambda: not accepts_connections("127.0.0.1", port), 6)

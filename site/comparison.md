@@ -1,100 +1,72 @@
 # Comparison
 
-How Gauntlet compares to existing AI testing and evaluation tools.
+highbar does one thing: it checks, with deterministic assertions, the tool calls and the reply of an agent you run, from a YAML spec, and gates CI with its exit code. The tools below do more, and some of them overlap with that one thing. This page says where.
 
-## Feature Comparison
+Every statement about another tool links to its documentation, read on 2026-10-26. If something here is wrong or out of date, please [open an issue](https://github.com/vinimlo/highbar/issues).
 
-| Feature | Gauntlet | Promptfoo | DeepEval | Braintrust | Manual Testing |
-|---------|----------|-----------|----------|------------|----------------|
-| Tests the agent (not just the LLM) | Yes | No | No | No | Sort of |
-| Function call assertions | Native | Partial | No | No | Manual |
-| Multi-turn testing | Native | No | No | No | Manual |
-| Guardrail validation | Built-in | Partial | Partial | No | Manual |
-| YAML spec files | Yes | Yes | No (Python) | No (Python) | N/A |
-| No-code test authoring | Yes | Yes | No | No | N/A |
-| Subset parameter matching | Yes | No | No | No | Manual |
-| Template-based multi-turn data | Yes | No | No | No | Manual |
-| Open source | MIT | MIT | Apache 2.0 | Proprietary | N/A |
+## At a glance
 
-## The Key Differentiator
+| | highbar | Promptfoo | DeepEval | Langfuse | Inspect |
+|---|---|---|---|---|---|
+| Tests written in | YAML | YAML config, with Python/JS for custom providers | Python (pytest) or TypeScript (Vitest) | Python/TS SDK code, or evaluators in the UI | Python |
+| Deterministic tool-call checks | Built in: calls, arguments, order, nothing extra, forbidden tools, failed calls | Built in: trajectory assertions on tool use, arguments and sequence | `ToolCorrectnessMetric` (names, order, parameters) | Code you write over the recorded `tool_calls` | A custom scorer you write over the messages |
+| LLM-graded checks | No | Yes | Yes | Yes | Yes |
+| How it reaches the agent | HTTP to a running agent, which writes a trace file | Providers: model APIs, an HTTP endpoint, scripts, agent SDKs; trajectories from OpenTelemetry spans | The agent as a Python function, instrumented with `@observe` | Traces from production; experiments run your `task` function | Runs the model and its tools itself; other agent frameworks through its agent bridge |
+| Repetition | `runs` and `min_pass` per test | `--repeat`, and a pass-rate threshold for the whole eval | `-r N`, a threshold per metric | Not found in its docs | `--epochs`, with reducers like `at_least_n` and `pass_at_k` |
+| CI gate | Exit codes 0, 1, 2 | Exit code 100 on failure; a GitHub Action that comments on PRs | `deepeval test run` fails the build | `langfuse/experiment-action` | Check the eval log in a script |
+| Needs a server or account | No | No | No (a hosted platform is optional) | A Langfuse instance and API keys | No |
+| License | MIT | MIT | Apache 2.0 | MIT, except `ee` folders | MIT |
 
-Existing tools evaluate **the model** -- they test prompts, measure output quality, and benchmark LLM performance. Gauntlet tests **the agent** -- it verifies that the complete system (LLM + tools + orchestration logic) produces the correct behavior.
+## Where highbar differs
 
-Consider an order support agent. Existing tools can tell you:
+What the others' docs describe, next to what highbar does:
 
-- "The model responds helpfully 92% of the time" (Promptfoo)
-- "The response is factually accurate" (DeepEval)
-- "The output quality score is 0.87" (Braintrust)
+- **Proof per message.** Promptfoo's trajectory assertions end in an error when there is no trace data at all. highbar also asks, per message, whether the agent handled it: when the agent tags its records with the test (and always in attach mode), a test that checks tool calls needs a record of its own, or it is an `error`.
+- **Session hooks that run code.** Promptfoo's HTTP provider can send a session id per test. highbar's session hook is a command or a Python function that opens real state, like a conversation in your database, before each test execution and closes it after; its values can be sent in the request and used to match records to the test.
+- **Repetition thresholds per test.** `runs: 5, min_pass: 4` on the flaky test, one run for the rest. Promptfoo's pass-rate threshold is for the whole eval, and Inspect's `--epochs` with `at_least_n` applies to every sample of an eval.
 
-Gauntlet tells you:
+Promptfoo's trajectory assertions are the closest thing: they check tool use, arguments and order from traces. If you already use Promptfoo, they may be all you need.
 
-- "The agent called `search_orders` with `order_id: '12345'`"
-- "The agent did NOT call any tools when given a prompt injection"
-- "The multi-turn refund flow completed with the correct function calls in sequence"
+## Promptfoo
 
-The LLM is an implementation detail. You could swap GPT-4 for Claude or a fine-tuned Llama -- the agent behavior tests remain the same.
+An "open-source CLI and library for evaluating and red-teaming LLM apps" ([intro](https://www.promptfoo.dev/docs/intro/)). Tests are a YAML config with typed assertions.
 
-## Detailed Comparison
+- **Tool calls.** Deterministic assertions check that calls match their schema (`is-valid-openai-tools-call`), score the tool names (`tool-call-f1`), and, from traces, check that a tool was used, its arguments (`partial` or `exact`), the sequence of calls and the step count (`trajectory:*`). Any assertion can be negated with a `not-` prefix; the docs show no trajectory example of that ([deterministic assertions](https://www.promptfoo.dev/docs/configuration/expected-outputs/deterministic/)).
+- **Reaching the agent.** An HTTP provider calls a running app; trajectories come from OpenTelemetry spans the app sends to a receiver the CLI runs ([HTTP provider](https://www.promptfoo.dev/docs/providers/http/), [tracing](https://www.promptfoo.dev/docs/tracing/)).
+- **Repetition and CI.** `--repeat N`; a pass-rate threshold for the whole eval; exit code 100 on failures ([command line](https://www.promptfoo.dev/docs/usage/command-line/)); a GitHub Action that compares before and after on a PR ([GitHub Action](https://www.promptfoo.dev/docs/integrations/github-action/)).
+- **Stronger than highbar at:** red teaming, a web viewer for comparing outputs, LLM-graded assertions next to deterministic ones, argument matching with an exact mode, defaults and ignored fields, and many providers, including agent SDKs.
 
-### vs. Promptfoo
+## DeepEval
 
-Promptfoo is an LLM evaluation framework focused on testing prompts and model outputs. It excels at comparing model responses across different prompts, providers, and configurations.
+An open-source LLM evaluation framework that runs inside pytest or Vitest ([getting started](https://deepeval.com/docs/getting-started)).
 
-**Where Promptfoo fits:** Evaluating prompt templates, comparing model providers, measuring response quality metrics.
+- **Tool calls.** `ToolCorrectnessMetric` compares the tools called with the expected ones, optionally by order, exact match and parameters, and can add an LLM step that judges whether the choice was optimal ([tool correctness](https://deepeval.com/docs/metrics-tool-correctness)). No option to forbid a tool was found in its docs.
+- **Reaching the agent.** The agent runs in the test process as a Python function instrumented with `@observe`, or the test fills in the tools called itself ([agent quickstart](https://deepeval.com/docs/getting-started-agents)).
+- **Repetition and CI.** `deepeval test run -r N`, a threshold per metric, and failing metrics fail the build ([CI/CD](https://deepeval.com/docs/evaluation-unit-testing-in-ci-cd)).
+- **Stronger than highbar at:** LLM-judged agent metrics (task completion, plan quality, step efficiency, argument correctness), evaluation of individual spans, and pytest integration.
 
-**Where Gauntlet fits:** Testing that an agent calls the right tools with the right arguments, validating multi-turn workflows, enforcing guardrails against prompt injection and PII leakage.
+## Langfuse
 
-**Key differences:**
-- Promptfoo sends prompts directly to LLM APIs. Gauntlet sends triggers to the agent's HTTP endpoint.
-- Promptfoo evaluates text output. Gauntlet asserts on function calls AND text output.
-- Promptfoo does not have native multi-turn support. Gauntlet threads data between turns using <code v-pre>{{previous.*}}</code> templates.
+"An open-source AI engineering platform" for tracing, prompts and evaluation, self-hosted or in Langfuse Cloud ([docs](https://langfuse.com/docs)).
 
-### vs. DeepEval
+- **Tool calls.** Code evaluators can read the recorded tool calls as a structured field, and LLM-as-a-judge evaluators can be given them ([code evaluators](https://langfuse.com/docs/evaluation/evaluation-methods/code-evaluators), [July 2026 update](https://langfuse.com/blog/2026-07-31-langfuse-july-update)). The checks are code you write or an LLM judge; no built-in "must call / must not call" check was found.
+- **Reaching the agent.** Traces sent by your instrumented app, and experiments that run your `task` function from the SDK ([experiments via SDK](https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk)).
+- **CI.** `langfuse/experiment-action` fails the job on a regression your script detects, and needs a Langfuse instance and API keys ([CI/CD](https://langfuse.com/docs/evaluation/experiments/experiments-ci-cd)).
+- **Stronger than highbar at:** everything around production: tracing, dashboards for quality, cost and latency, prompt management, datasets, annotation, and evaluators that run on live traffic.
 
-DeepEval is a Python testing framework for LLM applications, with built-in metrics like faithfulness, relevance, and hallucination detection.
+## Inspect
 
-**Where DeepEval fits:** Measuring output quality with statistical metrics, evaluating RAG pipelines, checking for hallucinations.
+"A framework for frontier AI evaluations", from the UK AI Security Institute ([Inspect](https://inspect.aisi.org.uk/)).
 
-**Where Gauntlet fits:** Behavior testing -- did the agent do the right thing? Not just "was the output good?" but "did it call the right tool with the right arguments?"
+- **Tool calls.** The built-in scorers are text-based or model-graded; a custom scorer can read the tool calls in the conversation it receives ([scorers](https://inspect.aisi.org.uk/scorers.html)).
+- **Reaching the agent.** Inspect calls the model and runs the tools itself; agents built with other frameworks run through its agent bridge ([agents](https://inspect.aisi.org.uk/agents.html), [agent bridge](https://inspect.aisi.org.uk/agent-bridge.html)).
+- **Repetition.** `--epochs` with reducers such as `at_least_n` and `pass_at_k` ([options](https://inspect.aisi.org.uk/options.html)).
+- **Stronger than highbar at:** sandboxed evaluations (Docker and others, one sandbox per sample), built-in agents and tools, and a log viewer ([sandboxing](https://inspect.aisi.org.uk/sandboxing.html)).
 
-**Key differences:**
-- DeepEval uses Python test functions. Gauntlet uses YAML specs.
-- DeepEval focuses on output metrics. Gauntlet focuses on behavior assertions.
-- DeepEval does not capture or assert on tool calls.
+## When to use which
 
-### vs. Braintrust
-
-Braintrust is a proprietary platform for evaluating and monitoring AI applications, with logging, scoring, and comparison features.
-
-**Where Braintrust fits:** Production monitoring, A/B testing model configurations, tracking quality over time.
-
-**Where Gauntlet fits:** Pre-deployment behavior testing in CI/CD pipelines.
-
-**Key differences:**
-- Braintrust is a hosted platform. Gauntlet is a local CLI tool.
-- Braintrust focuses on observability and scoring. Gauntlet focuses on pass/fail behavior assertions.
-- Braintrust is proprietary. Gauntlet is open source (MIT).
-
-### vs. Manual Testing
-
-Manual testing means running the agent and checking outputs by hand, often using chat interfaces or API clients.
-
-**Where manual testing fits:** Exploratory testing, edge case discovery, UX evaluation.
-
-**Where Gauntlet fits:** Regression testing, CI/CD integration, systematic guardrail validation.
-
-**Key differences:**
-- Manual testing does not scale and cannot run in CI.
-- Manual testing cannot reliably verify function call arguments.
-- Manual testing is good for discovering new test cases; Gauntlet is good for automating them.
-
-## When to Use Gauntlet
-
-Gauntlet is the right tool when you need to verify:
-
-- An agent calls specific tools with specific arguments.
-- Multi-turn workflows complete correctly with data flowing between turns.
-- Guardrails hold against prompt injection, PII leakage, and scope violations.
-- Agent behavior does not regress as you update prompts, models, or tool implementations.
-
-Gauntlet is **not** a replacement for LLM evaluation tools. Use Promptfoo or DeepEval to evaluate your model, and Gauntlet to test your agent. They are complementary.
+- You want a regression suite for what your agent does, written as specs, run against the agent you deploy, with no LLM in the verdict: **highbar**.
+- You compare prompts and models, red-team an app, or want LLM-graded quality next to deterministic checks: **Promptfoo**.
+- Your agent is Python code you can call in a test, and you want graded agent metrics in pytest: **DeepEval**.
+- You need observability, datasets and evaluation on production traffic: **Langfuse**. highbar and Langfuse do not compete for the same job.
+- You evaluate model or agent capabilities in sandboxes: **Inspect**.

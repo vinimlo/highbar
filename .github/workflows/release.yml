@@ -1,0 +1,63 @@
+name: Release
+
+# A tag v<version> builds the package, runs the quickstart with the built wheel,
+# and publishes to PyPI by trusted publishing (no token). The PyPI project trusts
+# this repository, this workflow (release.yml) and the environment "pypi".
+#
+# Both jobs run on GitHub's runners, never on a self-hosted one: a fork's pull request
+# runs its own copy of a workflow and can name any runner, so a self-hosted runner is
+# not a place to publish from. GitHub's runners are free once the repository is
+# public. Actions are pinned to commits: this is the workflow that can publish.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      # 0.13.4 and later no longer trust the emSign intermediates whose keys leaked.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.13.5"
+
+      - name: The tag is the package version
+        run: uv run --no-project python scripts/check_release_tag.py "$GITHUB_REF_NAME"
+
+      - name: Build
+        run: uv build
+
+      - name: Check the distributions
+        run: uvx twine check dist/*
+
+      - name: Run the quickstart with the built wheel
+        run: scripts/smoke_wheel.sh dist/*.whl
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.13.5"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        run: uv publish --trusted-publishing always dist/*

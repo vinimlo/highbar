@@ -1,77 +1,29 @@
 # Introduction
 
-## The Problem
+highbar runs evals for AI agents that behave like tests. You state what the agent must do for a message, highbar sends the message to the agent you ship, and it checks what the agent did: the tools it called, in which order, with which arguments, and what it answered.
 
-73% of teams test AI agents by chatting with them manually. 40% of production failures trace back to incorrect tool calls — wrong function, wrong parameters, or unexpected side effects. And yet, the existing evaluation tools focus on testing the LLM itself (prompt quality, model accuracy, token costs) rather than the agent that wraps it.
+## Why behavior, and why like a test
 
-The result: agents ship to production with no automated coverage on the behavior that actually matters.
+An agent that answers well can still do the wrong thing on the way: cancel an order it never looked up, call a tool that failed and answer as if it worked, or delete an account because a message asked it to. Those are the defects that cost money, and they live in tool calls, not in the wording of the reply.
 
-## Philosophy
+highbar checks them with deterministic assertions. No LLM grades the result, so the same agent behavior gives the same verdict, and a run can gate a merge with its exit code. Where an agent built on an LLM varies from run to run, a test runs several times and states how many must pass.
 
-Nobody uses Cypress to test which browser is better — they test that the **application** works. Gauntlet applies the same philosophy to AI agents: test the **agent**, not the LLM.
+## A green that means something
 
-Your agent is software. It receives inputs, calls tools, and produces outputs. Those behaviors are observable and deterministic enough to assert against. Gauntlet gives you the framework to do exactly that.
+A test ends in one of three states:
 
-## What Gauntlet Does
+- **passed**: the agent did what the spec says, and highbar saw it do it;
+- **failed**: the agent did something else;
+- **error**: highbar could not verify it. The agent was down, the request failed, or no trace record shows the agent handled this message.
 
-1. **You define expected behaviors in YAML specs.** Each spec declares which tools should be called, with what parameters, and what the response should contain.
+An `error` is never counted as a pass. A test that checks tool calls needs proof that the agent recorded this message, so an agent that was never instrumented, or a server left over on the port, cannot make it green.
 
-2. **You instrument your agent's tools with a one-line decorator.** The `@gt.tool` decorator captures every tool invocation — function name, arguments, return value, timing — and writes it to a trace file.
+## Who it is for
 
-3. **Gauntlet starts your agent, sends triggers, captures traces, and validates assertions.** The framework handles the full lifecycle: subprocess management, health checks, HTTP triggers, trace collection, and rich terminal reporting.
+Teams that run an agent with tools in production and want a regression suite for its behavior: support and sales agents, internal assistants, anything that acts on a system through tools. The agent can be in Python, where a decorator records its tools, or in any language that writes the trace contract.
 
-## What It Looks Like
+## What it is not
 
-A spec file (`specs/orders.gauntlet.yaml`):
+highbar does not grade free-form answers with an LLM, host a dashboard, or replace tools for prompt experiments and tracing in production. The [comparison](/comparison) sets it next to those tools.
 
-```yaml
-agent:
-  start: "python agent.py"
-  endpoint: "http://localhost:8000/chat"
-  health: "http://localhost:8000/health"
-
-suites:
-  - name: Order Lookup
-    tests:
-      - trigger: "Where is my order #12345?"
-        expect:
-          function_calls:
-            - name: search_orders
-              params:
-                order_id: "12345"
-          response:
-            contains: "shipped"
-
-      - trigger: "Tell me a joke"
-        expect:
-          function_calls: []
-          response:
-            not_contains: "order"
-```
-
-Running it:
-
-```bash
-gauntlet run specs/orders.gauntlet.yaml
-```
-
-Terminal output:
-
-```
-  Gauntlet v0.1.0
-  Running specs/orders.gauntlet.yaml
-
-  Order Lookup
-    ✓ Where is my order #12345?
-    ✓ Tell me a joke
-
-  2 passed, 0 failed (1.2s)
-```
-
-Two tests, two different concerns. The first validates that the agent calls the right tool with the right parameters and includes "shipped" in the response. The second is a guardrail test — it ensures the agent does **not** call any tools and does **not** leak order information when the user asks something unrelated.
-
-## Next Steps
-
-- [Installation](/getting-started/installation) — install Gauntlet via pip or uv
-- [Quickstart](/getting-started/quickstart) — build and test your first agent in 5 minutes
-- [Core Concepts](/getting-started/concepts) — understand specs, traces, and the execution model
+Next: the [quick start](/getting-started/quickstart).

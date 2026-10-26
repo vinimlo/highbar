@@ -5,18 +5,19 @@ from __future__ import annotations
 import uvicorn
 from fastapi import FastAPI
 
-from gauntlet import Gauntlet
+from highbar import Highbar, asgi
 
 app = FastAPI()
-gt = Gauntlet()
+hb = Highbar()
+app.add_middleware(asgi.Middleware, hb=hb)
 
 
-@gt.tool
+@hb.tool
 def search_orders(order_id: str) -> dict[str, str]:
     return {"order_id": order_id, "status": "shipped"}
 
 
-@gt.tool
+@hb.tool
 def initiate_refund(order_id: str) -> dict[str, str]:
     return {"order_id": order_id, "refund_status": "initiated"}
 

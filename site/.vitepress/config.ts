@@ -1,84 +1,79 @@
 import { defineConfig } from 'vitepress'
 
+const description =
+  'Evals for AI agents that behave like tests: check the tool calls of the agent you ship, with a YAML spec and a CI exit code.'
+
 export default defineConfig({
-  title: 'Gauntlet',
-  description: 'Behavior testing framework for AI agents',
+  title: 'highbar',
+  description,
+  // Served by GitHub Pages at https://vinimlo.github.io/highbar/
+  base: '/highbar/',
 
   head: [
-    ['meta', { property: 'og:title', content: 'Gauntlet — Behavior testing for AI agents' }],
-    ['meta', { property: 'og:description', content: 'Run your AI agents through the gauntlet. YAML specs, function call assertions, multi-turn testing.' }],
+    ['meta', { property: 'og:title', content: 'highbar: evals for AI agents that behave like tests' }],
+    ['meta', { property: 'og:description', content: description }],
   ],
 
   themeConfig: {
     nav: [
       { text: 'Guide', link: '/getting-started/introduction' },
-      { text: 'Reference', link: '/reference/cli' },
-      { text: 'Architecture', link: '/architecture/overview' },
-      { text: 'Examples', link: '/examples/hello-world' },
+      { text: 'Reference', link: '/reference/spec-format' },
+      { text: 'Comparison', link: '/comparison' },
     ],
 
     sidebar: [
       {
-        text: 'Getting Started',
+        text: 'Getting started',
         items: [
           { text: 'Introduction', link: '/getting-started/introduction' },
-          { text: 'Installation', link: '/getting-started/installation' },
-          { text: 'Quick Start', link: '/getting-started/quickstart' },
-          { text: 'Core Concepts', link: '/getting-started/concepts' },
+          { text: 'Quick start', link: '/getting-started/quickstart' },
+          { text: 'Core concepts', link: '/getting-started/concepts' },
         ],
       },
       {
         text: 'Guides',
         items: [
-          { text: 'Writing Specs', link: '/guides/writing-specs' },
-          { text: 'SDK Integration', link: '/guides/sdk-integration' },
+          { text: 'Writing specs', link: '/guides/writing-specs' },
+          { text: 'Connecting your agent', link: '/guides/connecting-your-agent' },
+          { text: 'Attach mode and sessions', link: '/guides/attach-mode' },
           { text: 'Assertions', link: '/guides/assertions' },
-          { text: 'Multi-Turn Testing', link: '/guides/multi-turn' },
-          { text: 'Guardrail Validation', link: '/guides/guardrails' },
-          { text: 'Agent Setup', link: '/guides/agent-setup' },
-          { text: 'CI Integration', link: '/guides/ci-integration' },
+          { text: 'Multi-turn tests', link: '/guides/multi-turn' },
+          { text: 'Guardrails', link: '/guides/guardrails' },
+          { text: 'Variations', link: '/guides/variations' },
+          { text: 'Repetition and CI gates', link: '/guides/repetition' },
+          { text: 'Troubleshooting', link: '/guides/troubleshooting' },
         ],
       },
       {
         text: 'Reference',
         items: [
-          { text: 'CLI Commands', link: '/reference/cli' },
-          { text: 'Spec Format', link: '/reference/spec-format' },
-          { text: 'SDK API', link: '/reference/sdk-api' },
-          { text: 'Protocols', link: '/reference/protocols' },
-          { text: 'Domain Models', link: '/reference/domain-models' },
-          { text: 'Configuration', link: '/reference/configuration' },
-        ],
-      },
-      {
-        text: 'Architecture',
-        items: [
-          { text: 'Overview', link: '/architecture/overview' },
-          { text: 'Execution Model', link: '/architecture/execution-model' },
-          { text: 'Trace Boxes', link: '/architecture/trace-boxes' },
-          { text: 'Design Decisions', link: '/architecture/design-decisions' },
-          { text: 'Extending Gauntlet', link: '/architecture/extending' },
+          { text: 'CLI', link: '/reference/cli' },
+          { text: 'Spec format', link: '/reference/spec-format' },
+          { text: 'Trace contract v1', link: '/reference/trace-contract' },
+          { text: 'Python SDK', link: '/reference/python-sdk' },
+          { text: 'Python API', link: '/reference/python-api' },
         ],
       },
       {
         text: 'Examples',
         items: [
-          { text: 'Hello World', link: '/examples/hello-world' },
-          { text: 'Order Support Agent', link: '/examples/order-support' },
-          { text: 'Guardrail Suite', link: '/examples/guardrail-suite' },
+          { text: 'Quickstart agent', link: '/examples/quickstart' },
+          { text: 'OpenAI-compatible agent', link: '/examples/openai-agent' },
         ],
       },
-      { text: 'Comparison', link: '/comparison' },
-      { text: 'Roadmap', link: '/roadmap' },
+      {
+        items: [
+          { text: 'Comparison', link: '/comparison' },
+          { text: 'Roadmap', link: '/roadmap' },
+        ],
+      },
     ],
 
-    socialLinks: [
-      { icon: 'github', link: 'https://github.com/gauntlet-ai/gauntlet' },
-    ],
+    socialLinks: [{ icon: 'github', link: 'https://github.com/vinimlo/highbar' }],
 
     footer: {
       message: 'Released under the MIT License.',
-      copyright: 'Copyright 2026 Gauntlet Contributors',
+      copyright: 'Copyright 2026 highbar contributors',
     },
 
     search: {
@@ -86,7 +81,7 @@ export default defineConfig({
     },
 
     editLink: {
-      pattern: 'https://github.com/gauntlet-ai/gauntlet/edit/main/site/:path',
+      pattern: 'https://github.com/vinimlo/highbar/edit/main/site/:path',
       text: 'Edit this page on GitHub',
     },
   },

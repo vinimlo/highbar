@@ -1,4 +1,4 @@
-.PHONY: test lint format docs-dev docs-build docs-preview docs-install docs-up docs-down
+.PHONY: test lint typecheck format docs-dev docs-build docs-preview docs-install docs-up docs-down
 
 # Python project
 test:
@@ -6,6 +6,9 @@ test:
 
 lint:
 	uv run ruff check src/ tests/
+
+typecheck:
+	uv run pyright src
 
 format:
 	uv run ruff format src/ tests/
