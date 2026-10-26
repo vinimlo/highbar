@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import signal
-import textwrap
 from collections.abc import Iterator
 from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
@@ -15,6 +14,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from highbar.adapters.subprocess_adapter import AgentStartError
+from highbar.cli.scaffold import quickstart_files
 from highbar.domain.models import RunSummary, Spec
 from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.parser import parse_spec
@@ -317,33 +317,18 @@ def _parse_all(
 
 @app.command()
 def init() -> None:
-    """Scaffold a highbar.config.yaml and example spec."""
-    specs_dir = Path("specs")
-    specs_dir.mkdir(exist_ok=True)
+    """Write a quickstart agent and its spec here; run them with `highbar run`."""
+    for name, content in quickstart_files().items():
+        target = Path(name)
+        if target.exists():
+            console.print(f"  [yellow]Skipped[/yellow] {name} (already exists)")
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        console.print(f"  [green]Created[/green] {name}")
 
-    example = specs_dir / "example.highbar.yaml"
-    if example.exists():
-        console.print(f"  [yellow]Skipped[/yellow] {example} already exists")
-    else:
-        example.write_text(
-            textwrap.dedent("""\
-            agent:
-              start: "python -m my_agent.server"
-              endpoint: "http://localhost:8000/chat"
-              health: "http://localhost:8000/health"
-
-            suites:
-              - name: Basic
-                tests:
-                  - trigger: "Hello!"
-                    expect:
-                      response:
-                        contains: "hello"
-        """)
-        )
-        console.print(f"  [green]Created[/green] {example}")
-
-    console.print("\n  Edit the spec and run: [bold]highbar run specs/example.highbar.yaml[/bold]")
+    console.print("\n  Next: [bold]highbar run[/bold]")
+    console.print('  (the agent needs FastAPI and uvicorn: pip install "highbar\\[quickstart]")')
 
 
 @contextmanager
