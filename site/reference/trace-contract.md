@@ -14,7 +14,7 @@ The trace file is how an agent tells highbar what it did. The Python SDK writes 
 | Field | Type | |
 |---|---|---|
 | `v` | integer | `1`. A version newer than highbar reads is an error that says to upgrade highbar. |
-| `type` | string | `"tool"`, `"turn"` or `"hello"`. Other types are ignored, so emitters can add new ones. |
+| `type` | string | Required: `"tool"`, `"turn"` or `"hello"`. A line with another type, or none, is skipped, so emitters can add new types; a tool call written without `type` is lost. |
 | `ts` | number | When the record was written, in seconds since the epoch. |
 | `context` | object | Optional. What links the record to a test: `test` (the `X-Highbar-Test` header) and any key `agent.correlate` uses, like `conversation_id`. |
 
@@ -64,11 +64,60 @@ A `turn` record is the proof that the agent handled a message. Against an attach
 {"v": 1, "type": "hello", "ts": 1792983750.122, "sdk": "highbar-python/0.1.0", "pid": 94015}
 ```
 
-When highbar starts the agent, the file is new, so anything in it (a `hello` first) shows that the agent's writer is alive. If the agent answers and the file stays empty, the run stops with exit code 2.
+Write it once, when the agent starts. When highbar starts the agent and a test checks tool calls, highbar waits up to 2 seconds after the agent is ready for a `hello` in the new file; without one, the run stops with exit code 2. Records of other types do not count: a `hello` says the writer started, before any message arrives.
 
 ## Matching records to a test
 
 Each test execution sends its id in the `X-Highbar-Test` header. A writer copies it into `context.test` of every record made while handling that request. highbar keeps the records whose `context` matches `agent.correlate` (by default, `test`); numbers and text that read the same match, so `42` matches `"42"`.
+
+## A reference emitter
+
+[`examples/trace-contract`](https://github.com/vinimlo/highbar/tree/main/examples/trace-contract) is an agent without the highbar package: standard-library HTTP, and this file, which writes the contract. The same lines in any language connect an agent:
+
+<!-- file: examples/trace-contract/emitter.py -->
+```python
+"""highbar's trace contract v1, written without the highbar package.
+
+Copy it, or write the same lines in any language: one JSON object per line,
+appended to the file named by HIGHBAR_TRACES_URL. Unset, nothing is written.
+"""
+
+import json
+import os
+import time
+
+
+def _write(record: dict, test: str | None = None) -> None:
+    path = os.environ.get("HIGHBAR_TRACES_URL")
+    if not path:
+        return
+    line = {"v": 1, "ts": time.time(), **record}
+    if test:  # the X-Highbar-Test header of the request being handled
+        line["context"] = {"test": test}
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:  # one write per line, so lines from two threads never interleave
+        os.write(fd, (json.dumps(line) + "\n").encode())
+    finally:
+        os.close(fd)
+
+
+def hello() -> None:
+    """When the agent starts: highbar waits for it before any test runs."""
+    _write({"type": "hello", "sdk": "reference-emitter/1", "pid": os.getpid()})
+
+
+def tool(fn, args, *, result=None, error=None, started_at, test=None) -> None:
+    """One tool call. `error` says why it failed, also when it returned the failure."""
+    record = {"fn": fn, "args": args, "result": result, "error": error}
+    _write({"type": "tool", **record, "started_at": started_at, "ended_at": time.time()}, test)
+
+
+def turn(test: str | None) -> None:
+    """One message handled: before the reply goes out, also when the handling failed."""
+    _write({"type": "turn"}, test)
+```
+
+The agent calls `hello()` before it listens, `tool()` for each call, and `turn()` for each message, with the `X-Highbar-Test` header it received.
 
 ## Version 0
 
