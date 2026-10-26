@@ -35,7 +35,7 @@ A run that cannot start raises instead of returning:
 - `highbar.engine.schema.SpecError`: the spec is invalid, or a `min_pass` is above its runs;
 - `highbar.engine.session.SessionError`: a session hook cannot be loaded;
 - `highbar.adapters.subprocess_adapter.AgentStartError`: the agent did not come up;
-- `highbar.engine.observation.AgentNotObservedError`: the agent highbar started answered but wrote nothing to its trace file;
+- `highbar.engine.observation.AgentNotObservedError`: the agent highbar started answered but wrote nothing to its trace file, or an attached agent's trace file does not exist;
 - `ValueError`: `runs` is not a whole number of at least 1.
 
 `highbar.run` is loaded on first use, so `import highbar` in an agent does not pull in the CLI's dependencies.

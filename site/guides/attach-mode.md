@@ -11,7 +11,7 @@ agent:
 
 - Before any test, `health` must answer (or, without `health`, the endpoint's port must accept connections). Otherwise the run stops with exit code 2: `nothing answers at localhost:8000`.
 - `traces` is the file the agent writes, relative to where you run highbar. A test that checks tool calls needs it, and the spec is rejected without it. A spec that only checks replies can run against any HTTP agent, traced or not.
-- When a test checks tool calls, the file must exist before the run. Otherwise the run stops with exit code 2 before sending anything, and the message shows the absolute path it looked for. highbar's SDK creates the file when the agent registers its tools (`@hb.tool` at import, or `hb.declare()`); a writer that creates it only with its first record needs it created empty first.
+- When a test checks tool calls, the file must exist before the run. Otherwise the run stops with exit code 2 before sending anything, and the message shows the absolute path it looked for. highbar's SDK creates the file when `Highbar()` is created, and after the file is deleted, only with its next record. Create the file empty when it was deleted while the agent ran, or when its writer creates it only with its first record.
 - Other traffic may reach an attached agent, so a test counts only the trace records tagged as its own. See [correlation](#which-records-belong-to-a-test) below.
 
 ## The request

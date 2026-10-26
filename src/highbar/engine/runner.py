@@ -43,11 +43,18 @@ from highbar.engine.secrets import redact
 from highbar.engine.session import SessionContext, SessionError, SessionHooks
 from highbar.engine.templates import TemplateError, resolve_template
 
+# A window with no tagged record: its untagged calls are all there is, and count.
 NO_CONTEXT_WARNING = (
-    "some tool calls carry no test context, so each counts for the test whose window it "
-    "falls in, and a call that ends after the response can land in the next test. "
-    "highbar.asgi.Middleware or hb.turn(test=...) tags them; a thread the agent starts "
-    "itself needs contextvars.copy_context() to keep the tag"
+    "some tool calls carry {untagged}, so each counts for the test whose window it falls "
+    "in, and a call that ends after the response can land in the next test; {hint}; a "
+    "thread the agent starts itself needs contextvars.copy_context() to keep the tag"
+)
+
+# Next to tagged records, an untagged call counts for no test (PR 14 review I1).
+UNATTRIBUTED_WARNING = (
+    "some tool calls carry {untagged}, so they count for no test, and a test whose result "
+    "they would change is an error; {hint}; a thread the agent starts itself needs "
+    "contextvars.copy_context() to keep the tag"
 )
 
 UNDECLARED_WARNING = (
@@ -115,19 +122,29 @@ def _names(tools: list[Trace]) -> str:
     return ", ".join(dict.fromkeys(t.fn for t in tools))
 
 
-def _tag_hint(correlate: Mapping[str, Any]) -> str:
+def _is_default(correlate: Mapping[Any, Any]) -> bool:
+    return [str(key) for key in correlate] == ["test"]
+
+
+def _untagged(correlate: Mapping[Any, Any]) -> str:
+    """What untagged records lack, in the words of the spec's agent.correlate."""
+    if _is_default(correlate):
+        return "no test context"
+    return f"none of agent.correlate's keys ({', '.join(str(key) for key in correlate)})"
+
+
+def _tag_hint(correlate: Mapping[Any, Any]) -> str:
     """How records get the context that agent.correlate matches on (FR2)."""
-    if list(correlate) == ["test"]:
+    if _is_default(correlate):
         return (
             "tag them with the test id: highbar.asgi.Middleware, or "
             "hb.turn(test=<the X-Highbar-Test header>)"
         )
-    keys = ", ".join(correlate)
-    fields = ", ".join(f"{key}=..." for key in correlate)
+    keys = [str(key) for key in correlate]
+    fields = ", ".join(f"{key}=..." for key in keys)
     return (
-        f"agent.correlate matches on {keys}, so their context needs {keys}: "
-        f"hb.turn({fields}) around the handling of each message, or a `context` "
-        "field from another writer"
+        f"give their context {', '.join(keys)} (agent.correlate): hb.turn({fields}) around "
+        "the handling of each message, or a `context` field from another writer"
     )
 
 
@@ -249,7 +266,7 @@ class TestRunner:
         self._default_runs = default_runs
         self._variations_run = 0
         self._last_variation_count: int | None = None
-        self._warned_no_context = False
+        self._warned: set[str] = set()
         # The tools the agent declared it records (None until it declares any), and the
         # ones seen in its records: what a name in the spec is checked against (D4).
         self._inventory: set[str] | None = None
@@ -268,7 +285,7 @@ class TestRunner:
         counts = dict.fromkeys(Status, 0)
         reported: dict[int, tuple[str, Status]] = {}
         self._variations_run = 0
-        self._warned_no_context = False
+        self._warned = set()
         self._inventory, self._seen, self._undeclared = None, set(), {}
         self._executions, self._findings, self._test_index = [], [], 0
         self._gates: dict[int, _Gate] = {}
@@ -556,6 +573,14 @@ class TestRunner:
         )
         self._reporter.on_warning(UNDECLARED_WARNING.format(names=names))
 
+    def _warn_once(self, template: str, correlate: Mapping[Any, Any]) -> None:
+        if template in self._warned:
+            return
+        self._warned.add(template)
+        self._reporter.on_warning(
+            template.format(untagged=_untagged(correlate), hint=_tag_hint(correlate))
+        )
+
     def _missing_file(self) -> str:
         """An attached agent's trace file is not there: no test could see a call (FR3).
 
@@ -565,8 +590,9 @@ class TestRunner:
         return (
             f"the trace file {self._collector.path.absolute()} does not exist, so no test "
             "could see what the agent does; nothing was sent. Check agent.traces (a "
-            "relative path starts where highbar runs). A writer that creates the file "
-            "only with its first record needs it created empty before the run"
+            "relative path starts where highbar runs). If the path is right, the file was "
+            "removed after the agent started, or its writer creates it only with its "
+            "first record: create it empty before the run"
         )
 
     def _await_hello(self) -> None:
@@ -838,11 +864,11 @@ class TestRunner:
 
         classified = classify(window, execution.correlate)
         untagged = classified.unattributed.tools
-        # Against an attached agent, untagged calls count only next to tagged ones;
-        # alone, they make the test an error that says so (FR2).
-        if untagged and (self._managed or classified.correlated) and not self._warned_no_context:
-            self._warned_no_context = True
-            self._reporter.on_warning(NO_CONTEXT_WARNING)
+        if untagged and classified.correlated:
+            self._warn_once(UNATTRIBUTED_WARNING, execution.correlate)
+        elif untagged and (self._managed or not expect.requires_observation):
+            # An attached test that checks tool calls errors instead, and says why (FR2).
+            self._warn_once(NO_CONTEXT_WARNING, execution.correlate)
 
         if not classified.correlated:
             if expect.requires_observation and not self._managed:

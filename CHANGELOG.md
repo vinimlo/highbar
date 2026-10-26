@@ -5,11 +5,11 @@
 ### Fixed
 
 - Attach mode no longer sends a single message when the trace file does not exist. When a test checks tool calls, the run stops before the first test with exit code 2 and the file's absolute path. In the rc1 onboarding rehearsal, a wrong `traces` path sent every message, real transfers included, and only then said nothing was observed.
-- Against an attached agent, records without context no longer bring a warning that they count by time window: there they do not count, and the test is an `error`. That error now says which keys `agent.correlate` needs (`hb.turn(conversation_id=...)`), instead of always pointing at the test id.
+- The warning about tool calls without a test context no longer contradicts the results. Next to tagged records, an untagged call counts for no test, and the warning now says so. Against an attached agent, a test that checks tool calls and has no tagged record is an `error`, without the warning. The warnings and that error name the keys of `agent.correlate` (`hb.turn(conversation_id=...)`) instead of always the test id.
 
 ### Upgrading from 0.1.0rc2
 
-- An attach-mode spec that checks tool calls now needs the trace file to exist before the run. highbar's SDK creates it when the agent registers its tools; a writer that creates it only with its first record (such as a v0 emitter on a new file) needs it created empty first.
+- An attach-mode spec that checks tool calls now needs the trace file to exist before the run. highbar's SDK creates it when `Highbar()` is created, and after the file is deleted, only with its next record. Create the file empty when it was deleted while the agent ran, or when its writer creates it only with its first record (such as a v0 emitter on a new file).
 
 ## 0.1.0rc2
 
