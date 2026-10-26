@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import time
 import uuid
 from collections.abc import Mapping
@@ -47,6 +48,12 @@ NO_CONTEXT_WARNING = (
     "falls in, and a call that ends after the response can land in the next test. "
     "highbar.asgi.Middleware or hb.turn(test=...) tags them; a thread the agent starts "
     "itself needs contextvars.copy_context() to keep the tag"
+)
+
+UNDECLARED_WARNING = (
+    "the agent does not declare the tools it records, so a guardrail cannot tell a tool "
+    "it never records from one it did not call: {names}. highbar's Python SDK declares "
+    "them since 0.1.0rc2; another writer adds a `tools` record (see the trace contract)"
 )
 
 
@@ -226,6 +233,11 @@ class TestRunner:
         self._variations_run = 0
         self._last_variation_count: int | None = None
         self._warned_no_context = False
+        # The tools the agent declared it records (None until it declares any), and the
+        # ones seen in its records: what a name in the spec is checked against (D4).
+        self._inventory: set[str] | None = None
+        self._seen: set[str] = set()
+        self._warned_undeclared = False
         self._executions: list[_Execution] = []
         self._findings: list[_Finding] = []
         self._test_index = 0
@@ -239,6 +251,7 @@ class TestRunner:
         reported: dict[int, tuple[str, Status]] = {}
         self._variations_run = 0
         self._warned_no_context = False
+        self._inventory, self._seen, self._warned_undeclared = None, set(), False
         self._executions, self._findings, self._test_index = [], [], 0
         self._gates: dict[int, _Gate] = {}
         observes = any(test.requires_observation for suite in spec.suites for test in suite.tests)
@@ -249,6 +262,8 @@ class TestRunner:
             if self._managed and observes:
                 self._await_hello()
             self._cursor = self._collector.checkpoint()
+            if observes:
+                self._learn_inventory()
             for suite in spec.suites:
                 self._reporter.on_suite_start(suite)
                 for test in suite.tests:
@@ -440,6 +455,57 @@ class TestRunner:
             for r in assertion.evaluate(tools, response, expect)
             if not r.passed
         ]
+
+    def _learn_inventory(self) -> None:
+        """What the agent declared before the first test: tools register at import (D4)."""
+        try:
+            self._absorb(self._collector.collect(since=0))
+        except TraceFormatError:
+            # An unreadable old line in an attached agent's file. Tests read only what
+            # comes after the cursor; without the declarations, highbar warns instead.
+            return
+
+    def _absorb(self, window: Window) -> None:
+        for names in window.declarations:
+            self._inventory = (self._inventory or set()) | set(names)
+        self._seen.update(tool.fn for tool in window.tools)
+
+    def _unobservable(self, expect: Expect) -> str | None:
+        """Why highbar cannot see a call the spec names, or None (spec D4).
+
+        A guardrail on a tool the agent never records, or on a name typed wrong, could
+        never fail. Each forbidden name, and each expected call (any of its names),
+        must be one the agent declared or one already seen in its records.
+        """
+        if self._inventory is None:
+            unseen = [name for name in expect.forbid if name not in self._seen]
+            if unseen and not self._warned_undeclared:
+                self._warned_undeclared = True
+                self._reporter.on_warning(UNDECLARED_WARNING.format(names=", ".join(unseen)))
+            return None
+        known = sorted(self._inventory | self._seen)
+        groups = [(name,) for name in expect.forbid]
+        groups += [
+            tuple(call.name) if isinstance(call.name, list) else (call.name,)
+            for call in expect.function_calls or []
+        ]
+        missing: list[str] = []
+        for group in groups:
+            if any(name in known for name in group):
+                continue
+            listed = " or ".join(f"'{name}'" for name in group)
+            close = next(
+                (m[0] for name in group if (m := difflib.get_close_matches(name, known, n=1))),
+                None,
+            )
+            missing.append(f"{listed} (did you mean '{close}'?)" if close else listed)
+        if not missing:
+            return None
+        return (
+            f"cannot see calls to {', '.join(missing)}: the agent records "
+            f"{', '.join(known) or 'no tools'}. highbar sees only the tools an agent "
+            "records: @hb.tool, or hb.declare() for calls written with hb.record()"
+        )
 
     def _await_hello(self) -> None:
         """The agent highbar started must show its SDK's `hello` in the new trace file.
@@ -706,6 +772,9 @@ class TestRunner:
             self._cursor = self._collector.checkpoint()
             return unverified(str(e))
         self._cursor = window.end
+        self._absorb(window)
+        if (unseen := self._unobservable(expect)) is not None:
+            return unverified(unseen)
 
         classified = classify(window, execution.correlate)
         untagged = classified.unattributed.tools

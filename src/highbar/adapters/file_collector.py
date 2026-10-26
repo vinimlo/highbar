@@ -21,7 +21,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from highbar._narrow import as_dict
+from highbar._narrow import as_dict, as_list
 from highbar.domain.models import Hello, Trace, TurnRecord, Window
 
 CONTRACT_VERSION = 1
@@ -162,6 +162,10 @@ def _add(window: Window, raw: bytes) -> None:
                 pid=pid if isinstance(pid, int) and not isinstance(pid, bool) else None,
             )
         )
+        if "tools" in record:
+            window.declarations.append(_names(record, "tools"))
+    elif kind == "tools":
+        window.declarations.append(_names(record, "names"))
     # Any other type is from a newer emitter: ignored, as the contract says.
 
 
@@ -188,6 +192,14 @@ def _tool(record: dict[str, Any], *, context: dict[str, Any]) -> Trace:
         error=error,
         context=context,
     )
+
+
+def _names(record: dict[str, Any], key: str) -> tuple[str, ...]:
+    """The tool names a declaration lists. A malformed one would hide what it declares."""
+    names = as_list(record.get(key))
+    if names is None or not all(isinstance(name, str) for name in names):
+        raise _BadLine(f"'{key}' must be a list of tool names")
+    return tuple(str(name) for name in names)
 
 
 def _context(record: dict[str, Any]) -> dict[str, Any]:

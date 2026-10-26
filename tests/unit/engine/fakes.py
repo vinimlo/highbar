@@ -22,9 +22,17 @@ def observed(message: str, test_id: str) -> Window:
 
 
 class FakeAgent:
-    def __init__(self, script: Script = observed, *, hello: bool = True) -> None:
+    def __init__(
+        self,
+        script: Script = observed,
+        *,
+        hello: bool = True,
+        declares: tuple[str, ...] | None = None,
+    ) -> None:
         self._script = script
         self._hellos = [Hello(ts=0.0, sdk="highbar-python/test", pid=1)] if hello else []
+        # The tools the agent declares it records (spec D4), written when it starts.
+        self._declarations = [declares] if declares is not None else []
         self._log: list[Window] = []
         self._late: list[Window] = []
         self._sent_since_read = False
@@ -63,6 +71,7 @@ class FakeAgent:
             tools=[tool for window in windows for tool in window.tools],
             turns=[turn for window in windows for turn in window.turns],
             hellos=list(self._hellos),
+            declarations=list(self._declarations),
             end=len(self._log),
         )
 

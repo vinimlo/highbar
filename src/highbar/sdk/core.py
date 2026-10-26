@@ -60,6 +60,7 @@ class Highbar:
         self._explicit = traces
         self._writer = TraceWriter()
         self._tools: dict[str, Callable[..., Any]] = {}
+        self._declared: set[str] = set()  # recorded through hb.record(), by hb.declare()
         self._hello_lock = threading.Lock()
         self._hello_paths: set[str] = set()
         path = self.traces
@@ -83,7 +84,17 @@ class Highbar:
         """Decorator: record every call of ``fn`` (sync or async) as a `tool` record."""
         wrapped = make_tool_decorator(fn, self)
         self._tools[fn.__name__] = wrapped
+        self._declare_tools()
         return wrapped  # type: ignore[return-value]
+
+    def declare(self, *names: str) -> None:
+        """Declare tools recorded with ``hb.record()``, which no decorator announces.
+
+        highbar checks a spec's tool names against what the agent declares: a guardrail
+        on a tool it never records could not fail, so it is an error instead (spec D4).
+        """
+        self._declared.update(names)
+        self._declare_tools()
 
     def record(
         self,
@@ -192,11 +203,28 @@ class Highbar:
         self._ensure_hello(path)
         self._writer.write(path, record)
 
-    def _ensure_hello(self, path: str) -> None:
-        """Write `hello` the first time this file is seen: it proves the SDK is on."""
+    def _declare_tools(self) -> None:
+        """Write every tool recorded so far as a `tools` record; the reader joins them."""
+        path = self.traces
+        if path is not None and self._ensure_hello(path):
+            self._writer.write(path, self._tools_record())
+
+    def _tools_record(self) -> dict[str, Any]:
+        return {
+            "type": "tools",
+            "ts": time.time(),
+            "names": sorted({*self._tools, *self._declared}),
+        }
+
+    def _ensure_hello(self, path: str) -> bool:
+        """Write `hello` the first time this file is seen: it proves the SDK is on.
+
+        Then the tools declared so far, so a new file also has them. Returns whether the
+        file had already been seen, and so still needs a new declaration written.
+        """
         with self._hello_lock:
             if path in self._hello_paths:
-                return
+                return True
             self._hello_paths.add(path)
         self._writer.write(
             path,
@@ -207,3 +235,6 @@ class Highbar:
                 "pid": os.getpid(),
             },
         )
+        if self._tools or self._declared:
+            self._writer.write(path, self._tools_record())
+        return False

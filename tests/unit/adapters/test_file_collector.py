@@ -265,3 +265,31 @@ class TestReviewFindings:
 
         assert window.end == len(first.encode())
         assert collector.collect(since=window.end).tools == []
+
+
+class TestDeclarations:
+    """The tools an emitter declares it records (spec D4)."""
+
+    def _collect(self, tmp_path, *lines: str):  # type: ignore[no-untyped-def]
+        path = tmp_path / "t.jsonl"
+        path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+        return FileTraceCollector(path).collect(since=0)
+
+    def test_a_tools_record_is_a_declaration(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        window = self._collect(tmp_path, '{"v": 1, "type": "tools", "ts": 1, "names": ["a", "b"]}')
+        assert window.declarations == [("a", "b")]
+
+    def test_a_hello_may_declare_its_tools(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        window = self._collect(
+            tmp_path,
+            '{"v": 1, "type": "hello", "ts": 1, "sdk": "x/1", "pid": 2, "tools": ["a"]}',
+            '{"v": 1, "type": "hello", "ts": 1, "sdk": "y/1", "pid": 3}',
+        )
+        assert window.declarations == [("a",)]
+        assert len(window.hellos) == 2
+
+    def test_names_that_are_not_a_list_of_text_are_an_error(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        with pytest.raises(TraceFormatError, match="line 1: 'names' must be a list of tool names"):
+            self._collect(tmp_path, '{"v": 1, "type": "tools", "ts": 1, "names": "a"}')
+        with pytest.raises(TraceFormatError, match="'tools' must be a list of tool names"):
+            self._collect(tmp_path, '{"v": 1, "type": "hello", "ts": 1, "tools": [1]}')
