@@ -33,7 +33,8 @@ def run(
     """
     path = os.fspath(spec)
     parsed = parse_spec(path)
-    if runs is not None and (isinstance(runs, bool) or not isinstance(runs, int) or runs < 1):
+    # Checked at run time too: callers from Python may pass anything.
+    if runs is not None and (isinstance(runs, bool) or not isinstance(runs, int) or runs < 1):  # pyright: ignore[reportUnnecessaryIsInstance]
         raise ValueError(f"runs must be a whole number of at least 1, got {runs!r}")
     try:
         check_runs(parsed, parsed.default_runs if runs is None else runs)

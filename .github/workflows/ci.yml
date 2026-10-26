@@ -16,6 +16,12 @@ jobs:
     # Runners do Mac (infra/ci-runners) quando a variável CI_RUNNER existe;
     # sem ela, o job volta para o GitHub.
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@v7
 
@@ -25,7 +31,7 @@ jobs:
           enable-cache: true
 
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install ${{ matrix.python }}
 
       - name: Install dependencies
         run: uv sync --locked --all-extras --dev
@@ -35,6 +41,9 @@ jobs:
 
       - name: Format
         run: uv run ruff format --check src/ tests/
+
+      - name: Typecheck
+        run: uv run pyright src
 
       # Cobre unit + integration. O teste de integração sobe um agente FastAPI de
       # verdade e roda a CLI ponta a ponta contra ele, então também exercita o

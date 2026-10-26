@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from highbar._narrow import as_dict, as_list
 from highbar.engine.paths import PathError, get_path
 from highbar.engine.schema import SpecError
 
@@ -50,12 +51,12 @@ def check_placeholders(
     value: Any, where: str, *, allowed: frozenset[str], has_session: bool
 ) -> None:
     """Reject placeholders that are unknown, or not available where they are used."""
-    if isinstance(value, dict):
-        for key, item in value.items():
+    if (mapping := as_dict(value)) is not None:
+        for key, item in mapping.items():
             check_placeholders(item, f"{where}.{key}", allowed=allowed, has_session=has_session)
         return
-    if isinstance(value, list):
-        for index, item in enumerate(value):
+    if (items := as_list(value)) is not None:
+        for index, item in enumerate(items):
             check_placeholders(item, f"{where}[{index}]", allowed=allowed, has_session=has_session)
         return
     if not isinstance(value, str):
@@ -80,10 +81,10 @@ def check_placeholders(
 
 
 def uses_placeholder(value: Any, name: str) -> bool:
-    if isinstance(value, dict):
-        return any(uses_placeholder(item, name) for item in value.values())
-    if isinstance(value, list):
-        return any(uses_placeholder(item, name) for item in value)
+    if (mapping := as_dict(value)) is not None:
+        return any(uses_placeholder(item, name) for item in mapping.values())
+    if (items := as_list(value)) is not None:
+        return any(uses_placeholder(item, name) for item in items)
     return isinstance(value, str) and any(
         match.group(1) == name for match in PLACEHOLDER.finditer(value)
     )
@@ -91,10 +92,10 @@ def uses_placeholder(value: Any, name: str) -> bool:
 
 def render(value: Any, values: Values) -> Any:
     """Resolve every placeholder in ``value`` (texts, and texts inside maps and lists)."""
-    if isinstance(value, dict):
-        return {key: render(item, values) for key, item in value.items()}
-    if isinstance(value, list):
-        return [render(item, values) for item in value]
+    if (mapping := as_dict(value)) is not None:
+        return {key: render(item, values) for key, item in mapping.items()}
+    if (items := as_list(value)) is not None:
+        return [render(item, values) for item in items]
     if not isinstance(value, str):
         return value
 

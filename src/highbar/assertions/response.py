@@ -25,7 +25,7 @@ class ResponseAssertion:
 
         # What the agent said is the first thing anyone asks when this fails.
         got = repr(truncate(response))
-        results = []
+        results: list[AssertionResult] = []
         for key, operand in expect.response.matcher.items():
             if value_match({key: operand}, response):
                 results.append(AssertionResult(passed=True, message=""))

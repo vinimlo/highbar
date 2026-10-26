@@ -93,7 +93,9 @@ class _Call:
         return result
 
     def _record(self, result: Any, error: str | None) -> None:
-        self._hb._record_call(self._name, self._args, result, error, self._started_at, time.time())
+        self._hb._record_call(  # pyright: ignore[reportPrivateUsage]  # the SDK's own
+            self._name, self._args, result, error, self._started_at, time.time()
+        )
 
 
 def _describe(error: BaseException) -> str:

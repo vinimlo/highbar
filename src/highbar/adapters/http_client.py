@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from highbar._narrow import as_dict
 from highbar.assertions.response import truncate
 from highbar.domain.models import RequestConfig
 from highbar.engine.paths import PathError, get_path
@@ -118,8 +119,8 @@ class HTTPClient:
 
         for name, value in render(self._request.headers, values).items():
             put(name, value)
-        session_headers = values.session.get("headers")
-        if isinstance(session_headers, dict):
+        session_headers = as_dict(values.session.get("headers"))
+        if session_headers is not None:
             for name, value in session_headers.items():
                 put(str(name), value)
         put(TEST_HEADER, values.test_id)
@@ -132,6 +133,7 @@ class HTTPClient:
         an object (a hand-rolled agent may send ``json.dumps(...)`` as text). Plain text
         that happens to parse as a number, a list or ``null`` stays text.
         """
+        data: Any
         try:
             data = json.loads(raw)
         except ValueError:
@@ -142,7 +144,7 @@ class HTTPClient:
             data = None
             parsed = False
         else:
-            parsed = declared_json or isinstance(data, dict)
+            parsed = declared_json or as_dict(data) is not None
 
         if not parsed:
             if self._response_path is not None:
@@ -161,11 +163,11 @@ class HTTPClient:
                 raise AgentResponseError(f"agent.response '{self._response_path}' is null")
             return _as_text(value)
 
-        if isinstance(data, dict):
+        if (reply := as_dict(data)) is not None:
             for key in REPLY_KEYS:
-                if key in data:
-                    return _implicit_text(key, data[key])
-            keys = ", ".join(str(key) for key in data) or "none"
+                if key in reply:
+                    return _implicit_text(key, reply[key])
+            keys = ", ".join(str(key) for key in reply) or "none"
             raise AgentResponseError(
                 f"the JSON reply has none of {', '.join(REPLY_KEYS)} (keys: {keys}); "
                 "set agent.response to the path of the reply text"

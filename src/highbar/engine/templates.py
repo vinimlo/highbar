@@ -7,6 +7,7 @@ import re
 from dataclasses import fields
 from typing import Any
 
+from highbar._narrow import as_dict, as_list
 from highbar.domain.models import Trace
 
 # Spaces inside the braces are allowed: `{{ previous.x }}` is how most template
@@ -62,11 +63,11 @@ def _resolve_path(path: str, traces: list[Trace]) -> Any:
             if part not in _TRACE_FIELDS:
                 raise _Missing(f"no field '{part}' (fields: {', '.join(_TRACE_FIELDS)})")
             current = getattr(current, part)
-        elif isinstance(current, dict):
-            if part not in current:
-                keys = ", ".join(str(key) for key in current) or "none"
+        elif (mapping := as_dict(current)) is not None:
+            if part not in mapping:
+                keys = ", ".join(str(key) for key in mapping) or "none"
                 raise _Missing(f"no key '{part}' (keys: {keys})")
-            current = current[part]
+            current = mapping[part]
         else:
             raise _Missing(f"cannot read '{part}' from a {type(current).__name__}")
 
@@ -74,13 +75,14 @@ def _resolve_path(path: str, traces: list[Trace]) -> Any:
 
 
 def _index(current: Any, index: int, name: str, *, top_level: bool) -> Any:
-    if not isinstance(current, list):
+    items = as_list(current)
+    if items is None:
         raise _Missing(f"cannot index '{name}[{index}]' into a {type(current).__name__}")
-    if index >= len(current):
+    if index >= len(items):
         if top_level:
-            raise _Missing(f"only {len(current)} calls in earlier turns")
-        raise _Missing(f"only {len(current)} items in '{name}'")
-    return current[index]
+            raise _Missing(f"only {len(items)} calls in earlier turns")
+        raise _Missing(f"only {len(items)} items in '{name}'")
+    return items[index]
 
 
 _SEGMENT = re.compile(r"(\w+)((?:\[\d+\])*)")

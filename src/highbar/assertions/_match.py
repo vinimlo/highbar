@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
+
+from highbar._narrow import as_dict
 
 
 def subset_match(expected: dict[str, Any] | None, actual: Any) -> bool:
@@ -42,8 +44,9 @@ def value_match(expected: Any, actual: Any) -> bool:
     """
     if _is_matcher(expected):
         return _apply_matcher(expected, actual)
-    if isinstance(expected, dict) and isinstance(actual, dict):
-        return subset_match(expected, actual)
+    expected_dict, actual_dict = as_dict(expected), as_dict(actual)
+    if expected_dict is not None and actual_dict is not None:
+        return subset_match(expected_dict, actual_dict)
     return bool(expected == actual)
 
 
@@ -63,10 +66,11 @@ def _as_text(actual: Any) -> str | None:
 def _contains(actual: Any, operand: Any, *, ignore_case: bool) -> bool | None:
     """Substring for scalars, membership for lists. None when it cannot be evaluated."""
     if isinstance(actual, (list, tuple)):
+        items: list[Any] = list(cast("list[Any] | tuple[Any, ...]", actual))
         if ignore_case and isinstance(operand, str):
             folded = operand.casefold()
-            return any(isinstance(item, str) and item.casefold() == folded for item in actual)
-        return operand in actual
+            return any(isinstance(item, str) and item.casefold() == folded for item in items)
+        return operand in items
 
     text = _as_text(actual)
     if text is None:
@@ -116,7 +120,8 @@ MATCHER_KEYS = frozenset(_CONDITIONS)
 
 
 def _is_matcher(expected: Any) -> bool:
-    return isinstance(expected, dict) and len(expected) > 0 and set(expected) <= MATCHER_KEYS
+    mapping = as_dict(expected)
+    return mapping is not None and len(mapping) > 0 and set(mapping) <= MATCHER_KEYS
 
 
 def _apply_matcher(matcher: dict[str, Any], actual: Any) -> bool:
@@ -146,10 +151,11 @@ def validate_expected(expected: Any, where: str) -> None:
 
     ``where`` names the field being checked (e.g. ``params.order_id``) for the message.
     """
-    if not isinstance(expected, dict):
+    mapping = as_dict(expected)
+    if mapping is None:
         return
 
-    keys = [str(key) for key in expected]
+    keys = [str(key) for key in mapping]
     known = [key for key in keys if key in MATCHER_KEYS]
     unknown = [key for key in keys if key not in MATCHER_KEYS]
 
@@ -169,15 +175,15 @@ def validate_expected(expected: Any, where: str) -> None:
                     "For a literal dict with this key, wrap it as {equals: {...}}"
                 )
                 raise ValueError(msg)
-        for key, value in expected.items():
+        for key, value in mapping.items():
             validate_expected(value, f"{where}.{key}")
         return
 
     # A matcher. The operand of `equals` is a literal and is deliberately not inspected.
     for key in ("matches", "not_matches"):
-        if key not in expected:
+        if key not in mapping:
             continue
-        pattern = expected[key]
+        pattern = mapping[key]
         if not isinstance(pattern, str):
             msg = f"{where}: '{key}' needs a regex string, got {type(pattern).__name__}"
             raise ValueError(msg)
