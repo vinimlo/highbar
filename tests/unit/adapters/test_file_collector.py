@@ -340,3 +340,21 @@ class TestDeclaredScan:
 
     def test_no_file_is_none(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         assert FileTraceCollector(tmp_path / "missing.jsonl").declared() is None
+
+
+class TestMissingFile:
+    """Attach mode checks the file before the first message (rehearsal FR3)."""
+
+    def test_fr3_missing_until_the_agent_creates_the_file(self, tmp_path: Path) -> None:
+        collector = FileTraceCollector(tmp_path / "var" / "traces.jsonl")
+        assert collector.missing()
+
+        (tmp_path / "var").mkdir()
+        (tmp_path / "var" / "traces.jsonl").write_text("", encoding="utf-8")
+
+        assert not collector.missing()
+
+    def test_fr3_a_collector_with_no_file_misses_nothing(self) -> None:
+        from highbar.adapters.file_collector import NoTraceCollector
+
+        assert not NoTraceCollector().missing()

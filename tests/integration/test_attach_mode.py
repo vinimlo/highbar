@@ -6,6 +6,7 @@ a file in the test's directory, and runs the real CLI against it.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
@@ -161,11 +162,33 @@ def test_attach_mode_correlate_on_a_key_the_agent_never_writes_is_not_observed(
 @pytest.mark.timeout(40)
 def test_attach_mode_without_instrumentation_is_not_observed(attached: _Attached) -> None:
     attached.start("--no-traces")
+    # The file is there (left by an earlier agent), but this one writes nothing to it.
+    attached.traces.write_text("", encoding="utf-8")
 
     result = attached.run(attached.spec())
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "not observed: nothing was written to" in result.stdout
+
+
+@pytest.mark.timeout(40)
+def test_fr3_a_wrong_traces_path_exits_2_before_any_message(attached: _Attached) -> None:
+    """The rehearsal's run sent every message (three real transfers) to find out."""
+    attached.start()
+    spec = attached.spec()
+    path = attached.root / spec
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("var/traces.jsonl", "var/trace.jsonl"),
+        encoding="utf-8",
+    )
+
+    result = attached.run(spec)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"{attached.root / 'var' / 'trace.jsonl'} does not exist" in result.stdout
+    # The agent wrote its hello when it started, and no turn: no message reached it.
+    records = attached.traces.read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["type"] for line in records] == ["hello"]
 
 
 @pytest.mark.timeout(40)

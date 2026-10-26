@@ -52,6 +52,10 @@ class FileTraceCollector:
     def path(self) -> Path:
         return self._path
 
+    def missing(self) -> bool:
+        """The file does not exist: a wrong path, or an agent that has not written yet."""
+        return not self._path.exists()
+
     def checkpoint(self) -> int:
         """The byte offset just after the last complete line (0 if there is no file)."""
         try:
@@ -140,6 +144,9 @@ class NoTraceCollector:
 
     def declared(self) -> frozenset[str] | None:
         return None
+
+    def missing(self) -> bool:
+        return False
 
 
 def _end_of_last_line(f: Any) -> int:
