@@ -35,7 +35,7 @@ def _write(path: Path, *lines: str) -> FileTraceCollector:
     return FileTraceCollector(path)
 
 
-# The exact shape of a line written today by the Seu AgenteIA emitter (lib/gauntlet_trace.py).
+# The exact shape of a v0 line written by an emitter in production before the v1 contract.
 V0_LINE = {
     "id": "ab12",
     "fn": "search_products",

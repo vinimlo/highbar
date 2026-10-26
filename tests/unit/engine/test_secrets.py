@@ -29,9 +29,9 @@ TOKEN = "s3cr3t-token-value"
 
 class TestRedact:
     def test_every_form_of_the_value_becomes_its_variable(self) -> None:
-        secrets = {TOKEN: "SAIA_EVAL_TOKEN"}
+        secrets = {TOKEN: "AGENT_TOKEN"}
 
-        assert redact(f"Bearer {TOKEN}", secrets) == "Bearer ${SAIA_EVAL_TOKEN}"
+        assert redact(f"Bearer {TOKEN}", secrets) == "Bearer ${AGENT_TOKEN}"
         assert redact("key=ab%2Fcd%3Def", {"ab/cd=ef": "KEY"}) == "key=${KEY}"
         assert redact(repr(f"Bearer {TOKEN}\n"), {f"{TOKEN}\n": "T"}) == "'Bearer ${T}'"
 
@@ -56,26 +56,26 @@ class TestParser:
     def test_expanded_values_are_kept_to_be_masked(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("SAIA_EVAL_TOKEN", TOKEN)
+        monkeypatch.setenv("AGENT_TOKEN", TOKEN)
         path = _spec(
             tmp_path,
             """\
             endpoint: "http://localhost:8000/chat"
-            request: {headers: {Authorization: "Bearer ${SAIA_EVAL_TOKEN}"}}
+            request: {headers: {Authorization: "Bearer ${AGENT_TOKEN}"}}
             """,
         )
 
-        assert parse_spec(path).agent.secrets == {TOKEN: "SAIA_EVAL_TOKEN"}
+        assert parse_spec(path).agent.secrets == {TOKEN: "AGENT_TOKEN"}
 
     def test_header_value_with_a_trailing_newline_is_a_spec_error_that_hides_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("SAIA_EVAL_TOKEN", TOKEN + "\n")
+        monkeypatch.setenv("AGENT_TOKEN", TOKEN + "\n")
         path = _spec(
             tmp_path,
             """\
             endpoint: "http://localhost:8000/chat"
-            request: {headers: {Authorization: "Bearer ${SAIA_EVAL_TOKEN}"}}
+            request: {headers: {Authorization: "Bearer ${AGENT_TOKEN}"}}
             """,
         )
 
@@ -122,7 +122,7 @@ class TestOutput:
             assertions=[ResponseAssertion()],
             reporter=reporter,
             settle_time=0,
-            secrets={TOKEN: "SAIA_EVAL_TOKEN"},
+            secrets={TOKEN: "AGENT_TOKEN"},
         ).run(
             Spec(
                 agent=AgentConfig(endpoint="http://127.0.0.1:1/chat"),
@@ -141,7 +141,7 @@ class TestOutput:
         )
 
         ((_, result),) = [c.args for c in reporter.on_test_result.call_args_list]
-        assert result.errors == ["HTTP 401: echo Bearer ${SAIA_EVAL_TOKEN}"]
+        assert result.errors == ["HTTP 401: echo Bearer ${AGENT_TOKEN}"]
 
     def test_attach_mode_start_failure_never_shows_the_key(self, tmp_path: Path) -> None:
         with socket.socket() as s:

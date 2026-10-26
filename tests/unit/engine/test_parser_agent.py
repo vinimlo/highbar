@@ -93,14 +93,14 @@ class TestEnvironment:
     def test_env_var_is_expanded_in_agent_fields(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("SAIA_EVAL_TOKEN", "abc")
+        monkeypatch.setenv("AGENT_TOKEN", "abc")
         monkeypatch.setenv("AGENT_PORT", "8123")
         spec = _spec(
             tmp_path,
             """\
             endpoint: "http://localhost:${AGENT_PORT}/chat"
             request:
-              headers: {Authorization: "Bearer ${SAIA_EVAL_TOKEN}"}
+              headers: {Authorization: "Bearer ${AGENT_TOKEN}"}
             """,
         )
 
@@ -112,16 +112,16 @@ class TestEnvironment:
     def test_missing_env_var_is_a_spec_error_naming_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("SAIA_EVAL_TOKEN", raising=False)
+        monkeypatch.delenv("AGENT_TOKEN", raising=False)
         spec = _spec(
             tmp_path,
-            ATTACH + 'request:\n  headers: {Authorization: "Bearer ${SAIA_EVAL_TOKEN}"}\n',
+            ATTACH + 'request:\n  headers: {Authorization: "Bearer ${AGENT_TOKEN}"}\n',
         )
 
         with pytest.raises(
             SpecError,
             match=r"agent\.request\.headers\.Authorization: environment variable "
-            r"SAIA_EVAL_TOKEN is not set",
+            r"AGENT_TOKEN is not set",
         ):
             parse_spec(spec)
 
