@@ -28,6 +28,7 @@ class FakeAgent:
         *,
         hello: bool = True,
         declares: tuple[str, ...] | None = None,
+        missing: bool = False,
     ) -> None:
         self._script = script
         self._hellos = [Hello(ts=0.0, sdk="highbar-python/test", pid=1)] if hello else []
@@ -39,6 +40,7 @@ class FakeAgent:
         self.sent: list[tuple[str, str]] = []
         self.values: list[Values] = []
         self.path = Path("/tmp/fake-traces.jsonl")
+        self._missing = missing
 
     @property
     def test_ids(self) -> list[str]:
@@ -73,6 +75,9 @@ class FakeAgent:
             hellos=list(self._hellos),
             end=len(self._log),
         )
+
+    def missing(self) -> bool:
+        return self._missing
 
     def declared(self) -> frozenset[str] | None:
         """Written when the agent started, before any test: not in a test's window."""

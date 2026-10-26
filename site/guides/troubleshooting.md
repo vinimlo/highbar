@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Every message below is copied from a real run. The first line of each tells you what happened; the rest says what to do.
+Every message below is copied from a real run, with long paths shortened to `…`. The first line of each tells you what happened; the rest says what to do.
 
 ## The run stops before any test (exit code 2)
 
@@ -31,6 +31,14 @@ The whole log stays in `.highbar/logs/`. When a run has failures, the last line 
 
 The agent must create `highbar.Highbar()` after `HIGHBAR_TRACES_URL` is in its environment. A start script that resets the environment, or a `Highbar(traces=...)` pointing elsewhere, gives this message.
 
+**The attached agent's trace file does not exist.**
+
+```text
+  ✗ specs/support.highbar.yaml: the trace file …/support/var/trace.jsonl does not exist, so no test could see what the agent does; nothing was sent. Check agent.traces (a relative path starts where highbar runs). If the path is right, the file was removed after the agent started, or its writer creates it only with its first record: create it empty before the run
+```
+
+`agent.traces` is relative to where you run highbar, not to the spec. Compare the path in the message with the file the agent writes. If they match, the file was deleted or rotated away while the agent ran: highbar's SDK writes it again only with its next record. Create it empty (`: > var/traces.jsonl`), or empty it instead of deleting it.
+
 **The spec is invalid.** The message names the key and the likely fix: `unknown key 'orderd' — did you mean 'ordered'?`. Run `highbar validate` to check every spec without running anything.
 
 ## A test is `error`, not `failed`
@@ -45,10 +53,18 @@ The agent must create `highbar.Highbar()` after `HIGHBAR_TRACES_URL` is in its e
 ## A warning about calls without a test context
 
 ```text
-  ! some tool calls carry no test context, so each counts for the test whose window it falls in, and a call that ends after the response can land in the next test. highbar.asgi.Middleware or hb.turn(test=...) tags them; a thread the agent starts itself needs contextvars.copy_context() to keep the tag
+  ! some tool calls carry no test context, so each counts for the test whose window it falls in, and a call that ends after the response can land in the next test; tag them with the test id: highbar.asgi.Middleware, or hb.turn(test=<the X-Highbar-Test header>); a thread the agent starts itself needs contextvars.copy_context() to keep the tag
 ```
 
-The tests still run, but a slow call can be counted for the wrong test. Add `highbar.asgi.Middleware`, or wrap message handling in `hb.turn()`. See [connecting your agent](/guides/connecting-your-agent#tag-each-message-with-its-test).
+The tests still run, but a slow call can be counted for the wrong test. Add `highbar.asgi.Middleware`, or wrap message handling in `hb.turn()`. Against an attached agent, a test that checks tool calls and has no tagged record is an `error` instead, and says what its records lack.
+
+When the agent tags some records and not others, typically a call made in a thread it started, the untagged calls count for no test:
+
+```text
+  ! some tool calls carry none of agent.correlate's keys (conversation_id), so they count for no test, and a test whose result they would change is an error; give their context conversation_id (agent.correlate): hb.turn(conversation_id=...) around the handling of each message, or a `context` field from another writer; a thread the agent starts itself needs contextvars.copy_context() to keep the tag
+```
+
+Both warnings name the keys of `agent.correlate`. See [connecting your agent](/guides/connecting-your-agent#tag-each-message-with-its-test).
 
 ## A call recorded after the test's window closed
 

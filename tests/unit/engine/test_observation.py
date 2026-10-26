@@ -513,3 +513,139 @@ class TestAttachReviewFindings:
         assert first.status is Status.PASSED
         assert second.status is Status.ERROR
         assert "the same as an earlier test's" in second.errors[0]
+
+
+class TestRehearsalFindings:
+    """The rc1 onboarding rehearsal, attach mode: FR2 (contradicting messages) and FR3."""
+
+    def test_fr3_a_missing_trace_file_stops_the_run_before_any_message(self) -> None:
+        agent = FakeAgent(hello=False, missing=True)
+
+        with pytest.raises(AgentNotObservedError, match="fake-traces.jsonl does not exist"):
+            _run([Case(trigger="a", expect=GUARDRAIL)], agent, managed=False)
+
+        # A wrong path must not cost real side effects: nothing reached the agent.
+        assert agent.sent == []
+
+    def test_fr3_a_spec_that_checks_only_replies_runs_without_the_file(self) -> None:
+        agent = FakeAgent(hello=False, missing=True)
+
+        results, _, _ = _run([Case(trigger="a", expect=SAYS_OK)], agent, managed=False)
+
+        assert results[0][1].status is Status.PASSED
+
+    def test_fr2_attach_mode_does_not_say_untagged_calls_count(self) -> None:
+        """They do not count against an attached agent: the test errors instead."""
+        agent = FakeAgent(lambda message, test_id: Window(tools=[_tool("lookup")]), hello=False)
+
+        results, _, reporter = _run([Case(trigger="a", expect=CALLS_LOOKUP)], agent, managed=False)
+
+        assert results[0][1].status is Status.ERROR
+        assert not [w for w in _warnings(reporter) if "counts for the test" in w]
+
+    def test_fr2_the_hint_asks_for_the_keys_of_agent_correlate(self) -> None:
+        hooks = MagicMock()
+        hooks.setup.side_effect = [{"conversation_id": "c1"}]
+        agent = FakeAgent(lambda message, test_id: Window(tools=[_tool("lookup")]), hello=False)
+        reporter = MagicMock()
+
+        Runner(
+            adapter=MagicMock(),
+            client=agent,
+            collector=agent,
+            assertions=[FunctionCallsAssertion()],
+            reporter=reporter,
+            settle_time=0,
+            managed=False,
+            session=hooks,
+            correlate={"conversation_id": "{{session.conversation_id}}"},
+        ).run(
+            Spec(
+                agent=AgentConfig(endpoint="http://127.0.0.1:1/chat"),
+                suites=[Suite(name="S", tests=[Case(trigger="a", expect=CALLS_LOOKUP)])],
+            )
+        )
+
+        (result,) = [c.args[1] for c in reporter.on_test_result.call_args_list]
+        assert result.status is Status.ERROR
+        assert "hb.turn(conversation_id=...)" in result.errors[0]
+        assert "X-Highbar-Test" not in result.errors[0]
+
+
+class TestPR14ReviewFindings:
+    """PR 14 review: what the warnings and hints say must hold where they appear."""
+
+    def _attached(self, script, correlate, expect):  # type: ignore[no-untyped-def]
+        agent = FakeAgent(script, hello=False)
+        reporter = MagicMock()
+        Runner(
+            adapter=MagicMock(),
+            client=agent,
+            collector=agent,
+            assertions=[FunctionCallsAssertion(), ResponseAssertion()],
+            reporter=reporter,
+            settle_time=0,
+            managed=False,
+            correlate=correlate,
+        ).run(
+            Spec(
+                agent=AgentConfig(endpoint="http://127.0.0.1:1/chat"),
+                suites=[Suite(name="S", tests=[Case(trigger="a", expect=expect)])],
+            )
+        )
+        (result,) = [c.args[1] for c in reporter.on_test_result.call_args_list]
+        return result, _warnings(reporter)
+
+    def test_i1_a_call_left_untagged_next_to_tagged_records_counts_for_no_test(self) -> None:
+        """The agent tags its turns with the conversation, and a worker thread drops it."""
+
+        def script(message: str, test_id: str) -> Window:
+            return Window(turns=[_turn(conversation_id="c1")], tools=[_tool("lookup")])
+
+        result, warnings = self._attached(script, {"conversation_id": "c1"}, CALLS_LOOKUP)
+
+        assert result.status is Status.ERROR
+        assert "cannot tell which test made lookup" in result.errors[0]
+        (warning,) = warnings
+        assert "count for no test" in warning
+        assert "counts for the test" not in warning
+        assert "hb.turn(conversation_id=...)" in warning
+        assert "test=" not in warning
+
+    def test_m1_attach_mode_warns_where_untagged_calls_do_count(self) -> None:
+        """A test that checks only replies takes the whole window, as {{previous.*}} does."""
+        result, warnings = self._attached(
+            lambda message, test_id: Window(tools=[_tool("lookup")]), {"test": "x"}, SAYS_OK
+        )
+
+        assert result.status is Status.PASSED
+        (warning,) = warnings
+        assert "counts for the test whose window it falls in" in warning
+
+    @pytest.mark.parametrize(
+        ("correlate", "fields"),
+        [
+            (
+                {"conversation_id": "c1", "tenant": "acme"},
+                "hb.turn(conversation_id=..., tenant=...)",
+            ),
+            ({1: "c1"}, "give their context 1 (agent.correlate)"),
+        ],
+    )
+    def test_m3_m7_the_hint_names_every_key_of_agent_correlate(
+        self, correlate: dict[object, str], fields: str
+    ) -> None:
+        result, _ = self._attached(
+            lambda message, test_id: Window(tools=[_tool("lookup")]), correlate, CALLS_LOOKUP
+        )
+
+        assert result.status is Status.ERROR
+        assert fields in result.errors[0]
+
+    def test_i2_the_missing_file_message_covers_a_file_removed_after_the_agent_started(
+        self,
+    ) -> None:
+        agent = FakeAgent(hello=False, missing=True)
+
+        with pytest.raises(AgentNotObservedError, match="removed after the agent started"):
+            _run([Case(trigger="a", expect=GUARDRAIL)], agent, managed=False)
