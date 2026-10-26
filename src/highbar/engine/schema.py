@@ -18,7 +18,24 @@ class SpecError(ValueError):
 
 ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "spec": frozenset({"agent", "suites"}),
-    "agent": frozenset({"start", "endpoint", "health", "startup_timeout", "settle_time"}),
+    "agent": frozenset(
+        {
+            "start",
+            "endpoint",
+            "health",
+            "startup_timeout",
+            "settle_time",
+            "timeout",
+            "request",
+            "response",
+            "traces",
+            "session",
+            "correlate",
+        }
+    ),
+    "request": frozenset({"method", "headers", "body"}),
+    "session": frozenset({"setup", "teardown"}),
+    "python_hook": frozenset({"python"}),
     "suite": frozenset({"name", "tests"}),
     "test": frozenset({"name", "trigger", "expect", "turns", "variations"}),
     "turn": frozenset({"name", "trigger", "expect"}),

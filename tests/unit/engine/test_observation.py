@@ -465,3 +465,48 @@ class TestReviewFindings:
         assert "context keys: conversation_id, test" in message
         assert "X-Highbar-Test" in message
         assert "--keep-traces" in message
+
+
+class TestAttachReviewFindings:
+    """PR 5 review: an attached agent may serve other traffic (C1, M7)."""
+
+    def test_c1_untagged_call_of_other_traffic_does_not_satisfy_an_attached_test(self) -> None:
+        def script(message: str, test_id: str) -> Window:
+            # This test's message made no call; another conversation booked a flight.
+            return Window(tools=[_tool("book_flight")])
+
+        agent = FakeAgent(script, hello=False)
+        expect = Expect(function_calls=[FunctionCallExpect(name="book_flight")])
+
+        results, _, _ = _run([Case(trigger="book", expect=expect)], agent, managed=False)
+
+        (_, result) = results[0]
+        assert result.status is Status.ERROR
+        assert "cannot be told from other traffic" in result.errors[0]
+
+    def test_m7_two_executions_with_the_same_correlation_cannot_be_told_apart(self) -> None:
+        hooks = MagicMock()
+        hooks.setup.return_value = {"cid": 7}  # the same conversation every time
+        agent = FakeAgent(lambda message, test_id: Window(turns=[_turn(cid="7")]))
+        reporter = MagicMock()
+
+        Runner(
+            adapter=MagicMock(),
+            client=agent,
+            collector=agent,
+            assertions=[FunctionCallsAssertion()],
+            reporter=reporter,
+            settle_time=0,
+            session=hooks,
+            correlate={"cid": "{{session.cid}}"},
+        ).run(
+            Spec(
+                agent=AgentConfig(start="agent", endpoint="http://127.0.0.1:1/chat"),
+                suites=[Suite(name="S", tests=[Case(trigger="a", expect=GUARDRAIL)] * 2)],
+            )
+        )
+
+        first, second = [c.args[1] for c in reporter.on_test_result.call_args_list]
+        assert first.status is Status.PASSED
+        assert second.status is Status.ERROR
+        assert "the same as an earlier test's" in second.errors[0]

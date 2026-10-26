@@ -6,7 +6,10 @@ spec, so an error says where it is: ``suites[0].tests[2].expect: unknown key ...
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
+from dataclasses import replace
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -15,15 +18,23 @@ import yaml
 from highbar.assertions._match import validate_expected
 from highbar.domain.models import (
     AgentConfig,
+    CommandHook,
     Expect,
     FunctionCallExpect,
+    Hook,
+    PythonHook,
+    RequestConfig,
     ResponseExpect,
+    SessionConfig,
     Spec,
     Suite,
     Test,
     Turn,
 )
+from highbar.engine import placeholders
+from highbar.engine.placeholders import check_placeholders, uses_placeholder
 from highbar.engine.schema import SpecError, check_keys, require_type, user_keys
+from highbar.engine.secrets import redact
 
 
 def parse_spec(path: str) -> Spec:
@@ -97,6 +108,15 @@ def _parse_spec(raw: Any) -> Spec:
     require_type(suites_raw, list, "suites", "must be a list of suites")
     suites = [_parse_suite(s, f"suites[{i}]") for i, s in enumerate(suites_raw)]
 
+    if not agent.managed and agent.traces is None:
+        for i, suite in enumerate(suites):
+            for j, test in enumerate(suite.tests):
+                if test.requires_observation:
+                    raise SpecError(
+                        "agent: attach mode (no 'start') needs 'traces', the file the agent "
+                        f"writes: suites[{i}].tests[{j}] checks function_calls"
+                    )
+
     return Spec(agent=agent, suites=suites)
 
 
@@ -104,24 +124,206 @@ def _parse_agent(raw: Any) -> AgentConfig:
     where = "agent"
     require_type(raw, dict, where, "must be a mapping")
     check_keys(raw, "agent", where)
-    for key in ("start", "endpoint"):
-        if key not in raw:
-            raise SpecError(f"{where}: missing '{key}'")
-        require_type(raw[key], str, where, f"{key} must be a string")
-        if not raw[key].strip():
-            raise SpecError(f"{where}: {key} cannot be empty")
-    _check_url(raw["endpoint"], "endpoint")
+    secrets: dict[str, str] = {}
+    raw = _expand_env(raw, where, secrets)
+    try:
+        return replace(_parse_expanded_agent(raw), secrets=secrets)
+    except SpecError as e:
+        # An error that quotes a value (a URL) must not quote what came from ${NAME}.
+        raise SpecError(redact(str(e), secrets)) from None
+
+
+def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
+    where = "agent"
+    if "endpoint" not in raw:
+        raise SpecError(f"{where}: missing 'endpoint' (the URL highbar sends each trigger to)")
+    endpoint = _required_text(raw, "endpoint")
+    _check_url(endpoint, "endpoint")
+    for key in ("endpoint", "health"):
+        if isinstance(raw.get(key), str) and "{{" in raw[key]:
+            raise SpecError(
+                f"agent: {key} cannot hold {{{{...}}}}: placeholders are not resolved in the "
+                "URL; send the value in agent.request.body or agent.request.headers"
+            )
+    start = _required_text(raw, "start") if "start" in raw else None
+    managed = start is not None
     if raw.get("health") is not None:
         require_type(raw["health"], str, where, "health must be a string (a URL)")
         _check_url(raw["health"], "health")
 
+    if not managed and "startup_timeout" in raw:
+        raise SpecError(
+            f"{where}: startup_timeout only applies with 'start' "
+            "(in attach mode highbar does not start the agent)"
+        )
+    traces = None
+    if "traces" in raw:
+        if managed:
+            raise SpecError(
+                f"{where}: 'traces' is for attach mode; with 'start', highbar creates the "
+                "trace file and passes it to the agent in HIGHBAR_TRACES_URL"
+            )
+        traces = _required_text(raw, "traces")
+
+    session = _parse_session(raw["session"]) if "session" in raw else None
+    has_session = session is not None
+
     return AgentConfig(
-        start=raw["start"],
-        endpoint=raw["endpoint"],
+        endpoint=endpoint,
+        start=start,
         health=raw.get("health"),
         startup_timeout=_milliseconds(raw, "startup_timeout", 15000, minimum=1),
         settle_time=_milliseconds(raw, "settle_time", 500, minimum=0),
+        timeout=_milliseconds(raw, "timeout", 60000, minimum=1),
+        request=_parse_request(raw.get("request"), has_session),
+        response=_parse_response_path(raw["response"]) if "response" in raw else None,
+        traces=traces,
+        session=session,
+        correlate=(
+            _parse_correlate(raw["correlate"], has_session)
+            if "correlate" in raw
+            else {"test": "{{test.id}}"}
+        ),
     )
+
+
+_ENV_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _expand_env(value: Any, where: str, found: dict[str, str]) -> Any:
+    """Replace ``${NAME}`` with the environment variable, once (no re-expansion).
+
+    A missing variable is an error that names it: an empty token would send
+    ``Authorization: Bearer `` and read as the agent refusing a correct request.
+    Each value expanded goes in ``found``, to be masked in every message.
+    """
+    if isinstance(value, dict):
+        return {key: _expand_env(item, f"{where}.{key}", found) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_expand_env(item, f"{where}[{index}]", found) for index, item in enumerate(value)]
+    if not isinstance(value, str):
+        return value
+
+    def variable(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in os.environ:
+            raise SpecError(f"{where}: environment variable {name} is not set")
+        found[os.environ[name]] = name
+        return os.environ[name]
+
+    return _ENV_VAR.sub(variable, value)
+
+
+def _required_text(raw: dict[str, Any], key: str) -> str:
+    value = raw[key]
+    require_type(value, str, "agent", f"{key} must be a string")
+    if not value.strip():
+        raise SpecError(f"agent: {key} cannot be empty")
+    return value
+
+
+def _parse_request(raw: Any, has_session: bool) -> RequestConfig:
+    if raw is None:
+        return RequestConfig()
+    where = "agent.request"
+    require_type(raw, dict, where, "must be a mapping")
+    check_keys(raw, "request", where)
+
+    method = raw.get("method", "POST")
+    require_type(method, str, where, "method must be a string")
+    if method.upper() not in ("POST", "PUT", "PATCH"):
+        raise SpecError(f"{where}: method must be POST, PUT or PATCH, got {method!r}")
+
+    headers = raw.get("headers", {})
+    require_type(headers, dict, where, "headers must be a mapping")
+    for name, value in headers.items():
+        if not isinstance(value, str):
+            raise SpecError(
+                f"{where}.headers: {name} must be a string (quote it), got {type(value).__name__}"
+            )
+        if value != value.strip() or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            # Usually a token read from a file with its newline. The value is not shown.
+            raise SpecError(
+                f"{where}.headers.{name}: the value has a control character or leading or "
+                "trailing whitespace (often a secret read with its newline); not shown"
+            )
+
+    body = raw.get("body", RequestConfig().body)
+    # A misspelled placeholder is reported as such, before "never uses {{message}}".
+    check_placeholders(
+        headers, f"{where}.headers", allowed=placeholders.ALL, has_session=has_session
+    )
+    check_placeholders(body, f"{where}.body", allowed=placeholders.ALL, has_session=has_session)
+    if not uses_placeholder(body, "message"):
+        raise SpecError(
+            f"{where}.body: never uses {{{{message}}}}, so the trigger would not be sent"
+        )
+    return RequestConfig(method=method.upper(), headers=dict(headers), body=body)
+
+
+_RESPONSE_PATH = re.compile(r"[^.\s]+(?:\.[^.\s]+)*")
+
+
+def _parse_response_path(raw: Any) -> str:
+    require_type(raw, str, "agent", "response must be a string (a path like data.reply)")
+    if not _RESPONSE_PATH.fullmatch(raw):
+        raise SpecError(
+            f"agent: response must be a dotted path to the reply text, like data.reply "
+            f"or choices.0.message.content, got {raw!r}"
+        )
+    return raw
+
+
+def _parse_session(raw: Any) -> SessionConfig:
+    where = "agent.session"
+    require_type(raw, dict, where, "must be a mapping with setup and/or teardown")
+    check_keys(raw, "session", where)
+    if "setup" not in raw and "teardown" not in raw:
+        raise SpecError(f"{where}: needs setup or teardown")
+    return SessionConfig(
+        setup=_parse_hook(raw["setup"], f"{where}.setup", placeholders.SETUP)
+        if "setup" in raw
+        else None,
+        teardown=_parse_hook(raw["teardown"], f"{where}.teardown", placeholders.TEARDOWN)
+        if "teardown" in raw
+        else None,
+    )
+
+
+def _parse_hook(raw: Any, where: str, allowed: frozenset[str]) -> Hook:
+    """A command (text, split like a shell would, run without one) or ``{python: ...}``."""
+    if isinstance(raw, str):
+        try:
+            argv = shlex.split(raw)
+        except ValueError as e:
+            raise SpecError(f"{where}: not a valid command line: {e}") from None
+        if not argv:
+            raise SpecError(f"{where}: cannot be empty")
+        check_placeholders(argv, where, allowed=allowed, has_session=True)
+        return CommandHook(argv=argv)
+
+    require_type(raw, dict, where, "must be a command or {python: 'module:function'}")
+    check_keys(raw, "python_hook", where)
+    target = raw.get("python")
+    require_type(target, str, where, "python must be 'module:function'")
+    module, colon, function = target.partition(":")
+    if not colon or not module.strip() or not function.strip() or ":" in function:
+        raise SpecError(f"{where}: python must be 'module:function', got {target!r}")
+    return PythonHook(target=target)
+
+
+def _parse_correlate(raw: Any, has_session: bool) -> dict[str, Any]:
+    where = "agent.correlate"
+    if not isinstance(raw, dict) or not raw:
+        raise SpecError(
+            "agent: correlate must be a non-empty mapping of context key to value "
+            '(e.g. {conversation_id: "{{session.conversation_id}}"})'
+        )
+    for key, value in raw.items():
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            raise SpecError(f"{where}.{key}: must be text, a number or a placeholder")
+    check_placeholders(raw, where, allowed=placeholders.ALL, has_session=has_session)
+    return dict(raw)
 
 
 def _check_url(url: str, key: str) -> None:

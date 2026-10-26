@@ -91,6 +91,18 @@ class FileTraceCollector:
             return f.read(offset).count(b"\n") + 1
 
 
+class NoTraceCollector:
+    """For an attached agent whose spec checks no tool calls, and names no trace file."""
+
+    path = Path("(no trace file)")
+
+    def checkpoint(self) -> int:
+        return 0
+
+    def collect(self, since: int) -> Window:
+        return Window()
+
+
 def _end_of_last_line(f: Any) -> int:
     """Offset after the last newline of an open binary file, reading it backwards."""
     position = f.seek(0, os.SEEK_END)

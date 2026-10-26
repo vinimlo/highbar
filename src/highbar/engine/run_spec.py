@@ -9,15 +9,29 @@ from pathlib import Path
 from rich.console import Console
 from rich.markup import escape
 
-from highbar.adapters.file_collector import FileTraceCollector
+from highbar.adapters.attached import AttachedAgent
+from highbar.adapters.file_collector import FileTraceCollector, NoTraceCollector
 from highbar.adapters.http_client import HTTPClient
-from highbar.adapters.subprocess_adapter import SubprocessAdapter
+from highbar.adapters.subprocess_adapter import AgentStartError, SubprocessAdapter
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
 from highbar.domain.models import RunSummary, Spec
+from highbar.domain.protocols import TraceCollector
+from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.runner import TestRunner
+from highbar.engine.secrets import redact
+from highbar.engine.session import SessionHooks
 from highbar.reporters.terminal import TerminalReporter
 from highbar.variations.generator import VariationGenerator
+
+
+def load_session_hooks(path: str, spec: Spec) -> SessionHooks | None:
+    """The spec's session hooks, with the Python ones imported. Raises ``SessionError``."""
+    if spec.agent.session is None:
+        return None
+    hooks = SessionHooks(spec.agent.session, spec_path=path, timeout_ms=spec.agent.timeout)
+    hooks.load()
+    return hooks
 
 
 def run_spec(
@@ -27,9 +41,39 @@ def run_spec(
     generator: VariationGenerator,
     keep_traces: bool,
     console: Console,
+    session: SessionHooks | None = None,
 ) -> RunSummary:
-    """Run one spec against its own agent; the trace file is removed unless kept."""
+    """Run one spec against its agent.
+
+    Managed mode (``start``): highbar starts the agent with a new trace file in
+    ``HIGHBAR_TRACES_URL``, stops it after, and removes the file unless kept.
+    Attach mode: the agent is already running and writes ``traces`` itself; highbar
+    neither stops it nor touches its file.
+    """
     console.print(f"  Running {escape(path)}")
+    agent = spec.agent
+    client = HTTPClient(
+        agent.endpoint,
+        request=agent.request,
+        response_path=agent.response,
+        timeout_ms=agent.timeout,
+    )
+
+    if agent.start is None:
+        collector: TraceCollector = (
+            FileTraceCollector(agent.traces) if agent.traces else NoTraceCollector()
+        )
+        runner = _runner(
+            spec,
+            path,
+            adapter=AttachedAgent(agent.endpoint, agent.health),
+            client=client,
+            collector=collector,
+            generator=generator,
+            session=session,
+            managed=False,
+        )
+        return _run(runner, spec)
 
     with tempfile.NamedTemporaryFile(
         suffix=".jsonl", prefix="highbar-traces-", delete=False
@@ -37,25 +81,26 @@ def run_spec(
         traces_file = traces_fd.name
 
     adapter = SubprocessAdapter(
-        start_cmd=spec.agent.start,
-        endpoint=spec.agent.endpoint,
+        start_cmd=agent.start,
+        endpoint=agent.endpoint,
         log_path=agent_log_path(path),
-        health_url=spec.agent.health,
-        startup_timeout=spec.agent.startup_timeout,
+        health_url=agent.health,
+        startup_timeout=agent.startup_timeout,
         env={"HIGHBAR_TRACES_URL": traces_file},
     )
-    runner = TestRunner(
+    runner = _runner(
+        spec,
+        path,
         adapter=adapter,
-        client=HTTPClient(endpoint=spec.agent.endpoint),
+        client=client,
         collector=FileTraceCollector(traces_file),
-        assertions=[FunctionCallsAssertion(), ResponseAssertion()],
-        reporter=TerminalReporter(),
-        settle_time=spec.agent.settle_time / 1000.0,
-        variations=generator,
+        generator=generator,
+        session=session,
+        managed=True,
     )
 
     try:
-        summary = runner.run(spec)
+        summary = _run(runner, spec)
     finally:
         if keep_traces:
             console.print(f"  Traces kept at {escape(traces_file)}")
@@ -66,6 +111,43 @@ def run_spec(
         # What the agent printed while failing is usually the explanation.
         console.print(f"  Agent log: {escape(str(adapter.log_path))}\n", soft_wrap=True)
     return summary
+
+
+def _runner(
+    spec: Spec,
+    path: str,
+    *,
+    adapter: SubprocessAdapter | AttachedAgent,
+    client: HTTPClient,
+    collector: TraceCollector,
+    generator: VariationGenerator,
+    session: SessionHooks | None,
+    managed: bool,
+) -> TestRunner:
+    return TestRunner(
+        adapter=adapter,  # type: ignore[arg-type]
+        client=client,
+        collector=collector,
+        assertions=[FunctionCallsAssertion(), ResponseAssertion()],
+        reporter=TerminalReporter(),
+        settle_time=spec.agent.settle_time / 1000.0,
+        variations=generator,
+        managed=managed,
+        session=session,
+        spec_path=path,
+        correlate=spec.agent.correlate,
+        secrets=spec.agent.secrets,
+    )
+
+
+def _run(runner: TestRunner, spec: Spec) -> RunSummary:
+    """Run the spec; an error that stops the run is masked like every other message."""
+    try:
+        return runner.run(spec)
+    except (AgentStartError, AgentNotObservedError) as e:
+        if not spec.agent.secrets:
+            raise
+        raise type(e)(redact(str(e), spec.agent.secrets)) from None
 
 
 def agent_log_path(spec_path: str) -> Path:

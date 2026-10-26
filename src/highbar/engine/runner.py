@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from highbar.adapters.file_collector import TraceFormatError
-from highbar.adapters.http_client import HTTPClient
+from highbar.adapters.http_client import AgentResponseError, HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
 from highbar.assertions.response import truncate
 from highbar.domain.models import (
@@ -16,10 +17,12 @@ from highbar.domain.models import (
     RunSummary,
     Spec,
     Status,
+    Suite,
     Test,
     TestResult,
     Trace,
     Turn,
+    Window,
     combine,
 )
 from highbar.domain.protocols import Assertion, Reporter, TraceCollector, VariationGenerator
@@ -31,7 +34,11 @@ from highbar.engine.observation import (
     attribute,
     classify,
     describe,
+    same_value,
 )
+from highbar.engine.placeholders import PlaceholderError, Values, render
+from highbar.engine.secrets import redact
+from highbar.engine.session import SessionContext, SessionError, SessionHooks
 from highbar.engine.templates import TemplateError, resolve_template
 
 NO_CONTEXT_WARNING = (
@@ -68,6 +75,31 @@ class _Finding:
     error: str
 
 
+class _Masking:
+    """A reporter's stand-in that masks each value from ${VAR} in what it is told."""
+
+    def __init__(self, reporter: Reporter, secrets: Mapping[str, str]) -> None:
+        self._reporter = reporter
+        self._secrets = secrets
+
+    def on_suite_start(self, suite: Suite) -> None:
+        self._reporter.on_suite_start(suite)
+
+    def on_test_result(self, test_name: str, result: TestResult) -> None:
+        errors = [redact(error, self._secrets) for error in result.errors]
+        self._reporter.on_test_result(test_name, replace(result, errors=errors))
+
+    def on_warning(self, message: str) -> None:
+        self._reporter.on_warning(redact(message, self._secrets))
+
+    def on_run_end(self, summary: RunSummary) -> None:
+        self._reporter.on_run_end(summary)
+
+
+def _same_correlation(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    return bool(a) and a.keys() == b.keys() and all(same_value(a[k], b[k]) for k in a)
+
+
 def _names(tools: list[Trace]) -> str:
     return ", ".join(dict.fromkeys(t.fn for t in tools))
 
@@ -99,6 +131,11 @@ def _test_name(test: Test, variations_run: int | None = None) -> str:
     return label
 
 
+def _plain_name(test: Test) -> str:
+    """The test's name for {{test.name}} and session hooks: no counts, no decoration."""
+    return test.name or test.trigger or f"multi-turn ({len(test.turns or [])} turns)"
+
+
 def _turn_label(turn: Turn, previous_traces: list[Trace]) -> str:
     """The turn's ``name``, or the message it sends, cut at 80 characters."""
     if turn.name:
@@ -128,15 +165,24 @@ class TestRunner:
         variations: VariationGenerator | None = None,
         *,
         managed: bool = True,
+        session: SessionHooks | None = None,
+        spec_path: str = "",
+        correlate: Mapping[str, Any] | None = None,
+        secrets: Mapping[str, str] | None = None,
     ) -> None:
         self._adapter = adapter
         self._client = client
         self._collector = collector
         self._assertions = assertions
-        self._reporter = reporter
+        # Every message passes through it: values from ${VAR} never reach the output.
+        self._reporter = _Masking(reporter, secrets) if secrets else reporter
         self._settle_time = settle_time
         self._variations = variations
         self._managed = managed
+        self._session = session
+        self._spec_path = spec_path
+        # Which context keys identify a test's records (agent.correlate in the spec).
+        self._correlate = dict(correlate) if correlate is not None else {"test": "{{test.id}}"}
         self._variations_run = 0
         self._last_variation_count: int | None = None
         self._warned_no_context = False
@@ -291,9 +337,37 @@ class TestRunner:
         return (
             f"not observed: no trace record in {self._collector.path} matches this test "
             f"({describe(correlate)}); the {len(records)} read while it ran belong to other "
-            f"executions (context keys: {', '.join(keys)}). highbar.asgi.Middleware tags "
-            "what the agent writes for a message from its X-Highbar-Test header, as "
-            "hb.turn(test=<that header>) does. Run with --keep-traces to inspect the file"
+            f"executions (context keys: {', '.join(keys)}). The context the agent writes "
+            "must carry the keys of agent.correlate; the default, 'test', comes from the "
+            "X-Highbar-Test header, which highbar.asgi.Middleware and "
+            "hb.turn(test=<that header>) write. Run with --keep-traces to inspect the file"
+        )
+
+    def _not_observed_attached(self, window: Window, correlate: dict[str, Any]) -> str:
+        """Why nothing read while an attached test ran can be counted as that test's.
+
+        An attached agent may serve other traffic, so only a record of this test proves
+        what the agent did for its message (D4).
+        """
+        records = [*window.tools, *window.turns]
+        keys = sorted({key for record in records for key in record.context})
+        if keys:
+            return (
+                f"not observed: no trace record in {self._collector.path} carries the keys "
+                f"of agent.correlate ({describe(correlate)}); the ones read while this test "
+                f"ran have context keys: {', '.join(keys)}"
+            )
+        if records:
+            return (
+                f"not observed: the {len(records)} trace records read while this test ran "
+                "carry no context, so they cannot be told from other traffic on this agent; "
+                "tag them (highbar.asgi.Middleware, or hb.turn(test=<the X-Highbar-Test "
+                "header>)) or set agent.correlate to keys they carry"
+            )
+        # An empty window cannot tell "no tool was called" from "the agent records nothing".
+        return (
+            f"not observed: nothing was written to {self._collector.path} while this "
+            "test ran; the agent must write a turn per message it handles"
         )
 
     def _check(self, tools: list[Trace], response: str, expect: Expect) -> list[str]:
@@ -329,21 +403,24 @@ class TestRunner:
         """Run a single test (single-turn, multi-turn, or a trigger plus its variations)."""
         start = time.time()
 
+        name = _plain_name(test)
         if test.turns:
-            return self._execute(test.turns, start, labelled=True)
+            return self._execute(test.turns, start, labelled=True, name=name)
 
         if test.trigger is None or test.expect is None:
             raise ValueError("Single-turn test must have both 'trigger' and 'expect'")
 
         if test.variations:
-            return self._run_with_variations(test.trigger, test.expect, test.variations, start)
+            return self._run_with_variations(
+                test.trigger, test.expect, test.variations, start, name
+            )
 
         return self._execute(
-            [Turn(trigger=test.trigger, expect=test.expect)], start, labelled=False
+            [Turn(trigger=test.trigger, expect=test.expect)], start, labelled=False, name=name
         )
 
     def _run_with_variations(
-        self, trigger: str, expect: Expect, count: int, start: float
+        self, trigger: str, expect: Expect, count: int, start: float, name: str
     ) -> TestResult:
         """Run the trigger and N paraphrases of it through the same assertions.
 
@@ -391,7 +468,11 @@ class TestRunner:
             label = f'[{kind}: "{phrasing}"] '
             # Each phrasing is its own execution, with its own test id.
             result = self._execute(
-                [Turn(trigger=phrasing, expect=expect)], time.time(), labelled=False, label=label
+                [Turn(trigger=phrasing, expect=expect)],
+                time.time(),
+                labelled=False,
+                name=name,
+                label=label,
             )
             traces.extend(result.traces)
             statuses.append(result.status)
@@ -409,17 +490,51 @@ class TestRunner:
         )
 
     def _execute(
-        self, turns: list[Turn], start: float, *, labelled: bool, label: str = ""
+        self, turns: list[Turn], start: float, *, labelled: bool, name: str, label: str = ""
     ) -> TestResult:
-        """One execution of a test: one test id, shared by all its turns.
+        """One execution of a test: one test id and one session, shared by all its turns.
 
         It stops at the first turn that does not pass: later turns build on that one's
         state, so running them would test a conversation that did not happen.
         ``labelled`` prefixes each error with the turn it came from (multi-turn tests).
         """
-        test_id = uuid.uuid4().hex
-        execution = _Execution(self._test_index, label, correlate={"test": test_id})
+        context = SessionContext(
+            test_id=uuid.uuid4().hex, test_name=name, spec_path=self._spec_path
+        )
+        execution = _Execution(self._test_index, label, correlate={"test": context.test_id})
         self._executions.append(execution)
+        session: dict[str, Any] = {}
+        if self._session is not None:
+            try:
+                session = self._session.setup(context)
+            except Exception as e:
+                # No session, so nothing to tear down, and nothing was sent.
+                return TestResult(
+                    status=Status.ERROR, errors=[str(e)], duration_ms=(time.time() - start) * 1000
+                )
+        try:
+            return self._turns(turns, start, labelled, context, session, execution)
+        finally:
+            if self._session is not None:
+                try:
+                    self._session.teardown(context, session)
+                except Exception as e:
+                    # The test's result stands; a session left open is worth knowing.
+                    reason = str(e) if isinstance(e, SessionError) else f"{type(e).__name__}: {e}"
+                    self._reporter.on_warning(f"{name}: session teardown failed: {reason}")
+
+    def _turns(
+        self,
+        turns: list[Turn],
+        start: float,
+        labelled: bool,
+        context: SessionContext,
+        session: dict[str, Any],
+        execution: _Execution,
+    ) -> TestResult:
+        values = Values(
+            message=None, test_id=context.test_id, test_name=context.test_name, session=session
+        )
         all_traces: list[Trace] = []
         all_errors: list[str] = []
         statuses: list[Status] = []
@@ -431,7 +546,7 @@ class TestRunner:
                 if labelled
                 else ""
             )
-            result = self._run_turn(turn.trigger, turn.expect, start, all_traces, execution)
+            result = self._run_turn(turn.trigger, turn.expect, start, all_traces, values, execution)
             all_traces.extend(result.traces)
             all_errors.extend(prefix + error for error in result.errors)
             statuses.append(result.status)
@@ -453,10 +568,10 @@ class TestRunner:
         expect: Expect,
         start: float,
         previous_traces: list[Trace],
+        values: Values,
         execution: _Execution,
     ) -> TestResult:
         """Send one message, read what the agent recorded for it, and check it."""
-        test_id = execution.correlate["test"]
         execution.passed = False
 
         def unverified(error: str) -> TestResult:
@@ -471,7 +586,29 @@ class TestRunner:
             return unverified(str(e))
 
         try:
-            response = self._client.send(resolved_trigger, test_id=test_id)
+            execution.correlate = dict(
+                render(self._correlate, replace(values, message=resolved_trigger))
+            )
+        except PlaceholderError as e:
+            return unverified(f"agent.correlate: {e}")
+        if expect.requires_observation and any(
+            other is not execution and _same_correlation(other.correlate, execution.correlate)
+            for other in self._executions
+        ):
+            return unverified(
+                f"agent.correlate gives {describe(execution.correlate)}, the same as an "
+                "earlier test's: their trace records cannot be told apart. The session must "
+                "give each test execution its own value"
+            )
+
+        try:
+            response = self._client.send(
+                resolved_trigger, values=replace(values, message=resolved_trigger)
+            )
+        except AgentResponseError as e:
+            return unverified(str(e))
+        except PlaceholderError as e:
+            return unverified(f"agent.request: {e}")
         except Exception as e:
             # The message never reached the agent, so its behavior was not checked.
             return unverified(f"HTTP error: {e}")
@@ -493,6 +630,10 @@ class TestRunner:
             self._reporter.on_warning(NO_CONTEXT_WARNING)
 
         if not classified.correlated:
+            if expect.requires_observation and not self._managed:
+                # Attach mode: the agent may serve other traffic, and there is no
+                # `hello` from a fresh file to rely on.
+                return unverified(self._not_observed_attached(window, execution.correlate))
             # Nothing in the window is tagged: it is all there is to go by.
             traces = window.tools
             errors = self._check(traces, response, expect)
