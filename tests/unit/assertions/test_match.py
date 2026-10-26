@@ -171,3 +171,18 @@ class TestValidateExpected:
     def test_rejects_a_bad_matcher_nested_in_a_literal_dict(self) -> None:
         with pytest.raises(ValueError, match=r"result\.order\.status"):
             validate_expected({"order": {"status": {"matches": "("}}}, "result")
+
+
+class TestNotMatches:
+    def test_not_matches_in_params_and_on_a_non_text_value(self) -> None:
+        assert subset_match({"note": {"not_matches": "[0-9]{16}"}}, {"note": "card on file"})
+        assert not subset_match(
+            {"note": {"not_matches": "[0-9]{16}"}}, {"note": "card 4111111111111111"}
+        )
+        # Like the other negatives: a value it cannot read is a failure, not a pass.
+        assert not subset_match({"note": {"not_matches": "x"}}, {"note": None})
+        assert not subset_match({"note": {"not_matches": "x"}}, {"note": {"a": 1}})
+
+    def test_invalid_regex_in_not_matches_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match=r"params.note: invalid regex in 'not_matches'"):
+            validate_expected({"note": {"not_matches": "("}}, "params")

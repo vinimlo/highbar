@@ -42,6 +42,7 @@ def run_spec(
     keep_traces: bool,
     console: Console,
     session: SessionHooks | None = None,
+    default_runs: int | None = None,
 ) -> RunSummary:
     """Run one spec against its agent.
 
@@ -52,6 +53,8 @@ def run_spec(
     """
     console.print(f"  Running {escape(path)}")
     agent = spec.agent
+    # The CLI's --runs, when given, takes the place of the spec's defaults.runs.
+    runs = spec.default_runs if default_runs is None else default_runs
     client = HTTPClient(
         agent.endpoint,
         request=agent.request,
@@ -72,6 +75,7 @@ def run_spec(
             generator=generator,
             session=session,
             managed=False,
+            default_runs=runs,
         )
         return _run(runner, spec)
 
@@ -97,6 +101,7 @@ def run_spec(
         generator=generator,
         session=session,
         managed=True,
+        default_runs=runs,
     )
 
     try:
@@ -123,6 +128,7 @@ def _runner(
     generator: VariationGenerator,
     session: SessionHooks | None,
     managed: bool,
+    default_runs: int,
 ) -> TestRunner:
     return TestRunner(
         adapter=adapter,  # type: ignore[arg-type]
@@ -137,6 +143,7 @@ def _runner(
         spec_path=path,
         correlate=spec.agent.correlate,
         secrets=spec.agent.secrets,
+        default_runs=default_runs,
     )
 
 

@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from highbar.assertions._match import validate_expected
+from highbar.assertions._match import MATCHER_KEYS, validate_expected
 from highbar.domain.models import (
     AgentConfig,
     CommandHook,
@@ -108,6 +108,14 @@ def _parse_spec(raw: Any) -> Spec:
     require_type(suites_raw, list, "suites", "must be a list of suites")
     suites = [_parse_suite(s, f"suites[{i}]") for i, s in enumerate(suites_raw)]
 
+    default_runs = 1
+    if "defaults" in raw:
+        defaults = raw["defaults"]
+        require_type(defaults, dict, "defaults", "must be a mapping")
+        check_keys(defaults, "defaults", "defaults")
+        if "runs" in defaults:
+            default_runs = _parse_runs(defaults["runs"], "defaults")
+
     if not agent.managed and agent.traces is None:
         for i, suite in enumerate(suites):
             for j, test in enumerate(suite.tests):
@@ -117,7 +125,35 @@ def _parse_spec(raw: Any) -> Spec:
                         f"writes: suites[{i}].tests[{j}] checks function_calls"
                     )
 
-    return Spec(agent=agent, suites=suites)
+    # min_pass is checked against runs where the run's runs are known: --runs (or
+    # highbar.run(runs=...)) takes the place of defaults.runs.
+    return Spec(agent=agent, suites=suites, default_runs=default_runs)
+
+
+def _parse_runs(raw: Any, where: str) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise SpecError(f"{where}: runs must be a whole number of at least 1")
+    return raw
+
+
+def _parse_min_pass(raw: Any, where: str) -> int | float:
+    whole = isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1
+    fraction = isinstance(raw, float) and 0 < raw <= 1
+    if not (whole or fraction):
+        raise SpecError(
+            f"{where}: min_pass must be a whole number of at least 1 or a fraction "
+            "of runs (0 < f <= 1)"
+        )
+    return raw
+
+
+def _parse_repetition(raw: dict[str, Any], where: str) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    if "runs" in raw:
+        fields["runs"] = _parse_runs(raw["runs"], where)
+    if "min_pass" in raw:
+        fields["min_pass"] = _parse_min_pass(raw["min_pass"], where)
+    return fields
 
 
 def _parse_agent(raw: Any) -> AgentConfig:
@@ -380,7 +416,9 @@ def _parse_test(raw: Any, where: str) -> Test:
             # Paraphrasing turn 1 would leave the later turns answering a conversation
             # that no longer happened. Multi-turn variations need a design of their own.
             raise SpecError(f"{where}: 'variations' is not supported on multi-turn tests")
-        return Test(turns=_parse_turns(raw["turns"], where), name=name)
+        return Test(
+            turns=_parse_turns(raw["turns"], where), name=name, **_parse_repetition(raw, where)
+        )
 
     trigger = _trigger(raw, where)
     if "expect" not in raw:
@@ -390,7 +428,13 @@ def _parse_test(raw: Any, where: str) -> Test:
         )
     expect = _parse_expect(raw["expect"], f"{where}.expect")
     variations = _parse_variations(raw.get("variations"), where)
-    return Test(trigger=trigger, expect=expect, variations=variations, name=name)
+    return Test(
+        trigger=trigger,
+        expect=expect,
+        variations=variations,
+        name=name,
+        **_parse_repetition(raw, where),
+    )
 
 
 def _trigger(raw: dict[str, Any], where: str) -> str:
@@ -426,7 +470,7 @@ def _parse_turn(raw: Any, where: str) -> Turn:
 
 
 def _asserts_something(expect: Expect) -> bool:
-    return expect.function_calls is not None or expect.response is not None
+    return expect.function_calls is not None or expect.response is not None or bool(expect.forbid)
 
 
 def _parse_variations(raw: Any, where: str) -> int:
@@ -443,7 +487,7 @@ def _parse_expect(raw: Any, where: str) -> Expect:
     check_keys(raw, "expect", where)
     if not user_keys(raw):
         raise SpecError(
-            f"{where}: asserts nothing — use function_calls, response, or "
+            f"{where}: asserts nothing — use function_calls, response, forbid, or "
             "function_calls: [] to check that no tool is called"
         )
 
@@ -455,25 +499,43 @@ def _parse_expect(raw: Any, where: str) -> Expect:
             _parse_function_call(fc, f"{where}.function_calls[{n}]") for n, fc in enumerate(calls)
         ]
 
+    flags = {}
+    for key in ("ordered", "exclusive"):
+        if key not in raw:
+            continue
+        require_type(raw[key], bool, where, f"{key} must be true or false")
+        if function_calls is None:
+            raise SpecError(f"{where}: {key} needs function_calls (the calls it applies to)")
+        flags[key] = raw[key]
+
+    forbid: tuple[str, ...] = ()
+    if "forbid" in raw:
+        names = raw["forbid"]
+        if (
+            not isinstance(names, list)
+            or not names
+            or not all(isinstance(name, str) and name for name in names)
+        ):
+            raise SpecError(f"{where}: forbid must be a non-empty list of tool names")
+        forbid = tuple(names)
+
     response = None
     if "response" in raw:
         response = _parse_response(raw["response"], where)
 
-    return Expect(function_calls=function_calls, response=response)
+    return Expect(function_calls=function_calls, response=response, forbid=forbid, **flags)
 
 
 def _parse_response(raw: Any, where: str) -> ResponseExpect:
     if raw is None or (isinstance(raw, dict) and not user_keys(raw)):
-        raise SpecError(f"{where}: response has no matcher (use contains, not_contains or matches)")
+        raise SpecError(f"{where}: response has no matcher (use {', '.join(sorted(MATCHER_KEYS))})")
     require_type(raw, dict, where, "response must be a mapping")
     response_where = f"{where}.response"
     check_keys(raw, "response", response_where)
-    for key in ("contains", "not_contains", "matches"):
-        if key not in raw:
-            continue
-        value = raw[key]
+    matcher = {key: value for key, value in raw.items() if key in MATCHER_KEYS}
+    for key, value in matcher.items():
         require_type(value, str, response_where, f"{key} must be a string")
-        if not value:
+        if not value and key != "equals":
             # "" is in every answer (and matches every answer): a check that cannot fail.
             raise SpecError(f"{response_where}: {key} cannot be empty")
         if _has_template(value):
@@ -481,18 +543,13 @@ def _parse_response(raw: Any, where: str) -> ResponseExpect:
                 f"{response_where}.{key}: templates are only resolved in triggers; "
                 "here '{{...}}' would be compared as literal text"
             )
+        if key in ("matches", "not_matches"):
+            try:
+                re.compile(value)
+            except re.error as e:
+                raise SpecError(f"{response_where}.{key}: invalid regex: {e}") from None
 
-    if "matches" in raw:
-        try:
-            re.compile(raw["matches"])
-        except re.error as e:
-            raise SpecError(f"{response_where}.matches: invalid regex: {e}") from None
-
-    return ResponseExpect(
-        contains=raw.get("contains"),
-        not_contains=raw.get("not_contains"),
-        matches=raw.get("matches"),
-    )
+    return ResponseExpect(matcher=matcher)
 
 
 def _parse_function_call(raw: Any, where: str) -> FunctionCallExpect:
@@ -521,7 +578,24 @@ def _parse_function_call(raw: Any, where: str) -> FunctionCallExpect:
         name=_parse_call_name(raw["name"], where),
         params=raw.get("params"),
         result=raw.get("result"),
+        error=_parse_call_error(raw.get("error", False), where),
     )
+
+
+def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
+    """``true``, ``false``, or a matcher the error text must satisfy."""
+    if isinstance(raw, bool):
+        return raw
+    if not (isinstance(raw, dict) and raw and set(raw) <= MATCHER_KEYS):
+        raise SpecError(
+            f"{where}.error: error must be true, false or a matcher such as "
+            '{contains: "Timeout"}; a bare text would be ambiguous between equals and contains'
+        )
+    try:
+        validate_expected(raw, f"{where}.error")
+    except ValueError as e:
+        raise SpecError(str(e)) from None
+    return raw
 
 
 def _has_template(value: Any) -> bool:

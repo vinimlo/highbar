@@ -19,6 +19,7 @@ from highbar.domain.models import RunSummary, Spec
 from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.parser import parse_spec
 from highbar.engine.run_spec import load_session_hooks, run_spec
+from highbar.engine.runs import check_runs
 from highbar.engine.schema import SpecError
 from highbar.engine.session import SessionError, SessionHooks
 from highbar.reporters.terminal import format_summary
@@ -99,6 +100,15 @@ def run(
             "cache fails. Use it in CI."
         ),
     ),
+    runs: int | None = typer.Option(
+        None,
+        "--runs",
+        min=1,
+        help=(
+            "Run each phrasing N times, in place of the specs' defaults.runs; a test's own "
+            "runs still wins. With min_pass, a flaky test becomes a gate."
+        ),
+    ),
 ) -> None:
     """Run behavior tests against your agent."""
     paths = _discover_specs(spec_path)
@@ -110,7 +120,7 @@ def run(
 
     # Every spec is parsed before any agent starts: a typo in the third file must not
     # cost the time of running the first two, nor leave half a run behind.
-    specs = _parse_all(paths)
+    specs = _parse_all(paths, runs=runs)
     if specs is None:
         raise typer.Exit(EXIT_UNRUNNABLE)
     # Python session hooks are imported before any agent starts, like the specs parsed.
@@ -135,6 +145,7 @@ def run(
                         keep_traces=keep_traces,
                         console=console,
                         session=hooks[current],
+                        default_runs=runs,
                     )
                 )
     except AgentStartError as e:
@@ -254,7 +265,7 @@ def validate(
         console.print("[red]No spec files found.[/red]")
         raise typer.Exit(EXIT_UNRUNNABLE)
 
-    specs = _parse_all(paths, report_valid=True)
+    specs = _parse_all(paths, report_valid=True, runs=None)
     raise typer.Exit(EXIT_UNRUNNABLE if specs is None else EXIT_OK)
 
 
@@ -271,13 +282,24 @@ def _load_all_hooks(specs: list[tuple[str, Spec]]) -> dict[str, SessionHooks | N
     return None if failed else hooks
 
 
-def _parse_all(paths: list[str], *, report_valid: bool = False) -> list[tuple[str, Spec]] | None:
-    """Parse every spec, printing one line per invalid one. ``None`` if any is invalid."""
+def _parse_all(
+    paths: list[str], *, report_valid: bool = False, runs: int | None | bool = False
+) -> list[tuple[str, Spec]] | None:
+    """Parse every spec, printing one line per invalid one. ``None`` if any is invalid.
+
+    Unless ``runs`` is False, each test's min_pass is checked against its runs: with
+    ``runs`` (``--runs``) in place of the spec's defaults.runs when it is a number.
+    """
     specs: list[tuple[str, Spec]] = []
     invalid = False
     for path in paths:
         try:
             spec = parse_spec(path)
+            if runs is not False:
+                try:
+                    check_runs(spec, spec.default_runs if runs is None else int(runs))
+                except SpecError as e:
+                    raise SpecError(f"{path}: {e}") from None
         except SpecError as e:
             # The message already starts with the file's path.
             console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)

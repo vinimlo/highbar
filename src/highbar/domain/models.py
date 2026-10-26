@@ -163,6 +163,9 @@ class FunctionCallExpect:
     name: str | list[str]
     params: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
+    # False: the call must not have failed. True: it must have. A matcher: it must
+    # have failed with an error that matches (``{contains: "Timeout"}``).
+    error: bool | dict[str, Any] = False
 
     @property
     def accepted_names(self) -> list[str]:
@@ -174,11 +177,12 @@ class FunctionCallExpect:
 
 @dataclass(frozen=True)
 class ResponseExpect:
-    """Expected response text assertion."""
+    """Expected response text: a matcher, with the vocabulary of ``params`` (D8).
 
-    contains: str | None = None
-    not_contains: str | None = None
-    matches: str | None = None
+    ``{contains: "shipped", not_matches: "\\b4[0-9]{3}..."}``: every condition must hold.
+    """
+
+    matcher: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -187,15 +191,18 @@ class Expect:
 
     function_calls: list[FunctionCallExpect] | None = None
     response: ResponseExpect | None = None
+    ordered: bool = False  # the expected calls happen in this order
+    exclusive: bool = False  # no call beyond the expected ones
+    forbid: tuple[str, ...] = ()  # tools that must not be called, failed or not
 
     @property
     def requires_observation(self) -> bool:
         """Checks tool calls, so it needs proof the instrumented agent saw the message.
 
-        ``function_calls: []`` included: "no tool was called" means nothing unless the
-        message reached an agent that would have recorded one.
+        ``function_calls: []`` and ``forbid`` included: "no tool was called" means
+        nothing unless the message reached an agent that would have recorded one.
         """
-        return self.function_calls is not None
+        return self.function_calls is not None or bool(self.forbid)
 
 
 @dataclass(frozen=True)
@@ -221,6 +228,10 @@ class Test:
     turns: list[Turn] | None = None
     variations: int = 0
     name: str | None = None
+    # How many times each phrasing runs, and how many of those must pass (D9). None
+    # takes the run's default; min_pass may be a fraction of runs.
+    runs: int | None = None
+    min_pass: int | float | None = None
 
     @property
     def requires_observation(self) -> bool:
@@ -243,6 +254,7 @@ class Spec:
 
     agent: AgentConfig
     suites: list[Suite]
+    default_runs: int = 1  # defaults.runs; the CLI's --runs overrides it
 
 
 @dataclass(frozen=True)
@@ -261,6 +273,8 @@ class TestResult:
     errors: list[str]
     duration_ms: float
     traces: list[Trace] = field(default_factory=list)
+    # (passed, runs, min_pass) when a test without variations ran more than once.
+    counts: tuple[int, int, int] | None = None
 
     @property
     def passed(self) -> bool:
