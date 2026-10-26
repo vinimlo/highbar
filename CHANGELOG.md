@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.0rc2
+
+### Fixed
+
+- A guardrail on a tool highbar cannot see no longer passes. An onboarding rehearsal of 0.1.0rc1 found two ways it did: `forbid` on a tool without `@hb.tool`, and `forbid` on a name typed wrong. The agent now declares the tools it records, and a name in `forbid` or `function_calls` outside them makes the test an `error` that lists what the agent records and the closest name. An agent that declares nothing gets a warning.
+
+### Added
+
+- `hb.declare(*names)`, for tools recorded with `hb.record()`. `@hb.tool` declares its function itself.
+- Trace contract v1: an optional `tools` record, and an optional `tools` field in `hello`. Older versions of highbar ignore both.
+
+### Changed
+
+- The connecting guide checks a connection with one `function_calls` test per tool, not with a guardrail.
+- Every GitHub Action in CI, Pages and the release runs on Node 24.
+
 ## 0.1.0rc1
 
 The first release candidate of highbar: evals for AI agents that behave like tests.

@@ -70,14 +70,16 @@ def dispatch(name: str, args: dict, conversation_id: str) -> dict:
 
 Extra keyword arguments go into the record's `context`. highbar never reads `result` to decide whether a call failed: a failure must be in `error`.
 
+When the agent starts, declare every tool the funnel can dispatch, with `hb.declare(*TOOLS)`. A decorator declares its function itself; a funnel has no functions to announce. highbar checks a spec's tool names against what the agent declares, so a guardrail on a tool it would never see is an `error` instead of a pass.
+
 If the test id cannot reach the funnel but a conversation id can, correlate on it instead: <code v-pre>agent.correlate: {conversation_id: "{{session.conversation_id}}"}</code>. See [attach mode and sessions](/guides/attach-mode).
 
 ## 3. Write the contract (any language)
 
-The file format is small and versioned: one JSON object per line, `v: 1`, a `type`, and the fields of that type. An agent in TypeScript, Go or Java writes it directly, to the file named by `HIGHBAR_TRACES_URL`: a `hello` when it starts, then a `tool` per call and a `turn` per message. When highbar starts the agent, a run without the `hello` stops with exit code 2.
+The file format is small and versioned: one JSON object per line, `v: 1`, a `type`, and the fields of that type. An agent in TypeScript, Go or Java writes it directly, to the file named by `HIGHBAR_TRACES_URL`: a `hello` when it starts, listing the tools it records, then a `tool` per call and a `turn` per message. When highbar starts the agent, a run without the `hello` stops with exit code 2.
 
 ```jsonl
-{"v": 1, "type": "hello", "ts": 1792983750.122, "sdk": "my-agent/1.0", "pid": 94015}
+{"v": 1, "type": "hello", "ts": 1792983750.122, "sdk": "my-agent/1.0", "pid": 94015, "tools": ["get_order", "cancel_order"]}
 {"v": 1, "type": "tool", "ts": 1792983750.215, "fn": "get_order", "args": {"order_id": "1042"}, "result": {"status": "in transit"}, "started_at": 1792983750.214, "ended_at": 1792983750.215, "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
 {"v": 1, "type": "turn", "ts": 1792983750.216, "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
 ```
@@ -86,4 +88,6 @@ The [trace contract](/reference/trace-contract) has every field, and a reference
 
 ## Checking the connection
 
-Run the quick start's spec against your agent with a single guardrail test first. If the agent is connected, the test passes; if it is not, the run says what highbar read and what it expected. Add `--keep-traces` to look at the file yourself. [Troubleshooting](/guides/troubleshooting) lists the messages and what each one means.
+Start with one test per tool: a message that makes the agent call it, and `function_calls` naming it. When it passes, highbar saw the call, so the tool is recorded and the test id reaches it. When it does not, the run says what highbar read and what it expected.
+
+A guardrail is not a connection check: `forbid` passes when the call is absent, and an unrecorded call is absent too. highbar makes a guardrail on a tool the agent never declared an `error`, but only an expected call shows that recording works. Add `--keep-traces` to look at the file yourself. [Troubleshooting](/guides/troubleshooting) lists the messages and what each one means.
