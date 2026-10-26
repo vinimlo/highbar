@@ -42,7 +42,12 @@ expect:
 
 ## A guardrail needs proof the agent was there
 
-"No tool was called" is also what an empty trace file says. A test that checks tool calls (`function_calls`, `forbid`) passes only when highbar has a trace record of the agent handling this message: the `turn` record that `highbar.asgi.Middleware` or `hb.turn()` writes. Without one, the test is an `error` ("not observed"), not a pass. This is what stops an agent that was never instrumented, or a stale server on the port, from passing every guardrail.
+"No tool was called" is also what an empty trace file says, so highbar never takes an empty trace as proof:
+
+- When highbar starts the agent, the run waits for the writer's `hello` and stops with exit code 2 without it. A stale server on the port, or an SDK that never started, cannot pass a guardrail.
+- When the agent tags its records with the test (`highbar.asgi.Middleware` or `hb.turn()`), and always in attach mode, each test that checks tool calls (`function_calls`, `forbid`) also needs a record of its own, the `turn` record. Without one, the test is an `error`, not a pass.
+
+Tag the records: without the tags, a guardrail knows the agent was running, not that it handled this message.
 
 ## Repeat them
 

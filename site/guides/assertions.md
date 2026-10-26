@@ -46,7 +46,7 @@ A value that has no text form (an object, a list) never satisfies a negative mat
 
 ### A call that failed
 
-A tool can raise, or return an error. The SDK records that in the call's `error` field, and a call with an `error` does not satisfy an entry, because calling a tool is not the same as getting what it does. When the failure is the behavior under test, say so:
+A call with an `error` does not satisfy an entry, because calling a tool is not the same as getting what it does. `@hb.tool` records an `error` when the tool raises. A tool that returns its failure as data (`{"error": "upstream timed out"}`) has returned a result, and the call counts: raise instead, or record the call with `hb.record(..., error=...)`. When the failure is the behavior under test, say so:
 
 ```yaml test
 trigger: "Where is order 1042?"

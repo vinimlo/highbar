@@ -477,3 +477,18 @@ class TestReviewFindings:
                 break
 
         assert received == ["a", "b"]
+
+
+def test_c1_a_failure_returned_as_data_is_a_result_not_an_error(tmp_path: Path) -> None:
+    """What the assertions guide says (PR 8 review, C1): only a raise is an `error`."""
+    traces = tmp_path / "t.jsonl"
+    hb = Highbar(traces=str(traces))
+
+    @hb.tool
+    def get_order(order_id: str) -> dict[str, str]:
+        return {"error": "upstream timed out"}
+
+    get_order("1042")
+    (call,) = [json.loads(line) for line in traces.read_text().splitlines() if '"tool"' in line]
+    assert call["result"] == {"error": "upstream timed out"}
+    assert call.get("error") is None

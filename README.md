@@ -4,11 +4,18 @@
 
 You write down what your agent must do for a message: which tools it calls, in which order, with which arguments, what it must never call, and what it answers. highbar sends the message to your running agent, reads the tool calls the agent recorded while handling it, and checks them. No LLM judges the result, so the same agent gives the same verdict, and the exit code can gate a merge.
 
-A green result means the behavior was verified. When highbar cannot tell, because the agent never recorded the message or a call has no owner, the test is an `error`, not a pass.
+A green result means the behavior was verified. An agent that writes no traces cannot pass a test of its tool calls: the run stops, or the test is an `error`, never a pass.
 
 ## Quick start
 
-Python 3.12 or newer. `highbar init` writes a small support agent (FastAPI, no LLM) and its spec into the current directory.
+Python 3.12 or newer. `highbar init` writes a small support agent (FastAPI, no LLM) and its spec into the current directory, and `highbar run` starts it with the `python` on your PATH, so install in a virtual environment:
+
+```console
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Then, in an empty directory:
 
 <!-- quickstart -->
 ```console
@@ -181,7 +188,7 @@ agent:
   correlate: {conversation_id: "{{session.conversation_id}}"}
 ```
 
-`${AGENT_TOKEN}` comes from the environment and never shows in the output. Each test opens its own conversation, and trace records are matched to the test by `conversation_id`, so records of other conversations on the same agent are left out.
+`${AGENT_TOKEN}` comes from the environment, and a value of 6 characters or more never shows in the output. Each test opens its own conversation, and trace records are matched to the test by `conversation_id`, so records of other conversations on the same agent are left out.
 
 ## Gate a merge
 

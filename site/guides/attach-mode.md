@@ -47,7 +47,7 @@ agent:
 - A placeholder that is a whole value keeps its JSON type: a number stays a number. Inside a longer text it is inserted as text.
 - The body must send <code v-pre>{{message}}</code> somewhere, or every test would send the same request.
 - `X-Highbar-Test` is always sent, whatever the headers say.
-- `${NAME}` takes the value of an environment variable when the spec is loaded, under `agent` only. The value never appears in highbar's output: test errors, warnings and spec errors show `${NAME}` instead. A header value with a newline or surrounding spaces (a token read from a file with its line break) is a spec error that does not show the value.
+- `${NAME}` takes the value of an environment variable when the spec is loaded, under `agent` only. A value of 6 characters or more never appears in highbar's output: test errors, warnings and spec errors show `${NAME}` instead. A shorter value, such as a port, is rarely secret and is shown as it is. A header value with a newline or surrounding spaces (a token read from a file with its line break) is a spec error that does not show the value.
 
 ## The reply
 

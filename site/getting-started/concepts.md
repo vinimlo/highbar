@@ -54,11 +54,11 @@ The Python SDK writes these for you (`@hb.tool`, `hb.record()`, and `highbar.asg
 
 ## Which calls belong to a test
 
-Each execution of a test gets its own id, sent in the `X-Highbar-Test` header. The SDK puts it in the `context` of every record written while that request is handled. highbar keeps only the records whose context matches, so a slow call from the previous test cannot count for this one.
+Each execution of a test gets its own id, sent in the `X-Highbar-Test` header. `highbar.asgi.Middleware` (or `hb.turn()`) puts it in the `context` of every record written while that request is handled, and highbar keeps only the records whose context matches, so a slow call from the previous test cannot count for this one. Records without a test id count for the test whose window they fall in, and highbar warns once that a slow call can land in the next test.
 
 When the test id cannot travel to the agent's tools, `agent.correlate` names another key, such as a `conversation_id` opened by the session hook.
 
-A test that checks tool calls needs proof that the agent handled its message: at least one record of its own. Without it the test is an `error` that says what was read, never a pass. That is how an agent that was never instrumented, or a stale server on the port, is caught.
+An empty trace is never taken as proof. When highbar starts the agent, it waits for the writer's `hello` before any test that checks tool calls runs, and stops with exit code 2 without it: that is how a stale server on the port, or an SDK that never started, is caught. When records carry test ids, and always in attach mode, a test that checks tool calls also needs a record of its own; without one it is an `error` that says what was read, never a pass.
 
 ## Three results
 
