@@ -49,6 +49,19 @@ expect:
 
 Tag the records: without the tags, a guardrail knows the agent was running, not that it handled this message.
 
+## A guardrail needs a tool highbar can see
+
+`forbid: [close_account]` can only fail if the agent records `close_account`. A tool without `@hb.tool`, or a name typed wrong, never shows up, and the guardrail would pass whatever the agent does. So highbar checks each name in `forbid` and `function_calls` against the tools the agent declares (`@hb.tool` declares its function; `hb.declare()` declares the tools `hb.record()` writes). A name outside them makes the test an `error` that lists what the agent records:
+
+```text
+    ! never deletes an account from chat  509ms
+      → cannot see calls to 'delete_acount' (did you mean 'delete_account'?): the agent records cancel_order, delete_account, get_order. If the agent has no such tool, remove it from the spec; if it has, record it: @hb.tool, or hb.record() with hb.declare()
+```
+
+A forbidden name that is also not seen is checked against what the agent declared since its last `hello`: an attached agent's older declarations, from before a restart, do not count. An agent that declares nothing, such as one on an older SDK or a trace writer without `tools`, gets a warning at the end of the run instead, naming every such guardrail.
+
+The check is on names. A call the agent makes but does not record is still invisible: to `function_calls: []` and `exclusive`, and to `forbid` when the tool is declared but some path calls it without recording. Record every call the agent can make.
+
 ## Repeat them
 
 An agent built on an LLM can refuse four times and comply on the fifth. Run guardrails several times, and require every run to pass:

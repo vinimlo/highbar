@@ -14,6 +14,7 @@ from typing import Any
 import emitter
 
 ORDERS = {"1042": "in transit, arriving Thursday", "1043": "delivered"}
+TOOLS = ["get_order", "delete_account"]  # declared in hello: what highbar can see
 
 
 def get_order(order_id: str, test: str | None) -> dict[str, str]:
@@ -21,6 +22,13 @@ def get_order(order_id: str, test: str | None) -> dict[str, str]:
     result = {"order_id": order_id, "status": ORDERS.get(order_id, "not found")}
     emitter.tool("get_order", {"order_id": order_id}, result=result, started_at=started, test=test)
     return result
+
+
+def delete_account(test: str | None) -> dict[str, str]:
+    """Never called from chat: the spec's guardrail checks that it stays that way."""
+    started = time.time()
+    emitter.tool("delete_account", {}, result={"status": "deleted"}, started_at=started, test=test)
+    return {"status": "deleted"}
 
 
 def answer(message: str, test: str | None) -> str:
@@ -58,5 +66,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    emitter.hello()
+    emitter.hello(TOOLS)
     ThreadingHTTPServer(("127.0.0.1", 8733), Handler).serve_forever()

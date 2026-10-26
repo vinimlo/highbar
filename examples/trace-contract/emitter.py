@@ -23,9 +23,9 @@ def _write(record: dict, test: str | None = None) -> None:
         os.close(fd)
 
 
-def hello() -> None:
-    """When the agent starts: highbar waits for it before any test runs."""
-    _write({"type": "hello", "sdk": "reference-emitter/1", "pid": os.getpid()})
+def hello(tools: list[str]) -> None:
+    """When the agent starts, with the tools it records: highbar waits for it."""
+    _write({"type": "hello", "sdk": "reference-emitter/1", "pid": os.getpid(), "tools": tools})
 
 
 def tool(fn, args, *, result=None, error=None, started_at, test=None) -> None:

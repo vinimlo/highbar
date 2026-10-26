@@ -22,9 +22,17 @@ def observed(message: str, test_id: str) -> Window:
 
 
 class FakeAgent:
-    def __init__(self, script: Script = observed, *, hello: bool = True) -> None:
+    def __init__(
+        self,
+        script: Script = observed,
+        *,
+        hello: bool = True,
+        declares: tuple[str, ...] | None = None,
+    ) -> None:
         self._script = script
         self._hellos = [Hello(ts=0.0, sdk="highbar-python/test", pid=1)] if hello else []
+        # The tools the agent declares it records (spec D4), written when it starts.
+        self._declarations = [declares] if declares is not None else []
         self._log: list[Window] = []
         self._late: list[Window] = []
         self._sent_since_read = False
@@ -65,6 +73,10 @@ class FakeAgent:
             hellos=list(self._hellos),
             end=len(self._log),
         )
+
+    def declared(self) -> frozenset[str] | None:
+        """Written when the agent started, before any test: not in a test's window."""
+        return frozenset(self._declarations[0]) if self._declarations else None
 
     def _arrive_late(self) -> None:
         self._log.extend(self._late)

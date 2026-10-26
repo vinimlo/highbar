@@ -159,6 +159,9 @@ Tracing is off unless the agent knows where to write: highbar sets `HIGHBAR_TRAC
 **Tools that are data**, dispatched by one function (rows in a database, a plugin registry):
 
 ```python
+hb.declare(*TOOLS)  # what the funnel can call, so a guardrail on any of them is real
+
+
 def dispatch(name: str, args: dict, conversation_id: str) -> dict:
     result = TOOLS[name].run(args)
     hb.record(name, args, result=result, error=result.get("error"), conversation_id=conversation_id)
