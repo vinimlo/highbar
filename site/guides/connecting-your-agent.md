@@ -88,6 +88,6 @@ The [trace contract](/reference/trace-contract) has every field, and a reference
 
 ## Checking the connection
 
-Start with one test per tool: a message that makes the agent call it, and `function_calls` naming it. When it passes, highbar saw the call, so the tool is recorded and the test id reaches it. When it does not, the run says what highbar read and what it expected.
+Start with one test per tool: a message that makes the agent call it, and `function_calls` naming it. When it passes, highbar saw the call, so the tool is recorded; when the records are tagged, the test id reaches it too. When it does not, the run says what highbar read and what it expected.
 
-A guardrail is not a connection check: `forbid` passes when the call is absent, and an unrecorded call is absent too. highbar makes a guardrail on a tool the agent never declared an `error`, but only an expected call shows that recording works. Add `--keep-traces` to look at the file yourself. [Troubleshooting](/guides/troubleshooting) lists the messages and what each one means.
+A guardrail is not a connection check: `forbid` passes when the call is absent, and an unrecorded call is absent too. When the agent declares its tools, highbar makes a guardrail on a tool it neither declared nor called an `error`, and otherwise warns; but only an expected call shows that recording works. Add `--keep-traces` to look at the file yourself. [Troubleshooting](/guides/troubleshooting) lists the messages and what each one means.

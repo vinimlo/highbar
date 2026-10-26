@@ -5,7 +5,7 @@ The trace file is how an agent tells highbar what it did. The Python SDK writes 
 ## The file
 
 - One JSON object per line (JSON Lines), UTF-8, each line ending in a newline.
-- The agent appends; highbar reads from where it stopped last time. A line not yet ended by a newline is left for the next read, so a writer may be in the middle of one.
+- The agent appends; highbar reads from where it stopped last time. At the start of a run it also scans the file once, for the tools declared since the last `hello`. A line not yet ended by a newline is left for the next read, so a writer may be in the middle of one.
 - A file that becomes smaller than where highbar stopped was recreated (a restarted agent, a rotated log), and is read from the start.
 - A line that is not valid JSON, a `tool` record without `fn`, or `args` or `context` that are not objects, is an error for the test that read it, naming the line. It is never skipped: it may be the call the test is about. A timestamp that is not a number falls back to `ts`.
 
@@ -77,7 +77,7 @@ Write it once, when the agent starts. When highbar starts the agent and a test c
 {"v": 1, "type": "tools", "ts": 1792983750.124, "names": ["cancel_order", "get_order"]}
 ```
 
-A writer may write several; highbar joins them, and adds every name it sees in a `tool` record. The Python SDK writes one each time a tool is decorated or declared, since its `hello` comes first. A name in a spec's `forbid` or `function_calls` that is in none of them makes the test an `error`: a guardrail on a tool the agent never records could not fail. A writer that declares nothing gets a warning instead, and older versions of highbar ignore the record.
+A writer may write several. highbar joins those written since the writer's last `hello`, since earlier ones are another process's, and adds every name it sees in a `tool` record during the run. The Python SDK writes one each time a tool is decorated or declared, since its `hello` comes first. A name in a spec's `forbid` or `function_calls` that is in none of them makes the test an `error`: a guardrail on a tool the agent never records could not fail. A writer that declares nothing gets a warning instead, and older versions of highbar ignore the record.
 
 ## Matching records to a test
 

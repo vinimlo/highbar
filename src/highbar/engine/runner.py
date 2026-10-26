@@ -51,9 +51,10 @@ NO_CONTEXT_WARNING = (
 )
 
 UNDECLARED_WARNING = (
-    "the agent does not declare the tools it records, so a guardrail cannot tell a tool "
-    "it never records from one it did not call: {names}. highbar's Python SDK declares "
-    "them since 0.1.0rc2; another writer adds a `tools` record (see the trace contract)"
+    "the agent has not declared the tools it records, so these guardrails cannot tell a "
+    "tool it never records from one it did not call: {names}. highbar's Python SDK "
+    "declares them after each hello since 0.1.0rc2; another writer adds a `tools` record "
+    "(see the trace contract)"
 )
 
 
@@ -237,7 +238,8 @@ class TestRunner:
         # ones seen in its records: what a name in the spec is checked against (D4).
         self._inventory: set[str] | None = None
         self._seen: set[str] = set()
-        self._warned_undeclared = False
+        # Forbidden names checked while the agent had declared nothing: warned at the end.
+        self._undeclared: dict[str, None] = {}
         self._executions: list[_Execution] = []
         self._findings: list[_Finding] = []
         self._test_index = 0
@@ -251,7 +253,7 @@ class TestRunner:
         reported: dict[int, tuple[str, Status]] = {}
         self._variations_run = 0
         self._warned_no_context = False
-        self._inventory, self._seen, self._warned_undeclared = None, set(), False
+        self._inventory, self._seen, self._undeclared = None, set(), {}
         self._executions, self._findings, self._test_index = [], [], 0
         self._gates: dict[int, _Gate] = {}
         observes = any(test.requires_observation for suite in spec.suites for test in suite.tests)
@@ -295,6 +297,7 @@ class TestRunner:
                 time.sleep(self._settle_time)
                 self._read_after_last_test()
                 self._report_late(self._findings, reported, counts)
+            self._warn_undeclared()
         finally:
             self._adapter.stop()
 
@@ -351,6 +354,7 @@ class TestRunner:
                 self._findings.append(_Finding(last, Status.ERROR, str(e)))
             return
         self._cursor = window.end
+        self._absorb(window)
         untagged = self._untagged(window.tools, last)
         self._judge_late([t for t in window.tools if t not in untagged], current=None)
         self._suspect(last, untagged)
@@ -457,31 +461,31 @@ class TestRunner:
         ]
 
     def _learn_inventory(self) -> None:
-        """What the agent declared before the first test: tools register at import (D4)."""
-        try:
-            self._absorb(self._collector.collect(since=0))
-        except TraceFormatError:
-            # An unreadable old line in an attached agent's file. Tests read only what
-            # comes after the cursor; without the declarations, highbar warns instead.
-            return
+        """What the agent declared before the first test: tools register at import (D4).
+
+        Only since its last hello: an older process's declarations in a long-lived file
+        would keep a tool known after it lost its recording. Names seen in old tool
+        records do not count either; seen names are this run's.
+        """
+        declared = self._collector.declared()
+        self._inventory = set(declared) if declared is not None else None
 
     def _absorb(self, window: Window) -> None:
         for names in window.declarations:
             self._inventory = (self._inventory or set()) | set(names)
         self._seen.update(tool.fn for tool in window.tools)
 
-    def _unobservable(self, expect: Expect) -> str | None:
-        """Why highbar cannot see a call the spec names, or None (spec D4).
+    def _unobservable(self, expect: Expect) -> tuple[str, Expect] | None:
+        """Why highbar cannot see a call the spec names, and what it can check, or None.
+
+        The second item is the expectation without the names it cannot see (spec D4).
 
         A guardrail on a tool the agent never records, or on a name typed wrong, could
         never fail. Each forbidden name, and each expected call (any of its names),
         must be one the agent declared or one already seen in its records.
         """
         if self._inventory is None:
-            unseen = [name for name in expect.forbid if name not in self._seen]
-            if unseen and not self._warned_undeclared:
-                self._warned_undeclared = True
-                self._reporter.on_warning(UNDECLARED_WARNING.format(names=", ".join(unseen)))
+            self._undeclared.update(dict.fromkeys(expect.forbid))
             return None
         known = sorted(self._inventory | self._seen)
         groups = [(name,) for name in expect.forbid]
@@ -490,9 +494,11 @@ class TestRunner:
             for call in expect.function_calls or []
         ]
         missing: list[str] = []
+        hidden: set[str] = set()
         for group in groups:
             if any(name in known for name in group):
                 continue
+            hidden.update(group)
             listed = " or ".join(f"'{name}'" for name in group)
             close = next(
                 (m[0] for name in group if (m := difflib.get_close_matches(name, known, n=1))),
@@ -501,11 +507,37 @@ class TestRunner:
             missing.append(f"{listed} (did you mean '{close}'?)" if close else listed)
         if not missing:
             return None
-        return (
+        message = (
             f"cannot see calls to {', '.join(missing)}: the agent records "
-            f"{', '.join(known) or 'no tools'}. highbar sees only the tools an agent "
-            "records: @hb.tool, or hb.declare() for calls written with hb.record()"
+            f"{', '.join(known) or 'no tools'}. If the agent has no such tool, remove it "
+            "from the spec; if it has, record it: @hb.tool, or hb.record() with hb.declare()"
         )
+        calls = [
+            call
+            for call in expect.function_calls or []
+            if not set(call.name if isinstance(call.name, list) else [call.name]) <= hidden
+        ]
+        observable = replace(
+            expect,
+            forbid=tuple(name for name in expect.forbid if name not in hidden),
+            # Entries dropped from a list must not leave `[]`, which means "no call".
+            function_calls=calls if calls or expect.function_calls == [] else None,
+        )
+        return message, observable
+
+    def _warn_undeclared(self) -> None:
+        """Once, at the end: every forbidden name checked while nothing was declared."""
+        unseen = [name for name in self._undeclared if name not in self._seen]
+        if not unseen:
+            return
+        seen = sorted(self._seen)
+        names = ", ".join(
+            f"{name} (did you mean '{close[0]}'?)"
+            if (close := difflib.get_close_matches(name, seen, n=1))
+            else name
+            for name in unseen
+        )
+        self._reporter.on_warning(UNDECLARED_WARNING.format(names=names))
 
     def _await_hello(self) -> None:
         """The agent highbar started must show its SDK's `hello` in the new trace file.
@@ -773,8 +805,6 @@ class TestRunner:
             return unverified(str(e))
         self._cursor = window.end
         self._absorb(window)
-        if (unseen := self._unobservable(expect)) is not None:
-            return unverified(unseen)
 
         classified = classify(window, execution.correlate)
         untagged = classified.unattributed.tools
@@ -810,6 +840,15 @@ class TestRunner:
                         "makes off the request needs contextvars.copy_context() to keep the "
                         "tag; hb.record() can also be given it"
                     )
+
+        if (unseen := self._unobservable(expect)) is not None:
+            # A name highbar cannot see leaves the test unverified, unless the part of
+            # the spec it can see fails on its own: a failure is a failure (combine()).
+            message, observable = unseen
+            real = self._check(traces, response, observable)
+            if not real:
+                return unverified(message)
+            errors = [*real, message]
 
         execution.expect, execution.response = expect, response
         execution.tools, execution.passed = list(traces), not errors

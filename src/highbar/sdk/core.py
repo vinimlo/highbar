@@ -62,7 +62,8 @@ class Highbar:
         self._tools: dict[str, Callable[..., Any]] = {}
         self._declared: set[str] = set()  # recorded through hb.record(), by hb.declare()
         self._hello_lock = threading.Lock()
-        self._hello_paths: set[str] = set()
+        # The file each path last had a hello in: its device and inode (see _ensure_hello).
+        self._hello_files: dict[str, tuple[int, int]] = {}
         path = self.traces
         if path is not None:
             self._ensure_hello(path)
@@ -93,7 +94,7 @@ class Highbar:
         highbar checks a spec's tool names against what the agent declares: a guardrail
         on a tool it never records could not fail, so it is an error instead (spec D4).
         """
-        self._declared.update(names)
+        self._declared.update(str(name) for name in names)
         self._declare_tools()
 
     def record(
@@ -217,24 +218,38 @@ class Highbar:
         }
 
     def _ensure_hello(self, path: str) -> bool:
-        """Write `hello` the first time this file is seen: it proves the SDK is on.
+        """Write `hello`, then the tools so far, when the file has not had them yet.
 
-        Then the tools declared so far, so a new file also has them. Returns whether the
-        file had already been seen, and so still needs a new declaration written.
+        That is the first write to a path, and any write after the file was emptied or
+        replaced (rotated, recreated by a restart of the reader): highbar reads a new
+        file from the start and must find there that the SDK is on and what it records.
+        One stat per write. Returns whether the file already had them.
         """
         with self._hello_lock:
-            if path in self._hello_paths:
+            current = _identity(path)
+            if current is not None and self._hello_files.get(path) == current:
                 return True
-            self._hello_paths.add(path)
-        self._writer.write(
-            path,
-            {
-                "type": "hello",
-                "ts": time.time(),
-                "sdk": f"{SDK_NAME}/{_sdk_version()}",
-                "pid": os.getpid(),
-            },
-        )
-        if self._tools or self._declared:
-            self._writer.write(path, self._tools_record())
-        return False
+            self._writer.write(
+                path,
+                {
+                    "type": "hello",
+                    "ts": time.time(),
+                    "sdk": f"{SDK_NAME}/{_sdk_version()}",
+                    "pid": os.getpid(),
+                },
+            )
+            if self._tools or self._declared:
+                self._writer.write(path, self._tools_record())
+            written = _identity(path)
+            if written is not None:
+                self._hello_files[path] = written
+            return False
+
+
+def _identity(path: str) -> tuple[int, int] | None:
+    """The file's device and inode, or None when it is missing or empty: a new file."""
+    try:
+        status = os.stat(path)
+    except OSError:
+        return None
+    return None if status.st_size == 0 else (status.st_dev, status.st_ino)

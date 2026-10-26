@@ -86,6 +86,41 @@ class FileTraceCollector:
             offset += len(raw)
         return window
 
+    def declared(self) -> frozenset[str] | None:
+        """The tools the agent declared since its last `hello`, or None if none (spec D4).
+
+        Read once at the start of a run, from the whole file: an agent declares its
+        tools when it starts, before the first test's cursor. Declarations before the
+        last `hello` are an earlier process's, whose tools may since have changed. Only
+        `hello` and `tools` lines are parsed, one at a time, and a line that cannot be
+        read is skipped: it is history, which no test reads.
+        """
+        current: set[str] | None = None
+        try:
+            with open(self._path, "rb") as f:
+                for raw in f:
+                    if b'"hello"' not in raw and b'"tools"' not in raw:
+                        continue
+                    try:
+                        record = as_dict(json.loads(raw))
+                    except ValueError:
+                        continue
+                    kind = record.get("type") if record is not None else None
+                    if record is None or kind not in ("hello", "tools"):
+                        continue
+                    if kind == "hello":
+                        current = None
+                        if "tools" not in record:
+                            continue
+                    try:
+                        names = _names(record, "tools" if kind == "hello" else "names")
+                    except _BadLine:
+                        continue
+                    current = set(names) if current is None else current | set(names)
+        except FileNotFoundError:
+            return None
+        return frozenset(current) if current is not None else None
+
     def _line_at(self, offset: int) -> int:
         """The 1-based number of the line that starts at byte ``offset``."""
         with open(self._path, "rb") as f:
@@ -102,6 +137,9 @@ class NoTraceCollector:
 
     def collect(self, since: int) -> Window:
         return Window()
+
+    def declared(self) -> frozenset[str] | None:
+        return None
 
 
 def _end_of_last_line(f: Any) -> int:

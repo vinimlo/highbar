@@ -39,6 +39,7 @@ def _make_runner(
     collector = MagicMock()
     collector.checkpoint.return_value = 0
     collector.collect.return_value = Window(tools=traces or [], hellos=[Hello(ts=0.0)])
+    collector.declared.return_value = None  # declares nothing, as the rc1 SDK
 
     assertion = MagicMock()
     assertion.evaluate.return_value = assertion_results or [

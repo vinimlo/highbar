@@ -71,9 +71,12 @@ class FakeAgent:
             tools=[tool for window in windows for tool in window.tools],
             turns=[turn for window in windows for turn in window.turns],
             hellos=list(self._hellos),
-            declarations=list(self._declarations),
             end=len(self._log),
         )
+
+    def declared(self) -> frozenset[str] | None:
+        """Written when the agent started, before any test: not in a test's window."""
+        return frozenset(self._declarations[0]) if self._declarations else None
 
     def _arrive_late(self) -> None:
         self._log.extend(self._late)

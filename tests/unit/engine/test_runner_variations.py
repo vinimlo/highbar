@@ -40,6 +40,9 @@ class _Collector:
             hellos=[Hello(ts=0.0)],
         )
 
+    def declared(self) -> frozenset[str] | None:
+        return None  # an agent that declares nothing, as on the rc1 SDK
+
 
 class _Client:
     def __init__(self, collector: _Collector) -> None:

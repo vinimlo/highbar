@@ -553,3 +553,53 @@ class TestInventory:
         hb.declare("search_products")
 
         assert list(tmp_path.iterdir()) == []
+
+
+class TestInventoryFollowsTheFile:
+    """PR 12 review I3: a rotated or emptied file gets hello and the tools again."""
+
+    @staticmethod
+    def _types(path: Path) -> list[str]:
+        return [json.loads(line)["type"] for line in path.read_text().splitlines()]
+
+    def _agent(self, traces: Path):  # type: ignore[no-untyped-def]
+        hb = Highbar(traces=str(traces))
+
+        @hb.tool
+        def get_order(order_id: str) -> str:
+            return order_id
+
+        return get_order
+
+    def test_i3_an_emptied_file_gets_hello_and_tools_again(self, tmp_path: Path) -> None:
+        traces = tmp_path / "t.jsonl"
+        get_order = self._agent(traces)
+        get_order("1")
+        traces.write_text("")  # `: > traces.jsonl` on the running agent
+
+        get_order("2")
+
+        assert self._types(traces) == ["hello", "tools", "tool"]
+
+    def test_i3_a_replaced_file_gets_hello_and_tools_again(self, tmp_path: Path) -> None:
+        traces = tmp_path / "t.jsonl"
+        get_order = self._agent(traces)
+        get_order("1")
+        traces.rename(tmp_path / "t.jsonl.1")  # rotated
+
+        get_order("2")
+
+        assert self._types(traces) == ["hello", "tools", "tool"]
+
+    def test_m1_declare_takes_any_name_as_text_and_never_raises(self, tmp_path: Path) -> None:
+        traces = tmp_path / "t.jsonl"
+        hb = Highbar(traces=str(traces))
+        hb.declare(1)  # type: ignore[arg-type]
+
+        @hb.tool
+        def get_order(order_id: str) -> str:
+            return order_id
+
+        get_order("1")
+        names = [json.loads(line) for line in traces.read_text().splitlines()]
+        assert ["1", "get_order"] in [r.get("names") for r in names]

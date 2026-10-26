@@ -31,7 +31,7 @@ async def search_products(query: str, limit: int = 10) -> list[dict]: ...
 
 Records each call as a `tool` record: the arguments bound to their names (defaults included), the result, the start and end times, and the context of the message being handled. When the function raises, the record gets `error: "TypeName: message"` and the exception propagates unchanged. A coroutine is awaited before its result is recorded.
 
-Decorating a function also declares it: the SDK writes a `tools` record with every tool it records, which highbar checks a spec's tool names against.
+Decorating a function also declares it: the SDK writes a `tools` record with every tool it records, which highbar checks a spec's tool names against. When the trace file is emptied or replaced while the agent runs, the SDK writes its `hello` and the tools again.
 
 ## `hb.record(fn, args=None, *, result=None, error=None, started_at=None, ended_at=None, **context)`
 

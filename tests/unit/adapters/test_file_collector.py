@@ -293,3 +293,50 @@ class TestDeclarations:
             self._collect(tmp_path, '{"v": 1, "type": "tools", "ts": 1, "names": "a"}')
         with pytest.raises(TraceFormatError, match="'tools' must be a list of tool names"):
             self._collect(tmp_path, '{"v": 1, "type": "hello", "ts": 1, "tools": [1]}')
+
+
+class TestDeclaredScan:
+    """What the agent declared at the start of a run: after its last hello (PR 12 review C1, I4)."""
+
+    def _declared(self, tmp_path, *lines: str):  # type: ignore[no-untyped-def]
+        path = tmp_path / "t.jsonl"
+        path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+        return FileTraceCollector(path).declared()
+
+    def test_c1_declarations_before_the_last_hello_are_another_process(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        declared = self._declared(
+            tmp_path,
+            '{"v": 1, "type": "hello", "ts": 1, "tools": ["get_balance", "close_account"]}',
+            '{"v": 1, "type": "tool", "ts": 2, "fn": "close_account", "args": {}}',
+            '{"v": 1, "type": "hello", "ts": 3}',
+            '{"v": 1, "type": "tools", "ts": 3, "names": ["get_balance"]}',
+        )
+        assert declared == frozenset({"get_balance"})
+
+    def test_without_a_hello_every_declaration_counts(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        declared = self._declared(
+            tmp_path,
+            '{"v": 1, "type": "tools", "ts": 1, "names": ["a"]}',
+            '{"v": 1, "type": "tools", "ts": 2, "names": ["b"]}',
+        )
+        assert declared == frozenset({"a", "b"})
+
+    def test_nothing_declared_since_the_last_hello_is_none(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        declared = self._declared(
+            tmp_path,
+            '{"v": 1, "type": "tools", "ts": 1, "names": ["a"]}',
+            '{"v": 1, "type": "hello", "ts": 2}',
+        )
+        assert declared is None
+
+    def test_i4_the_scan_skips_lines_it_cannot_read(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        declared = self._declared(
+            tmp_path,
+            "not json",
+            '{"v": 1, "type": "tools", "ts": 1, "names": "a"}',
+            '{"v": 1, "type": "tools", "ts": 1, "names": ["a"]}',
+        )
+        assert declared == frozenset({"a"})
+
+    def test_no_file_is_none(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        assert FileTraceCollector(tmp_path / "missing.jsonl").declared() is None

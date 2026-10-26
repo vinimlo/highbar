@@ -14,6 +14,14 @@
 ### Changed
 
 - The connecting guide checks a connection with one `function_calls` test per tool, not with a guardrail.
+- When the agent has declared nothing, the warning about guardrails comes once, at the end of the run, and names every one.
+- The SDK writes its `hello` and its tools again when the trace file is emptied or replaced.
+
+### Upgrading from 0.1.0rc1
+
+A spec that was green on 0.1.0rc1 can now end in `error`:
+- `forbid` of a tool the agent does not have. Remove the name.
+- An agent that mixes `@hb.tool` with tools written by `hb.record()`. The decorated tools give it an inventory, and the funnel's tools are unknown until it calls them. Declare them with `hb.declare()`.
 - Every GitHub Action in CI, Pages and the release runs on Node 24.
 
 ## 0.1.0rc1
