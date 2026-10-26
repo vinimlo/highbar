@@ -74,14 +74,15 @@ If the test id cannot reach the funnel but a conversation id can, correlate on i
 
 ## 3. Write the contract (any language)
 
-The file format is small and versioned: one JSON object per line, `v: 1`, a `type`, and the fields of that type. An agent in TypeScript, Go or Java writes it directly:
+The file format is small and versioned: one JSON object per line, `v: 1`, a `type`, and the fields of that type. An agent in TypeScript, Go or Java writes it directly, to the file named by `HIGHBAR_TRACES_URL`: a `hello` when it starts, then a `tool` per call and a `turn` per message. When highbar starts the agent, a run without the `hello` stops with exit code 2.
 
 ```jsonl
+{"v": 1, "type": "hello", "ts": 1792983750.122, "sdk": "my-agent/1.0", "pid": 94015}
 {"v": 1, "type": "tool", "ts": 1792983750.215, "fn": "get_order", "args": {"order_id": "1042"}, "result": {"status": "in transit"}, "started_at": 1792983750.214, "ended_at": 1792983750.215, "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
 {"v": 1, "type": "turn", "ts": 1792983750.216, "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
 ```
 
-The [trace contract](/reference/trace-contract) has every field.
+The [trace contract](/reference/trace-contract) has every field, and a reference emitter in under 40 lines.
 
 ## Checking the connection
 

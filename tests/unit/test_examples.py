@@ -13,7 +13,7 @@ import pytest
 from highbar.engine.parser import parse_spec
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
-NAMES = ["quickstart", "openai-agent"]
+NAMES = ["quickstart", "openai-agent", "trace-contract"]
 
 
 @pytest.mark.parametrize("name", NAMES)

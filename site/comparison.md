@@ -17,12 +17,13 @@ Every statement about another tool links to its documentation, read on 2026-10-2
 | Needs a server or account | No | No | No (a hosted platform is optional) | A Langfuse instance and API keys | No |
 | License | MIT | MIT | Apache 2.0 | MIT, except `ee` folders | MIT |
 
-## What highbar does that we did not find in the others' docs
+## Where highbar differs
 
-- **A failed call does not count as a call.** A tool that raised or returned an error does not satisfy an expectation unless the spec says the failure is expected.
-- **"Could not verify" is its own result.** A test whose agent never recorded the message, or whose calls cannot be attributed, ends in `error`, never in a pass. A guardrail cannot go green because the agent was not instrumented.
-- **Per-test repetition thresholds.** `runs: 5, min_pass: 4` on the test that is flaky, and one run for the rest.
-- **One clean session per test, against a shared agent.** Session hooks open a conversation per test, and records from other conversations on the same agent are left out.
+What the others' docs describe, next to what highbar does:
+
+- **Proof per message.** Promptfoo's trajectory assertions end in an error when there is no trace data at all. highbar also asks, per message, whether the agent handled it: when the agent tags its records with the test (and always in attach mode), a test that checks tool calls needs a record of its own, or it is an `error`.
+- **Session hooks that run code.** Promptfoo's HTTP provider can send a session id per test. highbar's session hook is a command or a Python function that opens real state, like a conversation in your database, before each test execution and closes it after; its values can be sent in the request and used to match records to the test.
+- **Repetition thresholds per test.** `runs: 5, min_pass: 4` on the flaky test, one run for the rest. Promptfoo's pass-rate threshold is for the whole eval, and Inspect's `--epochs` with `at_least_n` applies to every sample of an eval.
 
 Promptfoo's trajectory assertions are the closest thing: they check tool use, arguments and order from traces. If you already use Promptfoo, they may be all you need.
 
@@ -33,7 +34,7 @@ An "open-source CLI and library for evaluating and red-teaming LLM apps" ([intro
 - **Tool calls.** Deterministic assertions check that calls match their schema (`is-valid-openai-tools-call`), score the tool names (`tool-call-f1`), and, from traces, check that a tool was used, its arguments (`partial` or `exact`), the sequence of calls and the step count (`trajectory:*`). Any assertion can be negated with a `not-` prefix; the docs show no trajectory example of that ([deterministic assertions](https://www.promptfoo.dev/docs/configuration/expected-outputs/deterministic/)).
 - **Reaching the agent.** An HTTP provider calls a running app; trajectories come from OpenTelemetry spans the app sends to a receiver the CLI runs ([HTTP provider](https://www.promptfoo.dev/docs/providers/http/), [tracing](https://www.promptfoo.dev/docs/tracing/)).
 - **Repetition and CI.** `--repeat N`; a pass-rate threshold for the whole eval; exit code 100 on failures ([command line](https://www.promptfoo.dev/docs/usage/command-line/)); a GitHub Action that compares before and after on a PR ([GitHub Action](https://www.promptfoo.dev/docs/integrations/github-action/)).
-- **Stronger than highbar at:** red teaming, a web viewer for comparing outputs, LLM-graded assertions next to deterministic ones, and many providers, including agent SDKs.
+- **Stronger than highbar at:** red teaming, a web viewer for comparing outputs, LLM-graded assertions next to deterministic ones, argument matching with an exact mode, defaults and ignored fields, and many providers, including agent SDKs.
 
 ## DeepEval
 
