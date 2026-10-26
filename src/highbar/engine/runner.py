@@ -115,6 +115,22 @@ def _names(tools: list[Trace]) -> str:
     return ", ".join(dict.fromkeys(t.fn for t in tools))
 
 
+def _tag_hint(correlate: Mapping[str, Any]) -> str:
+    """How records get the context that agent.correlate matches on (FR2)."""
+    if list(correlate) == ["test"]:
+        return (
+            "tag them with the test id: highbar.asgi.Middleware, or "
+            "hb.turn(test=<the X-Highbar-Test header>)"
+        )
+    keys = ", ".join(correlate)
+    fields = ", ".join(f"{key}=..." for key in correlate)
+    return (
+        f"agent.correlate matches on {keys}, so their context needs {keys}: "
+        f"hb.turn({fields}) around the handling of each message, or a `context` "
+        "field from another writer"
+    )
+
+
 def _merged_errors(results: list[TestResult]) -> list[str]:
     """The errors of a phrasing's runs; one that repeats says in how many runs."""
     if len(results) == 1:
@@ -263,6 +279,8 @@ class TestRunner:
         try:
             if self._managed and observes:
                 self._await_hello()
+            elif observes and self._collector.missing():
+                raise AgentNotObservedError(self._missing_file())
             self._cursor = self._collector.checkpoint()
             if observes:
                 self._learn_inventory()
@@ -443,8 +461,7 @@ class TestRunner:
             return (
                 f"not observed: the {len(records)} trace records read while this test ran "
                 "carry no context, so they cannot be told from other traffic on this agent; "
-                "tag them (highbar.asgi.Middleware, or hb.turn(test=<the X-Highbar-Test "
-                "header>)) or set agent.correlate to keys they carry"
+                f"{_tag_hint(correlate)}"
             )
         # An empty window cannot tell "no tool was called" from "the agent records nothing".
         return (
@@ -538,6 +555,19 @@ class TestRunner:
             for name in unseen
         )
         self._reporter.on_warning(UNDECLARED_WARNING.format(names=names))
+
+    def _missing_file(self) -> str:
+        """An attached agent's trace file is not there: no test could see a call (FR3).
+
+        Checked before the first message: a wrong path would otherwise send every one,
+        with whatever it does for real, to learn only that nothing could be observed.
+        """
+        return (
+            f"the trace file {self._collector.path.absolute()} does not exist, so no test "
+            "could see what the agent does; nothing was sent. Check agent.traces (a "
+            "relative path starts where highbar runs). A writer that creates the file "
+            "only with its first record needs it created empty before the run"
+        )
 
     def _await_hello(self) -> None:
         """The agent highbar started must show its SDK's `hello` in the new trace file.
@@ -808,7 +838,9 @@ class TestRunner:
 
         classified = classify(window, execution.correlate)
         untagged = classified.unattributed.tools
-        if untagged and not self._warned_no_context:
+        # Against an attached agent, untagged calls count only next to tagged ones;
+        # alone, they make the test an error that says so (FR2).
+        if untagged and (self._managed or classified.correlated) and not self._warned_no_context:
             self._warned_no_context = True
             self._reporter.on_warning(NO_CONTEXT_WARNING)
 

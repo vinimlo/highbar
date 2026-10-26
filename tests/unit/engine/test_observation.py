@@ -513,3 +513,60 @@ class TestAttachReviewFindings:
         assert first.status is Status.PASSED
         assert second.status is Status.ERROR
         assert "the same as an earlier test's" in second.errors[0]
+
+
+class TestRehearsalFindings:
+    """The rc1 onboarding rehearsal, attach mode: FR2 (contradicting messages) and FR3."""
+
+    def test_fr3_a_missing_trace_file_stops_the_run_before_any_message(self) -> None:
+        agent = FakeAgent(hello=False, missing=True)
+
+        with pytest.raises(AgentNotObservedError, match="fake-traces.jsonl does not exist"):
+            _run([Case(trigger="a", expect=GUARDRAIL)], agent, managed=False)
+
+        # A wrong path must not cost real side effects: nothing reached the agent.
+        assert agent.sent == []
+
+    def test_fr3_a_spec_that_checks_only_replies_runs_without_the_file(self) -> None:
+        agent = FakeAgent(hello=False, missing=True)
+
+        results, _, _ = _run([Case(trigger="a", expect=SAYS_OK)], agent, managed=False)
+
+        assert results[0][1].status is Status.PASSED
+
+    def test_fr2_attach_mode_does_not_say_untagged_calls_count(self) -> None:
+        """They do not count against an attached agent: the test errors instead."""
+        agent = FakeAgent(lambda message, test_id: Window(tools=[_tool("lookup")]), hello=False)
+
+        results, _, reporter = _run([Case(trigger="a", expect=CALLS_LOOKUP)], agent, managed=False)
+
+        assert results[0][1].status is Status.ERROR
+        assert not [w for w in _warnings(reporter) if "counts for the test" in w]
+
+    def test_fr2_the_hint_asks_for_the_keys_of_agent_correlate(self) -> None:
+        hooks = MagicMock()
+        hooks.setup.side_effect = [{"conversation_id": "c1"}]
+        agent = FakeAgent(lambda message, test_id: Window(tools=[_tool("lookup")]), hello=False)
+        reporter = MagicMock()
+
+        Runner(
+            adapter=MagicMock(),
+            client=agent,
+            collector=agent,
+            assertions=[FunctionCallsAssertion()],
+            reporter=reporter,
+            settle_time=0,
+            managed=False,
+            session=hooks,
+            correlate={"conversation_id": "{{session.conversation_id}}"},
+        ).run(
+            Spec(
+                agent=AgentConfig(endpoint="http://127.0.0.1:1/chat"),
+                suites=[Suite(name="S", tests=[Case(trigger="a", expect=CALLS_LOOKUP)])],
+            )
+        )
+
+        (result,) = [c.args[1] for c in reporter.on_test_result.call_args_list]
+        assert result.status is Status.ERROR
+        assert "hb.turn(conversation_id=...)" in result.errors[0]
+        assert "X-Highbar-Test" not in result.errors[0]

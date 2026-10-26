@@ -235,6 +235,7 @@ class TestAttachedFileHistory:
             checkpoint = collector.checkpoint
             collect = collector.collect
             declared = collector.declared
+            missing = collector.missing
 
             def send(self, message: str, *, values) -> str:  # type: ignore[no-untyped-def]
                 turn = {"v": 1, "type": "turn", "ts": 4, "context": {"test": values.test_id}}
