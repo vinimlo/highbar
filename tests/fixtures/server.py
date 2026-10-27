@@ -10,6 +10,8 @@ Serves ``GET /health`` -> 200 and ``POST /chat`` -> ``{"response": "ok"}``.
     --slow-chat S    POST /chat takes S seconds to answer
     --ignore-term    ignore SIGTERM (only SIGKILL stops it), like a server mid-request
     --no-traces      write no trace records, like an agent without the SDK
+    --replies A,B    POST /chat answers A, then B, and so on, then A again
+                     (default: ok), like an agent that is right only some of the time
 
 With HIGHBAR_TRACES_URL set (and no --no-traces), it writes the trace contract the
 way any emitter would, without the SDK: a `hello` when it starts and a `turn` per
@@ -19,10 +21,12 @@ POST, whose context has the X-Highbar-Test header and the body's conversation_id
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import signal
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -37,7 +41,10 @@ def main() -> None:
     parser.add_argument("--slow-chat", type=float, default=0.0)
     parser.add_argument("--ignore-term", action="store_true")
     parser.add_argument("--no-traces", action="store_true")
+    parser.add_argument("--replies", default="ok")
     args = parser.parse_args()
+    replies = itertools.cycle(args.replies.split(","))
+    replies_lock = threading.Lock()
     traces = None if args.no_traces else os.environ.get("HIGHBAR_TRACES_URL")
 
     def record(entry: dict[str, object]) -> None:
@@ -85,7 +92,9 @@ def main() -> None:
                 else None,
             }
             record({"type": "turn", "context": {k: v for k, v in context.items() if v is not None}})
-            body = json.dumps({"response": "ok"}).encode()
+            with replies_lock:
+                reply = next(replies)
+            body = json.dumps({"response": reply}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))

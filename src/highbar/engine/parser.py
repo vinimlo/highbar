@@ -110,12 +110,15 @@ def _parse_spec(raw: Any) -> Spec:
     suites = [_parse_suite(s, f"suites[{i}]") for i, s in enumerate(suites_raw)]
 
     default_runs = 1
+    default_min_pass: int | float | None = None
     if "defaults" in raw:
         defaults = raw["defaults"]
         require_type(defaults, dict, "defaults", "must be a mapping")
         check_keys(defaults, "defaults", "defaults")
         if "runs" in defaults:
             default_runs = _parse_runs(defaults["runs"], "defaults")
+        if "min_pass" in defaults:
+            default_min_pass = _parse_min_pass(defaults["min_pass"], "defaults")
 
     if not agent.managed and agent.traces is None:
         for i, suite in enumerate(suites):
@@ -128,7 +131,9 @@ def _parse_spec(raw: Any) -> Spec:
 
     # min_pass is checked against runs where the run's runs are known: --runs (or
     # highbar.run(runs=...)) takes the place of defaults.runs.
-    return Spec(agent=agent, suites=suites, default_runs=default_runs)
+    return Spec(
+        agent=agent, suites=suites, default_runs=default_runs, default_min_pass=default_min_pass
+    )
 
 
 def _parse_runs(raw: Any, where: str) -> int:

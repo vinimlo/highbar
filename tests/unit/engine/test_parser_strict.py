@@ -105,6 +105,22 @@ class TestUnknownKeys:
         ):
             parse_spec(path)
 
+    def test_misspelled_key_in_defaults(self, tmp_path: Path) -> None:
+        path = _spec(tmp_path, "defaults: {runs: 3, min_pas: 0.66}\n" + _one_test(GUARDRAIL))
+
+        with pytest.raises(
+            SpecError, match=r": defaults: unknown key 'min_pas' — did you mean 'min_pass'\?$"
+        ):
+            parse_spec(path)
+
+    def test_unknown_key_in_defaults_lists_the_allowed_ones(self, tmp_path: Path) -> None:
+        path = _spec(tmp_path, "defaults: {zzz: 1}\n" + _one_test(GUARDRAIL))
+
+        with pytest.raises(
+            SpecError, match=r": defaults: unknown key 'zzz' \(allowed: min_pass, runs\)$"
+        ):
+            parse_spec(path)
+
     def test_x_extension_keys_are_ignored(self, tmp_path: Path) -> None:
         """YAML anchors live under an `x-` key, as in compose files and OpenAPI."""
         path = _spec(

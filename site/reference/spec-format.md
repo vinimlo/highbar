@@ -8,7 +8,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 |---|---|---|
 | `agent` | mapping | Required. How to reach the agent. |
 | `suites` | list | Required, not empty. |
-| `defaults` | mapping | Optional. `runs`: how many times each test runs (default 1). |
+| `defaults` | mapping | Optional. `runs`: how many times each test runs (default 1). `min_pass`: how many runs must pass in a test without its own `min_pass`, with the same values as the test's (default: all). |
 
 ## `agent`
 
@@ -45,7 +45,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `name` | text | Shown in the output instead of the trigger. |
 | `variations` | integer | How many paraphrases of the trigger to run as well. |
 | `runs` | integer ≥ 1 | How many times to run each phrasing. |
-| `min_pass` | integer ≥ 1, or fraction in (0, 1] | How many runs must pass. Default: all. A fraction is rounded up. |
+| `min_pass` | integer ≥ 1, or fraction in (0, 1] | How many runs must pass. Default: `defaults.min_pass`, else all. A fraction is rounded up. |
 
 ## `expect`
 
