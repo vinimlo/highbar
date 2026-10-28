@@ -20,7 +20,7 @@ class SpecError(ValueError):
 
 ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "spec": frozenset({"agent", "suites", "defaults"}),
-    "defaults": frozenset({"runs"}),
+    "defaults": frozenset({"runs", "min_pass"}),
     "agent": frozenset(
         {
             "start",

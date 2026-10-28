@@ -18,7 +18,7 @@ All specs are parsed and validated before any agent starts. With several specs, 
 
 ## `highbar validate [SPEC_PATH]`
 
-Parses and validates specs without running anything: unknown keys, wrong types, invalid regular expressions, tests that check nothing, and a `min_pass` above the spec's runs. One line per spec, `✓` or `✗` with the reason.
+Parses and validates specs without running anything: unknown keys, wrong types, invalid regular expressions, tests that check nothing, and a `min_pass` above a test's runs, whether the test sets it or takes it from `defaults.min_pass`. One line per spec, `✓` or `✗` with the reason.
 
 ## `highbar init`
 

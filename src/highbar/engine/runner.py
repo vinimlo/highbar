@@ -264,6 +264,8 @@ class TestRunner:
         # Which context keys identify a test's records (agent.correlate in the spec).
         self._correlate = dict(correlate) if correlate is not None else {"test": "{{test.id}}"}
         self._default_runs = default_runs
+        # The spec's defaults.min_pass, set by run(): the value check_runs checked.
+        self._default_min_pass: int | float | None = None
         self._variations_run = 0
         self._last_variation_count: int | None = None
         self._warned: set[str] = set()
@@ -285,6 +287,7 @@ class TestRunner:
         counts = dict.fromkeys(Status, 0)
         reported: dict[int, tuple[str, Status]] = {}
         self._variations_run = 0
+        self._default_min_pass = spec.default_min_pass
         self._warned = set()
         self._inventory, self._seen, self._undeclared = None, set(), {}
         self._executions, self._findings, self._test_index = [], [], 0
@@ -624,7 +627,7 @@ class TestRunner:
         """
         start = time.time()
         name = _plain_name(test)
-        runs, min_pass = resolve_runs(test, self._default_runs)
+        runs, min_pass = resolve_runs(test, self._default_runs, self._default_min_pass)
 
         if test.turns:
             phrasings = [("", test.turns)]

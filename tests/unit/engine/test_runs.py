@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import textwrap
@@ -60,7 +61,12 @@ def _flaky(passes: list[bool]):
 
 
 def _run(
-    tests: list[Case], agent: FakeAgent, *, default_runs: int = 1, variations: object = None
+    tests: list[Case],
+    agent: FakeAgent,
+    *,
+    default_runs: int = 1,
+    default_min_pass: int | float | None = None,
+    variations: object = None,
 ) -> tuple[list[tuple[str, Result]], MagicMock]:
     reporter = MagicMock()
     Runner(
@@ -76,6 +82,7 @@ def _run(
         Spec(
             agent=AgentConfig(start="agent", endpoint="http://127.0.0.1:1/chat"),
             suites=[Suite(name="S", tests=tests)],
+            default_min_pass=default_min_pass,
         )
     )
     return [c[0] for c in reporter.on_test_result.call_args_list], reporter
@@ -105,6 +112,68 @@ class TestResolve:
         check_runs(spec, 5)
         with pytest.raises(SpecError, match=r"suites\[0\]\.tests\[1\].*min_pass 4.*3 runs"):
             check_runs(spec, 3)
+
+
+class TestDefaultMinPass:
+    """defaults.min_pass: the threshold stated once, for the tests without their own."""
+
+    def test_a_test_without_min_pass_takes_the_default(self) -> None:
+        assert resolve_runs(Case(trigger="a"), 3, 0.66) == (3, 2)
+
+    def test_the_test_min_pass_wins_over_the_default(self) -> None:
+        assert resolve_runs(Case(trigger="a", min_pass=1), 3, 0.66) == (3, 1)
+        assert resolve_runs(Case(trigger="a", min_pass=1.0), 3, 0.66) == (3, 3)
+
+    def test_a_test_with_its_own_runs_takes_the_default_of_those_runs(self) -> None:
+        assert resolve_runs(Case(trigger="a", runs=5), 3, 0.66) == (5, 4)
+
+    def test_without_any_min_pass_every_run_must_pass(self) -> None:
+        assert resolve_runs(Case(trigger="a"), 3, None) == (3, 3)
+        assert resolve_runs(Case(trigger="a", runs=5), 3) == (5, 5)
+
+    def test_a_fraction_is_rounded_up_on_the_runs(self) -> None:
+        assert resolve_runs(Case(trigger="a"), 3, 0.66) == (3, 2)
+        # 0.7 * 10 is 7.000000000000001 in binary floating point: still 7.
+        assert resolve_runs(Case(trigger="a"), 10, 0.7) == (10, 7)
+
+    def test_cli_runs_recomputes_a_fraction_and_keeps_a_whole_number(self) -> None:
+        # --runs arrives as default_runs; defaults.min_pass is not touched by it.
+        assert resolve_runs(Case(trigger="a"), 10, 0.7) == (10, 7)
+        assert resolve_runs(Case(trigger="a"), 5, 3) == (5, 3)
+
+    def test_default_above_a_test_runs_names_the_test_and_the_default(self) -> None:
+        spec = Spec(
+            agent=AgentConfig(start="a", endpoint="http://127.0.0.1:1/chat"),
+            suites=[Suite(name="S", tests=[Case(trigger="a"), Case(trigger="b", runs=2)])],
+            default_min_pass=3,
+        )
+
+        with pytest.raises(SpecError) as raised:
+            check_runs(spec, 5)
+        assert str(raised.value) == (
+            "suites[0].tests[1]: min_pass 3 from defaults.min_pass is more than its 2 runs; "
+            "give the test its own min_pass, or make defaults.min_pass a fraction"
+        )
+
+    def test_a_test_own_min_pass_above_its_runs_does_not_blame_the_default(self) -> None:
+        spec = Spec(
+            agent=AgentConfig(start="a", endpoint="http://127.0.0.1:1/chat"),
+            suites=[Suite(name="S", tests=[Case(trigger="a", runs=2, min_pass=3)])],
+            default_min_pass=0.5,
+        )
+
+        with pytest.raises(SpecError) as raised:
+            check_runs(spec, 5)
+        assert str(raised.value) == "suites[0].tests[0]: min_pass 3 is more than its 2 runs"
+
+    def test_a_fraction_default_never_exceeds_the_runs(self) -> None:
+        spec = Spec(
+            agent=AgentConfig(start="a", endpoint="http://127.0.0.1:1/chat"),
+            suites=[Suite(name="S", tests=[Case(trigger="a", runs=1), Case(trigger="b")])],
+            default_min_pass=1.0,
+        )
+
+        check_runs(spec, 7)
 
 
 class TestPhrasingStatus:
@@ -214,6 +283,22 @@ class TestRunnerRuns:
         assert result.errors == ["no variations available (0 of 3)"]
         assert agent.sent == []
 
+    @pytest.mark.parametrize(
+        "passes, status",
+        [([True, True, False], Status.PASSED), ([True, False, False], Status.FAILED)],
+    )
+    def test_defaults_min_pass_is_the_minimum_of_a_test_without_one(
+        self, passes: list[bool], status: Status
+    ) -> None:
+        agent = FakeAgent(_flaky(passes))
+
+        ((_, result),), _ = _run(
+            [Case(trigger="a", expect=CALLS_LOOKUP)], agent, default_runs=3, default_min_pass=0.66
+        )
+
+        assert result.status is status
+        assert result.counts == (sum(passes), 3, 2)
+
     def test_runs_1_output_is_unchanged(self) -> None:
         agent = FakeAgent(_flaky([False]))
 
@@ -280,6 +365,149 @@ class TestSpec:
 
         with pytest.raises(SpecError, match=message):
             parse_spec(path)
+
+    @pytest.mark.parametrize("value, parsed", [("0.66", 0.66), ("2", 2), ("1.0", 1.0)])
+    def test_defaults_min_pass_is_parsed(self, tmp_path: Path, value: str, parsed: float) -> None:
+        spec = parse_spec(
+            _spec(
+                tmp_path,
+                f"""\
+                defaults: {{runs: 3, min_pass: {value}}}
+                suites:
+                  - name: S
+                    tests:
+                      - {{trigger: "a", expect: {{function_calls: []}}}}
+                """,
+            )
+        )
+
+        assert spec.default_min_pass == parsed
+        assert type(spec.default_min_pass) is type(parsed)
+        assert spec.suites[0].tests[0].min_pass is None
+
+    def test_without_defaults_min_pass_there_is_no_default(self, tmp_path: Path) -> None:
+        spec = parse_spec(
+            _spec(
+                tmp_path,
+                """\
+                defaults: {runs: 3}
+                suites:
+                  - name: S
+                    tests:
+                      - {trigger: "a", expect: {function_calls: []}}
+                """,
+            )
+        )
+
+        assert spec.default_min_pass is None
+
+    @pytest.mark.parametrize("value", ["0", "-1", "1.5", "true", '"abc"'])
+    def test_defaults_min_pass_refuses_what_a_test_refuses(
+        self, tmp_path: Path, value: str
+    ) -> None:
+        path = _spec(
+            tmp_path,
+            f"""\
+            defaults: {{runs: 3, min_pass: {value}}}
+            suites:
+              - name: S
+                tests:
+                  - {{trigger: "a", expect: {{function_calls: []}}}}
+            """,
+        )
+
+        with pytest.raises(SpecError) as raised:
+            parse_spec(path)
+        assert str(raised.value) == (
+            f"{path}: defaults: min_pass must be a whole number of at least 1 or a fraction "
+            "of runs (0 < f <= 1)"
+        )
+
+    @pytest.mark.parametrize("value", ["0.66", "2"])
+    def test_validate_accepts_defaults_min_pass(self, tmp_path: Path, value: str) -> None:
+        path = _spec(
+            tmp_path,
+            f"""\
+            defaults: {{runs: 3, min_pass: {value}}}
+            suites:
+              - name: S
+                tests:
+                  - {{trigger: "a", expect: {{function_calls: []}}}}
+                  - {{trigger: "b", expect: {{function_calls: []}}, runs: 5}}
+            """,
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "highbar.cli.main", "validate", path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Valid:" in result.stdout
+
+    def test_defaults_min_pass_above_a_test_runs_fails_validation(self, tmp_path: Path) -> None:
+        path = _spec(
+            tmp_path,
+            """\
+            defaults: {runs: 3, min_pass: 3}
+            suites:
+              - name: S
+                tests:
+                  - {trigger: "a", expect: {function_calls: []}}
+                  - {trigger: "b", expect: {function_calls: []}, runs: 2}
+            """,
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "highbar.cli.main", "validate", path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "COLUMNS": "300"},
+        )
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert (
+            "suites[0].tests[1]: min_pass 3 from defaults.min_pass is more than its 2 runs"
+            in result.stdout
+        )
+
+    def test_defaults_min_pass_above_a_test_runs_exits_2_before_any_agent(
+        self, tmp_path: Path
+    ) -> None:
+        marker = tmp_path / "STARTED"
+        (tmp_path / "spec.highbar.yaml").write_text(
+            f"""\
+agent:
+  start: "{sys.executable} -c \\"open('STARTED', 'w')\\""
+  endpoint: "http://127.0.0.1:9/chat"
+defaults: {{min_pass: 3}}
+suites:
+  - name: S
+    tests:
+      - {{trigger: "a", expect: {{function_calls: []}}}}
+      - {{trigger: "b", expect: {{function_calls: []}}, runs: 2}}
+""",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "highbar.cli.main", "run", "spec.highbar.yaml", "--runs", "5"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "COLUMNS": "300"},
+        )
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert (
+            "suites[0].tests[1]: min_pass 3 from defaults.min_pass is more than its 2 runs"
+            in result.stdout
+        )
+        assert not marker.exists()
 
     def test_i3_cli_runs_lifts_an_integer_min_pass(self, tmp_path: Path) -> None:
         """A spec written for CI: min_pass 3, no runs, run with --runs 5."""

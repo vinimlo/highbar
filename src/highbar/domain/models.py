@@ -257,6 +257,8 @@ class Spec:
     agent: AgentConfig
     suites: list[Suite]
     default_runs: int = 1  # defaults.runs; the CLI's --runs overrides it
+    # defaults.min_pass, for the tests without their own; None: every run must pass.
+    default_min_pass: int | float | None = None
 
 
 @dataclass(frozen=True)

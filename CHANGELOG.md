@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `defaults.min_pass`: the threshold for every test without its own `min_pass`, stated once instead of in each test. It takes the same values as the test's: a whole number of runs, or a fraction of each test's runs, rounded up and computed again with `--runs`. A test's own `min_pass` still wins; without either, every run must pass, as before. A whole number above a test's runs is an error in `validate` and before `run` starts the agent, naming the test and `defaults.min_pass`.
+
 ## 0.1.0rc3
 
 ### Fixed
