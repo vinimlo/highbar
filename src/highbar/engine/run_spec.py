@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from rich.console import Console
@@ -16,13 +17,16 @@ from highbar.adapters.subprocess_adapter import AgentStartError, SubprocessAdapt
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
 from highbar.domain.models import RunSummary, Spec
-from highbar.domain.protocols import TraceCollector
+from highbar.domain.protocols import Reporter, TraceCollector
 from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.runner import TestRunner
 from highbar.engine.secrets import redact
 from highbar.engine.session import SessionHooks
 from highbar.reporters.terminal import TerminalReporter
 from highbar.variations.generator import VariationGenerator
+
+# Called once per spec, however it ended: the result so far, and whether it ran to the end.
+OnEnd = Callable[[RunSummary, bool], None]
 
 
 def load_session_hooks(path: str, spec: Spec) -> SessionHooks | None:
@@ -43,6 +47,8 @@ def run_spec(
     console: Console,
     session: SessionHooks | None = None,
     default_runs: int | None = None,
+    reporter: Reporter | None = None,
+    on_end: OnEnd | None = None,
 ) -> RunSummary:
     """Run one spec against its agent.
 
@@ -50,9 +56,13 @@ def run_spec(
     ``HIGHBAR_TRACES_URL``, stops it after, and removes the file unless kept.
     Attach mode: the agent is already running and writes ``traces`` itself; highbar
     neither stops it nor touches its file.
+
+    ``reporter`` takes the place of the terminal output of each test. ``on_end`` gets
+    the result on every way out, including a run that stopped halfway.
     """
     console.print(f"  Running {escape(path)}")
     agent = spec.agent
+    reporter = reporter or TerminalReporter()
     # The CLI's --runs, when given, takes the place of the spec's defaults.runs.
     runs = spec.default_runs if default_runs is None else default_runs
     client = HTTPClient(
@@ -76,8 +86,9 @@ def run_spec(
             session=session,
             managed=False,
             default_runs=runs,
+            reporter=reporter,
         )
-        return _run(runner, spec)
+        return _run(runner, spec, on_end)
 
     with tempfile.NamedTemporaryFile(
         suffix=".jsonl", prefix="highbar-traces-", delete=False
@@ -102,10 +113,11 @@ def run_spec(
         session=session,
         managed=True,
         default_runs=runs,
+        reporter=reporter,
     )
 
     try:
-        summary = _run(runner, spec)
+        summary = _run(runner, spec, on_end)
     finally:
         if keep_traces:
             console.print(f"  Traces kept at {escape(traces_file)}")
@@ -129,13 +141,14 @@ def _runner(
     session: SessionHooks | None,
     managed: bool,
     default_runs: int,
+    reporter: Reporter,
 ) -> TestRunner:
     return TestRunner(
         adapter=adapter,  # type: ignore[arg-type]
         client=client,
         collector=collector,
         assertions=[FunctionCallsAssertion(), ResponseAssertion()],
-        reporter=TerminalReporter(),
+        reporter=reporter,
         settle_time=spec.agent.settle_time / 1000.0,
         variations=generator,
         managed=managed,
@@ -147,14 +160,21 @@ def _runner(
     )
 
 
-def _run(runner: TestRunner, spec: Spec) -> RunSummary:
+def _run(runner: TestRunner, spec: Spec, on_end: OnEnd | None) -> RunSummary:
     """Run the spec; an error that stops the run is masked like every other message."""
+    complete = False
     try:
-        return runner.run(spec)
+        summary = runner.run(spec)
+        complete = True
+        return summary
     except (AgentStartError, AgentNotObservedError) as e:
         if not spec.agent.secrets:
             raise
         raise type(e)(redact(str(e), spec.agent.secrets)) from None
+    finally:
+        # A run that stopped halfway still has the results of the tests that finished.
+        if on_end is not None:
+            on_end(runner.snapshot(), complete)
 
 
 def agent_log_path(spec_path: str) -> Path:

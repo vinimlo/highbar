@@ -22,7 +22,7 @@ from highbar.domain.models import Test as Case
 from highbar.engine.parser import parse_spec
 from highbar.engine.runner import TestRunner as Runner
 from highbar.engine.schema import SpecError
-from highbar.engine.secrets import redact
+from highbar.engine.secrets import redact, redact_value
 
 TOKEN = "s3cr3t-token-value"
 
@@ -172,3 +172,28 @@ suites:
         assert result.returncode == 2, result.stdout + result.stderr
         assert "s3cr3t" not in result.stdout + result.stderr
         assert "key=${HB_TEST_KEY}" in result.stdout
+
+
+class TestRedactValue:
+    SECRETS: dict[str, str] = {TOKEN: "AGENT_TOKEN", "987654": "PIN"}  # noqa: RUF012
+
+    def test_strings_keys_and_nesting(self) -> None:
+        value = {TOKEN: [f"Bearer {TOKEN}", {"inner": (TOKEN,)}]}
+
+        assert redact_value(value, self.SECRETS) == {
+            "${AGENT_TOKEN}": ["Bearer ${AGENT_TOKEN}", {"inner": ("${AGENT_TOKEN}",)}]
+        }
+
+    def test_a_number_that_holds_a_secret_is_masked(self) -> None:
+        assert redact_value({"pin": 987654}, self.SECRETS) == {"pin": "${PIN}"}
+
+    def test_other_values_stay_as_they_are(self) -> None:
+        value = {"a": 1, "b": 2.5, "c": True, "d": None}
+
+        assert redact_value(value, self.SECRETS) == value
+        assert redact_value(True, {"True": "FLAG"}) is True
+
+    def test_without_secrets_the_value_is_the_same_object(self) -> None:
+        value = {"a": ["b"]}
+
+        assert redact_value(value, {}) is value

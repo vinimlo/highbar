@@ -8,6 +8,7 @@ is as useful to read, and safe to print.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Any, cast
 from urllib.parse import quote, quote_plus
 
 # Shorter values (a port, a flag) are rarely secret, and masking them would turn every
@@ -30,3 +31,26 @@ def redact(text: str, secrets: Mapping[str, str]) -> str:
     for form in sorted(forms, key=len, reverse=True):
         text = text.replace(form, f"${{{forms[form]}}}")
     return text
+
+
+def redact_value(value: Any, secrets: Mapping[str, str]) -> Any:
+    """``value`` with ``redact`` applied all the way down: strings, keys, numbers.
+
+    A number that holds a secret becomes the masked text: a PIN in a tool's arguments
+    is as secret as a token.
+    """
+    if not secrets:
+        return value
+    if isinstance(value, str):
+        return redact(value, secrets)
+    if isinstance(value, dict):
+        mapping = cast("dict[Any, Any]", value)
+        return {redact_value(k, secrets): redact_value(v, secrets) for k, v in mapping.items()}
+    if isinstance(value, (list, tuple)):
+        items = cast("list[Any] | tuple[Any, ...]", value)
+        return type(items)(redact_value(item, secrets) for item in items)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        text = str(value)
+        masked = redact(text, secrets)
+        return value if masked == text else masked
+    return value
