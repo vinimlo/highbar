@@ -1,6 +1,6 @@
 [project]
 name = "highbar"
-version = "0.1.0rc3"
+version = "0.1.0"
 description = "Evals for AI agents that behave like tests."
 readme = "README.md"
 license = "MIT"

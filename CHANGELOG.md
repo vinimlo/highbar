@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0
+
+The first final release. The code is the code of 0.1.0rc3, which has been running a production agent's evals since 2026-10-27: only the version changed.
+
 ## 0.1.0rc3
 
 ### Fixed
