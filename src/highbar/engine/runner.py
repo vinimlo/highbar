@@ -210,11 +210,6 @@ def _test_name(test: Test, variations_run: int | None = None) -> str:
     return label
 
 
-def _plain_name(test: Test) -> str:
-    """The test's name for {{test.name}} and session hooks: no counts, no decoration."""
-    return test.name or test.trigger or f"multi-turn ({len(test.turns or [])} turns)"
-
-
 def _turn_label(turn: Turn, previous_traces: list[Trace]) -> str:
     """The turn's ``name``, or the message it sends, cut at 80 characters."""
     if turn.name:
@@ -626,7 +621,7 @@ class TestRunner:
         a multi-turn test. The test passes only if every phrasing reaches ``min_pass``.
         """
         start = time.time()
-        name = _plain_name(test)
+        name = test.plain_name
         runs, min_pass = resolve_runs(test, self._default_runs, self._default_min_pass)
 
         if test.turns:

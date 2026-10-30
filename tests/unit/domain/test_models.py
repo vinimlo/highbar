@@ -1,5 +1,7 @@
 """Tests for domain model construction and defaults."""
 
+from dataclasses import replace
+
 from highbar.domain.models import (
     AgentConfig,
     AssertionResult,
@@ -12,6 +14,7 @@ from highbar.domain.models import (
     Trace,
     Turn,
     combine,
+    stable_key,
 )
 
 
@@ -152,3 +155,49 @@ class TestRunSummary:
         assert summary.total == 10
         assert summary.failed == 2
         assert summary.errored == 1
+
+
+class TestKeyAndDefinition:
+    def test_key_is_the_id_when_there_is_one(self) -> None:
+        assert (
+            stable_key("Orders", Test(id="status", name="A", trigger="t", expect=Expect()))
+            == "status"
+        )
+
+    def test_key_falls_back_to_suite_and_name(self) -> None:
+        assert stable_key("Orders", Test(name="A", trigger="t", expect=Expect())) == "Orders/A"
+
+    def test_key_of_an_unnamed_test_is_its_trigger(self) -> None:
+        assert stable_key("Orders", Test(trigger="t", expect=Expect())) == "Orders/t"
+
+    def test_key_of_an_unnamed_conversation_counts_its_turns(self) -> None:
+        turns = [Turn(trigger="a", expect=Expect()), Turn(trigger="b", expect=Expect())]
+        assert stable_key("Orders", Test(turns=turns)) == "Orders/multi-turn (2 turns)"
+
+    def test_j12_definition_changes_with_what_is_measured(self) -> None:
+        base = Test(trigger="t", expect=Expect(forbid=("a",)))
+
+        assert base.definition_sha256 != replace(base, trigger="other").definition_sha256
+        assert (
+            base.definition_sha256 != replace(base, expect=Expect(forbid=("b",))).definition_sha256
+        )
+        assert base.definition_sha256 != replace(base, variations=2).definition_sha256
+
+    def test_j12_definition_ignores_labels_and_sampling(self) -> None:
+        base = Test(trigger="t", expect=Expect(forbid=("a",)))
+
+        for other in (
+            replace(base, name="renamed"),
+            replace(base, id="an-id"),
+            replace(base, runs=10),
+            replace(base, min_pass=0.8),
+        ):
+            assert other.definition_sha256 == base.definition_sha256
+
+    def test_j12_definition_of_a_conversation_ignores_turn_names(self) -> None:
+        turn = Turn(trigger="a", expect=Expect())
+        named = replace(turn, name="greeting")
+
+        assert Test(turns=[turn]).definition_sha256 == Test(turns=[named]).definition_sha256
+        changed = replace(turn, trigger="b")
+        assert Test(turns=[turn]).definition_sha256 != Test(turns=[changed]).definition_sha256

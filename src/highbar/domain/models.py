@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -234,12 +236,43 @@ class Test:
     # takes the run's default; min_pass may be a fraction of runs.
     runs: int | None = None
     min_pass: int | float | None = None
+    # What joins this test across reports; without it, the key is suite/name (D15).
+    id: str | None = None
 
     @property
     def requires_observation(self) -> bool:
         if self.turns:
             return any(turn.expect.requires_observation for turn in self.turns)
         return self.expect is not None and self.expect.requires_observation
+
+    @property
+    def plain_name(self) -> str:
+        """The test's name for {{test.name}}, hooks and keys: no counts, no decoration."""
+        return self.name or self.trigger or f"multi-turn ({len(self.turns or [])} turns)"
+
+    @property
+    def definition_sha256(self) -> str:
+        """A hash of what the test measures, to tell which results can be put together.
+
+        Labels (``name``, ``id``) and sampling (``runs``, ``min_pass``) stay out: they
+        change neither the message nor what counts as right (D16).
+        """
+        definition = {
+            "trigger": self.trigger,
+            "expect": asdict(self.expect) if self.expect else None,
+            "variations": self.variations,
+            "turns": [
+                {"trigger": turn.trigger, "expect": asdict(turn.expect)}
+                for turn in self.turns or []
+            ],
+        }
+        text = json.dumps(definition, sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def stable_key(suite: str, test: Test) -> str:
+    """The name of a test across runs: its ``id``, or ``<suite>/<name>`` (D15)."""
+    return test.id or f"{suite}/{test.plain_name}"
 
 
 @dataclass(frozen=True)
