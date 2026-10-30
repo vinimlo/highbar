@@ -1,0 +1,238 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vinimlo.github.io/highbar/report.schema.json",
+  "title": "highbar report",
+  "description": "What `highbar run --report json=<file>` writes. schema_version changes only on a breaking change: new fields can appear within a version, so a reader ignores what it does not know.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "highbar_version",
+    "started_at",
+    "duration_ms",
+    "exit_code",
+    "complete",
+    "stopped",
+    "git_sha",
+    "summary",
+    "specs"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "highbar_version": { "type": "string" },
+    "started_at": { "$ref": "#/$defs/time" },
+    "duration_ms": { "type": "number" },
+    "exit_code": {
+      "description": "The code the process returned. null: the run did not finish, because it is still going or it was killed.",
+      "type": ["integer", "null"]
+    },
+    "complete": {
+      "description": "Every spec ran to its end.",
+      "type": "boolean"
+    },
+    "stopped": {
+      "description": "Why the run ended early, or null.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["reason", "message"],
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "enum": [
+                "spec_invalid",
+                "hooks_invalid",
+                "no_specs",
+                "agent_start_failed",
+                "agent_not_observed",
+                "interrupted",
+                "crashed"
+              ]
+            },
+            "message": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "git_sha": {
+      "description": "HEAD where highbar ran, which is not always the agent's version. null outside a repository.",
+      "type": ["string", "null"]
+    },
+    "summary": { "$ref": "#/$defs/summary" },
+    "specs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/spec" }
+    }
+  },
+  "$defs": {
+    "time": {
+      "description": "UTC, with milliseconds.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    },
+    "status": { "enum": ["passed", "failed", "error"] },
+    "counts": {
+      "description": "How the executions ended. An error is neither a pass nor a failure: there is no rate here on purpose.",
+      "type": "object",
+      "required": ["passed", "failed", "error"],
+      "additionalProperties": false,
+      "properties": {
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "error": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["total", "passed", "failed", "errored", "variations"],
+      "additionalProperties": false,
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "errored": { "type": "integer", "minimum": 0 },
+        "variations": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": ["key", "path", "sha256", "complete", "summary", "warnings", "tests"],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "description": "The spec's path inside its repository: what joins it across reports. Outside a repository, the path as given.",
+          "type": "string"
+        },
+        "path": {
+          "description": "As given on the command line.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Of the file, read before the first test.",
+          "type": ["string", "null"]
+        },
+        "complete": { "type": "boolean" },
+        "summary": { "$ref": "#/$defs/summary" },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "tests": { "type": "array", "items": { "$ref": "#/$defs/test" } }
+      }
+    },
+    "test": {
+      "type": "object",
+      "required": [
+        "id",
+        "suite",
+        "name",
+        "definition_sha256",
+        "status",
+        "runs",
+        "min_pass",
+        "counts",
+        "duration_ms",
+        "errors",
+        "phrasings"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The test's id in the spec, or <suite>/<name>. Unique in a spec.",
+          "type": "string"
+        },
+        "suite": { "type": "string" },
+        "name": { "type": "string" },
+        "definition_sha256": {
+          "description": "Of the trigger, the turns, the expectation and the variations. Equal hashes measured the same thing.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "status": { "$ref": "#/$defs/status" },
+        "runs": { "type": "integer", "minimum": 1 },
+        "min_pass": { "type": "integer", "minimum": 0 },
+        "counts": { "$ref": "#/$defs/counts" },
+        "duration_ms": { "type": "number" },
+        "errors": { "type": "array", "items": { "type": "string" } },
+        "phrasings": { "type": "array", "items": { "$ref": "#/$defs/phrasing" } }
+      }
+    },
+    "phrasing": {
+      "type": "object",
+      "required": ["kind", "text", "status", "counts", "executions"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["trigger", "variation", "conversation"] },
+        "text": {
+          "description": "null for a conversation: each turn has its own.",
+          "type": ["string", "null"]
+        },
+        "status": { "$ref": "#/$defs/status" },
+        "counts": { "$ref": "#/$defs/counts" },
+        "executions": { "type": "array", "items": { "$ref": "#/$defs/execution" } }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": [
+        "execution_id",
+        "run",
+        "started_at",
+        "status",
+        "duration_ms",
+        "errors",
+        "turns"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "execution_id": {
+          "description": "The X-Highbar-Test value of this execution.",
+          "type": "string"
+        },
+        "run": { "type": "integer", "minimum": 1 },
+        "started_at": { "$ref": "#/$defs/time" },
+        "status": { "$ref": "#/$defs/status" },
+        "duration_ms": {
+          "description": "Includes agent.settle_time.",
+          "type": "number"
+        },
+        "errors": { "type": "array", "items": { "type": "string" } },
+        "turns": { "type": "array", "items": { "$ref": "#/$defs/turn" } }
+      }
+    },
+    "turn": {
+      "type": "object",
+      "required": ["trigger", "response", "response_ms", "correlate", "tools"],
+      "additionalProperties": false,
+      "properties": {
+        "trigger": { "type": "string" },
+        "response": {
+          "description": "null: no reply came. An empty reply is \"\".",
+          "type": ["string", "null"]
+        },
+        "response_ms": {
+          "description": "The send alone, without agent.settle_time. null when no reply came.",
+          "type": ["number", "null"]
+        },
+        "correlate": {
+          "description": "The values of agent.correlate for this turn: what finds its records in the trace file.",
+          "type": "object"
+        },
+        "tools": { "type": "array", "items": { "$ref": "#/$defs/tool" } }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "required": ["name", "args", "error", "duration_ms", "late"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "args": { "type": "object" },
+        "error": { "type": ["string", "null"] },
+        "duration_ms": { "type": ["number", "null"] },
+        "late": {
+          "description": "Recorded after the test's window closed.",
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
