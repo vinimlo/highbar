@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import signal
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
+from dataclasses import replace
+from functools import partial
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import FrameType
@@ -22,6 +24,7 @@ from highbar.engine.run_spec import load_session_hooks, run_spec
 from highbar.engine.runs import check_runs
 from highbar.engine.schema import SpecError
 from highbar.engine.session import SessionError, SessionHooks
+from highbar.reporters.json_report import JsonReport, ReportError
 from highbar.reporters.terminal import format_summary
 from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
 from highbar.variations.generator import VariationError, VariationGenerator
@@ -32,6 +35,7 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_UNRUNNABLE = 2
 EXIT_INTERRUPTED = 130  # the shell's code for a run stopped by Ctrl-C (128 + SIGINT)
+EXIT_SIGNALED = 128  # plus the signal's number
 
 app = typer.Typer(
     name="highbar",
@@ -109,24 +113,122 @@ def run(
             "runs still wins. With min_pass, a flaky test becomes a gate."
         ),
     ),
+    report_to: str | None = typer.Option(
+        None,
+        "--report",
+        metavar="json=FILE",
+        help=(
+            "Also write the results to FILE as JSON. It is replaced before the first "
+            "message, and written on every way out of the run."
+        ),
+    ),
 ) -> None:
     """Run behavior tests against your agent."""
     paths = _discover_specs(spec_path)
+    report = _open_report(report_to, paths)
+    try:
+        code = _run_all(paths, report, runs=runs, frozen=frozen, keep_traces=keep_traces)
+    except SystemExit as e:
+        # SIGTERM or SIGHUP, from _terminate_as_exit, or rich when the reader closed
+        # stdout: the agent is already down.
+        code = e.code if isinstance(e.code, int) else EXIT_FAILED
+        if report is not None:
+            signaled = code > EXIT_SIGNALED
+            message = f"stopped by signal {code - EXIT_SIGNALED}" if signaled else "output closed"
+            report.stop("interrupted", message)
+        raise SystemExit(_close_report(report, code)) from None
+    except Exception as e:
+        # A bug in highbar is not a test result. It ends as it always did, with its
+        # traceback and a 1, and the file is what tells it from a failed test.
+        if report is not None:
+            report.stop("crashed", f"{type(e).__name__}: {e}")
+            _close_report(report, EXIT_FAILED)
+        raise
+    raise typer.Exit(_close_report(report, code))
+
+
+def _open_report(value: str | None, paths: list[str]) -> JsonReport | None:
+    """The report of this run, already on disk, or exit 2 before anything starts.
+
+    Writing it now proves the path works before an hour of tests, and replaces an
+    older report: a run that dies must not leave someone else's green at that path.
+    """
+    if value is None:
+        return None
+    kind, separator, target = value.partition("=")
+    if kind != "json" or not separator or not target:
+        console.print(f"  [red]\u2717[/red] --report takes json=<file>, got {escape(value)}")
+        raise typer.Exit(EXIT_UNRUNNABLE)
+    path = Path(target)
+    if path.resolve() in {Path(spec).resolve() for spec in paths}:
+        console.print(f"  [red]\u2717[/red] --report: {escape(target)} is a spec of this run")
+        raise typer.Exit(EXIT_UNRUNNABLE)
+    report = JsonReport(path, version=_version())
+    try:
+        report.start()
+    except ReportError as e:
+        console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)
+        raise typer.Exit(EXIT_UNRUNNABLE) from None
+    return report
+
+
+def _close_report(report: JsonReport | None, code: int) -> int:
+    """Write the final report. A CI job counts on the file, so losing it cannot be a 0."""
+    if report is None:
+        return code
+    try:
+        report.finish(code)
+    except ReportError as e:
+        _last_line(f"  [red]\u2717[/red] {escape(str(e))}")
+        return EXIT_UNRUNNABLE
+    _last_line(f"  Report: {escape(str(report.path))}\n")
+    return code
+
+
+def _last_line(message: str) -> None:
+    """Print after the verdict. rich exits 1 on a closed stdout, and the code is decided."""
+    with suppress(SystemExit):
+        console.print(message, soft_wrap=True)
+
+
+def _stopped(report: JsonReport | None, reason: str, message: str, code: int) -> int:
+    if report is not None:
+        report.stop(reason, message)
+    return code
+
+
+def _run_all(
+    paths: list[str],
+    report: JsonReport | None,
+    *,
+    runs: int | None,
+    frozen: bool,
+    keep_traces: bool,
+) -> int:
+    """Run every spec and return the exit code.
+
+    It returns the code rather than raising typer.Exit, which is a RuntimeError and
+    would read as a crash on its way out.
+    """
     if not paths:
         console.print("[red]No spec files found.[/red]")
-        raise typer.Exit(EXIT_UNRUNNABLE)
+        return _stopped(report, "no_specs", "No spec files found.", EXIT_UNRUNNABLE)
 
     console.print(f"\n  [bold]Highbar v{_version()}[/bold]")
 
     # Every spec is parsed before any agent starts: a typo in the third file must not
     # cost the time of running the first two, nor leave half a run behind.
-    specs = _parse_all(paths, runs=runs)
+    failures: list[str] = []
+    specs = _parse_all(paths, runs=runs, failures=failures)
     if specs is None:
-        raise typer.Exit(EXIT_UNRUNNABLE)
+        return _stopped(report, "spec_invalid", "; ".join(failures), EXIT_UNRUNNABLE)
+    specs = _sharing_secrets(specs)
+    if report is not None:
+        report.plan(specs)
     # Python session hooks are imported before any agent starts, like the specs parsed.
-    hooks = _load_all_hooks(specs)
+    hooks = _load_all_hooks(specs, failures)
     if hooks is None:
-        raise typer.Exit(EXIT_UNRUNNABLE)
+        return _stopped(report, "hooks_invalid", "; ".join(failures), EXIT_UNRUNNABLE)
 
     # One cache for the whole run. It reads its file lazily, so specs that ask for no
     # variations never touch it.
@@ -146,6 +248,7 @@ def run(
                         console=console,
                         session=hooks[current],
                         default_runs=runs,
+                        on_end=partial(report.add, current, spec) if report else None,
                     )
                 )
     except AgentStartError as e:
@@ -155,22 +258,23 @@ def run(
             f"  [red]\u2717[/red] {escape(current)}: could not start the agent: {escape(str(e))}",
             soft_wrap=True,
         )
-        raise typer.Exit(EXIT_UNRUNNABLE) from None
+        message = f"{current}: could not start the agent: {e}"
+        return _stopped(report, "agent_start_failed", message, EXIT_UNRUNNABLE)
     except AgentNotObservedError as e:
         # Nothing could be checked: the agent is up but not instrumented (or not ours).
         console.print(f"  [red]\u2717[/red] {escape(current)}: {escape(str(e))}", soft_wrap=True)
-        raise typer.Exit(EXIT_UNRUNNABLE) from None
+        return _stopped(report, "agent_not_observed", f"{current}: {e}", EXIT_UNRUNNABLE)
     except KeyboardInterrupt:
         # The runner's finally has already stopped the agent's process group.
         console.print("\n  Interrupted.")
-        raise typer.Exit(EXIT_INTERRUPTED) from None
+        return _stopped(report, "interrupted", "stopped by Ctrl-C", EXIT_INTERRUPTED)
 
     total = _total(summaries)
     if len(summaries) > 1:
         console.print(f"  Total: {format_summary(total, styled=True)}\n")
 
     # An error is not a pass: a run where a test could not be checked is not green.
-    raise typer.Exit(EXIT_FAILED if total.failed or total.errored else EXIT_OK)
+    return EXIT_FAILED if total.failed or total.errored else EXIT_OK
 
 
 @app.command()
@@ -269,7 +373,17 @@ def validate(
     raise typer.Exit(EXIT_UNRUNNABLE if specs is None else EXIT_OK)
 
 
-def _load_all_hooks(specs: list[tuple[str, Spec]]) -> dict[str, SessionHooks | None] | None:
+def _sharing_secrets(specs: list[tuple[str, Spec]]) -> list[tuple[str, Spec]]:
+    """Each spec with the ${VAR} values of all: an agent can echo another spec's token."""
+    secrets = {value: name for _, spec in specs for value, name in spec.agent.secrets.items()}
+    return [
+        (path, replace(spec, agent=replace(spec.agent, secrets=secrets))) for path, spec in specs
+    ]
+
+
+def _load_all_hooks(
+    specs: list[tuple[str, Spec]], failures: list[str]
+) -> dict[str, SessionHooks | None] | None:
     """Each spec's session hooks, loaded. ``None`` (after one line each) if any fails."""
     hooks: dict[str, SessionHooks | None] = {}
     failed = False
@@ -278,12 +392,17 @@ def _load_all_hooks(specs: list[tuple[str, Spec]]) -> dict[str, SessionHooks | N
             hooks[path] = load_session_hooks(path, spec)
         except SessionError as e:
             console.print(f"  [red]\u2717[/red] {escape(path)}: {escape(str(e))}", soft_wrap=True)
+            failures.append(f"{path}: {e}")
             failed = True
     return None if failed else hooks
 
 
 def _parse_all(
-    paths: list[str], *, report_valid: bool = False, runs: int | None | bool = False
+    paths: list[str],
+    *,
+    report_valid: bool = False,
+    runs: int | None | bool = False,
+    failures: list[str] | None = None,
 ) -> list[tuple[str, Spec]] | None:
     """Parse every spec, printing one line per invalid one. ``None`` if any is invalid.
 
@@ -303,6 +422,8 @@ def _parse_all(
         except SpecError as e:
             # The message already starts with the file's path.
             console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)
+            if failures is not None:
+                failures.append(str(e))
             invalid = True
             continue
         specs.append((path, spec))

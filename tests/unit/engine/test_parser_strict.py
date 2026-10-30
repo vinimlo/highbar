@@ -101,7 +101,7 @@ class TestUnknownKeys:
         )
 
         with pytest.raises(
-            SpecError, match=r"unknown key 'zzz' \(allowed: expect, min_pass, name, runs, "
+            SpecError, match=r"unknown key 'zzz' \(allowed: expect, id, min_pass, name, runs, "
         ):
             parse_spec(path)
 
@@ -617,3 +617,122 @@ def test_i4_a_turn_whose_only_check_is_forbid_asserts_something(tmp_path: Path) 
     (test,) = parse_spec(path).suites[0].tests
 
     assert test.requires_observation
+
+
+class TestStableKey:
+    """A test's key joins two reports, so it has to name one test (spec D15)."""
+
+    def test_j9_duplicate_key_in_a_suite_is_a_spec_error(self, tmp_path: Path) -> None:
+        path = _spec(
+            tmp_path,
+            _one_test("""\
+                - name: A
+                  trigger: "one"
+                  expect: {function_calls: []}
+                - name: A
+                  trigger: "two"
+                  expect: {function_calls: []}
+                """),
+        )
+
+        with pytest.raises(SpecError) as e:
+            parse_spec(path)
+
+        assert "suites[0].tests[1]" in str(e.value)
+        assert "'S/A'" in str(e.value)
+        assert "suites[0].tests[0]" in str(e.value)
+        assert " id " in str(e.value)
+
+    def test_j9_duplicate_explicit_id_across_suites_is_a_spec_error(self, tmp_path: Path) -> None:
+        path = _spec(
+            tmp_path,
+            """\
+            suites:
+              - name: S
+                tests:
+                  - id: same
+                    trigger: "one"
+                    expect: {function_calls: []}
+              - name: T
+                tests:
+                  - id: same
+                    trigger: "two"
+                    expect: {function_calls: []}
+            """,
+        )
+
+        with pytest.raises(SpecError, match=r"suites\[1\]\.tests\[0\].*'same'"):
+            parse_spec(path)
+
+    def test_j9_two_unnamed_multi_turn_tests_need_an_id(self, tmp_path: Path) -> None:
+        conversation = '- turns:\n    - trigger: "hi"\n      expect: {function_calls: []}\n'
+        path = _spec(tmp_path, _one_test(conversation * 2))
+
+        with pytest.raises(SpecError, match=r"multi-turn \(1 turns\)"):
+            parse_spec(path)
+
+    def test_j9_an_id_tells_two_tests_of_the_same_name_apart(self, tmp_path: Path) -> None:
+        path = _spec(
+            tmp_path,
+            _one_test("""\
+                - id: first
+                  name: A
+                  trigger: "one"
+                  expect: {function_calls: []}
+                - id: second
+                  name: A
+                  trigger: "two"
+                  expect: {function_calls: []}
+                """),
+        )
+
+        (suite,) = parse_spec(path).suites
+        assert [test.id for test in suite.tests] == ["first", "second"]
+
+    def test_j9_same_name_in_two_suites_is_fine(self, tmp_path: Path) -> None:
+        path = _spec(
+            tmp_path,
+            """\
+            suites:
+              - name: S
+                tests:
+                  - name: A
+                    trigger: "one"
+                    expect: {function_calls: []}
+              - name: T
+                tests:
+                  - name: A
+                    trigger: "two"
+                    expect: {function_calls: []}
+            """,
+        )
+
+        assert len(parse_spec(path).suites) == 2
+
+    @pytest.mark.parametrize("value", ['""', "12", "[a]"])
+    def test_test_id_must_be_a_non_empty_string(self, tmp_path: Path, value: str) -> None:
+        path = _spec(
+            tmp_path,
+            _one_test(f"""\
+                - id: {value}
+                  trigger: "one"
+                  expect: {{function_calls: []}}
+                """),
+        )
+
+        with pytest.raises(SpecError, match=r"suites\[0\]\.tests\[0\].*id"):
+            parse_spec(path)
+
+    def test_id_works_on_a_multi_turn_test(self, tmp_path: Path) -> None:
+        path = _spec(
+            tmp_path,
+            _one_test("""\
+                - id: chat
+                  turns:
+                    - trigger: "hi"
+                      expect: {function_calls: []}
+                """),
+        )
+
+        (suite,) = parse_spec(path).suites
+        assert suite.tests[0].id == "chat"

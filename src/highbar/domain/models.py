@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 
 class Status(StrEnum):
@@ -234,12 +237,55 @@ class Test:
     # takes the run's default; min_pass may be a fraction of runs.
     runs: int | None = None
     min_pass: int | float | None = None
+    # What joins this test across reports; without it, the key is suite/name (D15).
+    id: str | None = None
 
     @property
     def requires_observation(self) -> bool:
         if self.turns:
             return any(turn.expect.requires_observation for turn in self.turns)
         return self.expect is not None and self.expect.requires_observation
+
+    @property
+    def plain_name(self) -> str:
+        """The test's name for {{test.name}}, hooks and keys: no counts, no decoration."""
+        return self.name or self.trigger or f"multi-turn ({len(self.turns or [])} turns)"
+
+    @property
+    def definition_sha256(self) -> str:
+        """A hash of what the test measures, to tell which results can be put together.
+
+        Labels (``name``, ``id``) and sampling (``runs``, ``min_pass``) stay out: they
+        change neither the message nor what counts as right (D16).
+        """
+        definition = {
+            "trigger": self.trigger,
+            "expect": asdict(self.expect) if self.expect else None,
+            "variations": self.variations,
+            "turns": [
+                {"trigger": turn.trigger, "expect": asdict(turn.expect)}
+                for turn in self.turns or []
+            ],
+        }
+        # ASCII, so a lone surrogate from YAML is an escape and not a failed encode.
+        text = json.dumps(_canonical(definition), sort_keys=True, default=str)
+        return hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
+def _canonical(value: Any) -> Any:
+    """``value`` with text keys: YAML's can be booleans, dates or null, and JSON sorts text."""
+    if isinstance(value, dict):
+        mapping = cast("dict[Any, Any]", value)
+        return {str(key): _canonical(item) for key, item in mapping.items()}
+    if isinstance(value, (list, tuple)):
+        items = cast("list[Any] | tuple[Any, ...]", value)
+        return [_canonical(item) for item in items]
+    return value
+
+
+def stable_key(suite: str, test: Test) -> str:
+    """The name of a test across runs: its ``id``, or ``<suite>/<name>`` (D15)."""
+    return test.id or f"{suite}/{test.plain_name}"
 
 
 @dataclass(frozen=True)
@@ -285,6 +331,93 @@ class TestResult:
         return self.status is Status.PASSED
 
 
+def iso_utc(timestamp: float) -> str:
+    """``2026-10-30T11:49:00.120Z``: the form every time in a result takes."""
+    moment = datetime.fromtimestamp(timestamp, UTC)
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+@dataclass(frozen=True)
+class Counts:
+    """How the executions of a test ended, in the three states of ``Status``.
+
+    There is no rate: with errors among them, the denominator is a choice, and whoever
+    computes one has to see that they are there (D14).
+    """
+
+    passed: int = 0
+    failed: int = 0
+    error: int = 0
+
+
+@dataclass(frozen=True)
+class ToolOutcome:
+    """A call the agent made. ``result`` and ``context`` stay in the trace file (D18)."""
+
+    name: str
+    args: dict[str, Any]
+    error: str | None
+    duration_ms: float
+    late: bool = False  # recorded after the test's window closed
+
+
+@dataclass(frozen=True)
+class TurnOutcome:
+    """One message of an execution.
+
+    ``response`` is None when no reply came, which is not the same as an empty one.
+    ``response_ms`` is the send alone, without ``settle_time``. ``correlate`` holds the
+    values that lead to this turn's records in the trace file (D18).
+    """
+
+    trigger: str
+    response: str | None
+    response_ms: float | None
+    correlate: dict[str, Any]
+    tools: tuple[ToolOutcome, ...] = ()
+
+
+@dataclass(frozen=True)
+class ExecutionOutcome:
+    """One run of one phrasing: one test id and one session."""
+
+    execution_id: str
+    run: int  # from 1
+    started_at: str
+    status: Status
+    duration_ms: float
+    errors: tuple[str, ...] = ()
+    turns: tuple[TurnOutcome, ...] = ()
+
+
+@dataclass(frozen=True)
+class PhrasingOutcome:
+    """The trigger, one of its variations, or the conversation of a multi-turn test."""
+
+    kind: str  # "trigger", "variation" or "conversation"
+    text: str | None  # None for a conversation: each turn has its own
+    status: Status
+    counts: Counts
+    executions: tuple[ExecutionOutcome, ...] = ()
+
+
+@dataclass(frozen=True)
+class TestOutcome:
+    """A test in its final state: late calls included, values from ${VAR} masked."""
+
+    id: str  # the key that joins it across reports, see stable_key()
+    suite: str
+    name: str
+    definition_sha256: str
+    status: Status
+    runs: int
+    min_pass: int
+    counts: Counts
+    duration_ms: float
+    errors: tuple[str, ...] = ()
+    phrasings: tuple[PhrasingOutcome, ...] = ()
+
+
 @dataclass(frozen=True)
 class RunSummary:
     """Summary of a complete test run.
@@ -292,6 +425,9 @@ class RunSummary:
     ``variations`` counts the paraphrases that ran, each once however many ``runs`` it
     had. They are extra phrasings of a test, not extra tests: a test with 5 variations
     still passes or fails as one.
+
+    ``tests`` holds every finished test in its final state, and the counts are theirs:
+    a late call can change a test after its result was first shown.
     """
 
     total: int
@@ -300,3 +436,5 @@ class RunSummary:
     errored: int
     duration_ms: float
     variations: int = 0
+    tests: tuple[TestOutcome, ...] = ()
+    warnings: tuple[str, ...] = ()

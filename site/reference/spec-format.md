@@ -43,9 +43,12 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `expect` | mapping | What must hold. Required with `trigger`. |
 | `turns` | list | A conversation: each turn has `trigger`, `expect` and an optional `name`. |
 | `name` | text | Shown in the output instead of the trigger. |
+| `id` | text | The test's key in a [report](/reference/report), for when the name or the trigger may change. Default: `<suite>/<name>`, where the name falls back to the trigger. |
 | `variations` | integer | How many paraphrases of the trigger to run as well. |
 | `runs` | integer ≥ 1 | How many times to run each phrasing. |
 | `min_pass` | integer ≥ 1, or fraction in (0, 1] | How many runs must pass. Default: `defaults.min_pass`, else all. A fraction is rounded up. |
+
+Each test's key is unique in a spec. Two tests with the same key are a spec error: give one an `id` or a different `name`.
 
 ## `expect`
 

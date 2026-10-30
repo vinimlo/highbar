@@ -12,6 +12,8 @@ Serves ``GET /health`` -> 200 and ``POST /chat`` -> ``{"response": "ok"}``.
     --no-traces      write no trace records, like an agent without the SDK
     --replies A,B    POST /chat answers A, then B, and so on, then A again
                      (default: ok), like an agent that is right only some of the time
+    --late-tool T:S  S seconds after answering a message with "late" in it, record a
+                     call to tool T, like work the agent left running in the background
 
 With HIGHBAR_TRACES_URL set (and no --no-traces), it writes the trace contract the
 way any emitter would, without the SDK: a `hello` when it starts and a `turn` per
@@ -42,6 +44,7 @@ def main() -> None:
     parser.add_argument("--ignore-term", action="store_true")
     parser.add_argument("--no-traces", action="store_true")
     parser.add_argument("--replies", default="ok")
+    parser.add_argument("--late-tool", default=None)
     args = parser.parse_args()
     replies = itertools.cycle(args.replies.split(","))
     replies_lock = threading.Lock()
@@ -91,7 +94,12 @@ def main() -> None:
                 if isinstance(payload, dict)
                 else None,
             }
-            record({"type": "turn", "context": {k: v for k, v in context.items() if v is not None}})
+            tags = {k: v for k, v in context.items() if v is not None}
+            record({"type": "turn", "context": tags})
+            if args.late_tool and "late" in str(payload):
+                tool, seconds = args.late_tool.split(":")
+                late = {"type": "tool", "fn": tool, "args": {}, "context": tags}
+                threading.Timer(float(seconds), record, [late]).start()
             with replies_lock:
                 reply = next(replies)
             body = json.dumps({"response": reply}).encode()

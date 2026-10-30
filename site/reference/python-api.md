@@ -8,7 +8,7 @@ if summary.failed or summary.errored:
     raise SystemExit(1)
 ```
 
-## `highbar.run(spec, *, frozen=False, keep_traces=False, runs=None)`
+## `highbar.run(spec, *, frozen=False, keep_traces=False, runs=None, reporter=None)`
 
 Runs one spec file the way `highbar run` does, prints the same report, and returns a summary.
 
@@ -16,6 +16,7 @@ Runs one spec file the way `highbar run` does, prints the same report, and retur
 - `frozen`: never generate variations (`--frozen`).
 - `keep_traces`: keep the trace file of an agent highbar started (`--keep-traces`).
 - `runs`: in place of the spec's `defaults.runs` (`--runs`); a test's own `runs` still wins. A whole number of at least 1.
+- `reporter`: receives each test as it ends, in place of the terminal lines of each test; `Running <spec>` and `Agent log:` still print. It has the methods of `highbar.domain.protocols.Reporter`. A late call can change a test after `on_test_result`; `on_run_end` gets the final state.
 
 An agent highbar started is stopped before `run` returns or raises.
 
@@ -27,6 +28,8 @@ An agent highbar started is stopped before `run` returns or raises.
 | `passed`, `failed`, `errored` | Tests in each state. |
 | `duration_ms` | Wall time of the run. |
 | `variations` | Paraphrases that ran, each counted once. |
+| `tests` | Each test in its final state: the fields of the [report](/reference/report#each-test), as dataclasses. Values from `${VAR}` are masked. |
+| `warnings` | The warnings of the run. |
 
 ### Errors
 

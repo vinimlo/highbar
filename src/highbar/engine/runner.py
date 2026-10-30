@@ -14,17 +14,25 @@ from highbar.adapters.http_client import AgentResponseError, HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
 from highbar.assertions.response import truncate
 from highbar.domain.models import (
+    Counts,
+    ExecutionOutcome,
     Expect,
+    PhrasingOutcome,
     RunSummary,
     Spec,
     Status,
     Suite,
     Test,
+    TestOutcome,
     TestResult,
+    ToolOutcome,
     Trace,
     Turn,
+    TurnOutcome,
     Window,
     combine,
+    iso_utc,
+    stable_key,
 )
 from highbar.domain.protocols import Assertion, Reporter, TraceCollector, VariationGenerator
 from highbar.engine import observation
@@ -39,7 +47,7 @@ from highbar.engine.observation import (
 )
 from highbar.engine.placeholders import PlaceholderError, Values, render
 from highbar.engine.runs import phrasing_status, resolve_runs
-from highbar.engine.secrets import redact
+from highbar.engine.secrets import redact, redact_value
 from highbar.engine.session import SessionContext, SessionError, SessionHooks
 from highbar.engine.templates import TemplateError, resolve_template
 
@@ -66,6 +74,18 @@ UNDECLARED_WARNING = (
 
 
 @dataclass
+class _TurnLog:
+    """What happened to one message of an execution, for the result of the run."""
+
+    trigger: str
+    correlate: dict[str, Any] = field(default_factory=dict[str, Any])
+    response: str | None = None
+    response_ms: float | None = None
+    tools: list[Trace] = field(default_factory=list[Trace])
+    late: list[Trace] = field(default_factory=list[Trace])
+
+
+@dataclass
 class _Execution:
     """One execution of a test (one test id), kept for the whole run.
 
@@ -82,6 +102,15 @@ class _Execution:
     response: str = ""
     tools: list[Trace] = field(default_factory=list[Trace])
     passed: bool = False
+    execution_id: str = ""
+    started_at: float = 0.0
+    duration_ms: float = 0.0
+    errors: list[str] = field(default_factory=list[str])
+    turns: list[_TurnLog] = field(default_factory=list[_TurnLog])
+
+    def close(self, result: TestResult) -> TestResult:
+        self.errors, self.duration_ms = list(result.errors), result.duration_ms
+        return result
 
 
 @dataclass
@@ -105,13 +134,26 @@ class _Masking:
 
     def on_test_result(self, test_name: str, result: TestResult) -> None:
         errors = [redact(error, self._secrets) for error in result.errors]
-        self._reporter.on_test_result(test_name, replace(result, errors=errors))
+        traces = [self._masked(trace) for trace in result.traces]
+        self._reporter.on_test_result(
+            redact(test_name, self._secrets), replace(result, errors=errors, traces=traces)
+        )
 
     def on_warning(self, message: str) -> None:
         self._reporter.on_warning(redact(message, self._secrets))
 
     def on_run_end(self, summary: RunSummary) -> None:
         self._reporter.on_run_end(summary)
+
+    def _masked(self, trace: Trace) -> Trace:
+        return replace(
+            trace,
+            fn=redact(trace.fn, self._secrets),
+            args=redact_value(trace.args, self._secrets),
+            result=redact_value(trace.result, self._secrets),
+            error=redact_value(trace.error, self._secrets),
+            context=redact_value(trace.context, self._secrets),
+        )
 
 
 def _same_correlation(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
@@ -170,6 +212,8 @@ class _Gate:
     min_pass: int
     counted: bool  # the title shows passed/runs: no variations, more than one run
     runs: list[list[Status]] = field(default_factory=list[list[Status]])
+    # What each phrasing is: its kind and its text, in the order of ``runs``.
+    phrasings: list[tuple[str, str | None]] = field(default_factory=list[tuple[str, str | None]])
 
     @property
     def status(self) -> Status:
@@ -186,12 +230,33 @@ class _Gate:
         execution = finding.execution
         run = self.runs[execution.phrasing]
         run[execution.run] = combine([run[execution.run], finding.status])
+        execution.errors.append(finding.error)
 
     def describe(self, finding: _Finding) -> str:
         execution = finding.execution
         total = len(self.runs[execution.phrasing])
         which = f" (run {execution.run + 1} of {total})" if total > 1 else ""
         return f"{execution.label}{finding.error}{which}"
+
+
+@dataclass
+class _Reported:
+    """A test whose result went out, kept to the end: a late call can still change it."""
+
+    suite: str
+    test: Test
+    name: str  # as the reporter showed it
+    status: Status
+    duration_ms: float
+    errors: list[str]
+
+
+def _counts(statuses: list[Status]) -> Counts:
+    return Counts(
+        passed=statuses.count(Status.PASSED),
+        failed=statuses.count(Status.FAILED),
+        error=statuses.count(Status.ERROR),
+    )
 
 
 def _test_name(test: Test, variations_run: int | None = None) -> str:
@@ -208,11 +273,6 @@ def _test_name(test: Test, variations_run: int | None = None) -> str:
             return f"{label} ({test.variations} variations)"
         return f"{label} ({variations_run} of {test.variations} variations)"
     return label
-
-
-def _plain_name(test: Test) -> str:
-    """The test's name for {{test.name}} and session hooks: no counts, no decoration."""
-    return test.name or test.trigger or f"multi-turn ({len(test.turns or [])} turns)"
 
 
 def _turn_label(turn: Turn, previous_traces: list[Trace]) -> str:
@@ -256,6 +316,7 @@ class TestRunner:
         self._assertions = assertions
         # Every message passes through it: values from ${VAR} never reach the output.
         self._reporter = _Masking(reporter, secrets) if secrets else reporter
+        self._secrets: Mapping[str, str] = secrets or {}
         self._settle_time = settle_time
         self._variations = variations
         self._managed = managed
@@ -277,6 +338,10 @@ class TestRunner:
         self._undeclared: dict[str, None] = {}
         self._executions: list[_Execution] = []
         self._findings: list[_Finding] = []
+        self._gates: dict[int, _Gate] = {}
+        self._reported: dict[int, _Reported] = {}
+        self._warnings: list[str] = []
+        self._run_start = time.time()
         self._test_index = 0
         # Where the next read starts: each record is read once, and none is missed
         # between two tests (a late call is often written right there).
@@ -284,16 +349,14 @@ class TestRunner:
 
     def run(self, spec: Spec) -> RunSummary:
         """Run all suites in the spec."""
-        counts = dict.fromkeys(Status, 0)
-        reported: dict[int, tuple[str, Status]] = {}
         self._variations_run = 0
         self._default_min_pass = spec.default_min_pass
         self._warned = set()
         self._inventory, self._seen, self._undeclared = None, set(), {}
         self._executions, self._findings, self._test_index = [], [], 0
-        self._gates: dict[int, _Gate] = {}
+        self._gates, self._reported, self._warnings = {}, {}, []
         observes = any(test.requires_observation for suite in spec.suites for test in suite.tests)
-        run_start = time.time()
+        self._run_start = time.time()
 
         self._adapter.start()
         try:
@@ -310,8 +373,9 @@ class TestRunner:
                     self._last_variation_count = None
                     result = self._run_test(test)
                     own = [f for f in self._findings if f.execution.test_index == self._test_index]
-                    earlier = [f for f in self._findings if f not in own]
-                    self._findings = []
+                    # The rest stay in self._findings until applied: an interrupt can land
+                    # on any line below, and _settle must still find them.
+                    self._findings = [f for f in self._findings if f not in own]
                     # A run's late call lands in the next run's read: it is part of this
                     # test's result, not news about a reported one.
                     if own:
@@ -325,45 +389,138 @@ class TestRunner:
                             errors=[*result.errors, *(gate.describe(f) for f in own)],
                         )
                     name = _test_name(test, self._last_variation_count)
-                    counts[result.status] += 1
-                    reported[self._test_index] = (name, result.status)
+                    self._reported[self._test_index] = _Reported(
+                        suite.name, test, name, result.status, result.duration_ms, [*result.errors]
+                    )
                     self._reporter.on_test_result(name, result)
-                    self._report_late(earlier, reported, counts)
+                    self._report_late(self._findings)
                     self._test_index += 1
             if observes and self._executions:
                 # The last test has no next one whose read would show its late calls.
                 time.sleep(self._settle_time)
                 self._read_after_last_test()
-                self._report_late(self._findings, reported, counts)
+                self._report_late(self._findings)
             self._warn_undeclared()
         finally:
             self._adapter.stop()
+            self._settle()
 
-        run_duration = (time.time() - run_start) * 1000
-        summary = RunSummary(
-            total=sum(counts.values()),
-            passed=counts[Status.PASSED],
-            failed=counts[Status.FAILED],
-            errored=counts[Status.ERROR],
-            duration_ms=run_duration,
-            variations=self._variations_run,
-        )
+        summary = self.snapshot()
         self._reporter.on_run_end(summary)
         return summary
 
-    def _report_late(
-        self,
-        findings: list[_Finding],
-        reported: dict[int, tuple[str, Status]],
-        counts: dict[Status, int],
-    ) -> None:
-        """Judge a reported test again: counted again if its status changed, said always."""
+    def snapshot(self) -> RunSummary:
+        """Where the run stands: all of it once ``run()`` returned, or what finished.
+
+        Every status comes from the tests' gates, never from what went to the reporter:
+        a late call changes a test after ``on_test_result`` (D13). A test still running
+        is left out: half a test is not a result.
+        """
+        tests = tuple(self._outcome(index, seen) for index, seen in self._reported.items())
+        statuses = [test.status for test in tests]
+        return RunSummary(
+            total=len(tests),
+            passed=statuses.count(Status.PASSED),
+            failed=statuses.count(Status.FAILED),
+            errored=statuses.count(Status.ERROR),
+            duration_ms=(time.time() - self._run_start) * 1000,
+            variations=self._variations_run,
+            tests=tests,
+            warnings=tuple(redact(message, self._secrets) for message in self._warnings),
+        )
+
+    def _outcome(self, index: int, reported: _Reported) -> TestOutcome:
+        test, gate = reported.test, self._gates.get(index)
+        runs, min_pass = resolve_runs(test, self._default_runs, self._default_min_pass)
+        phrasings: list[PhrasingOutcome] = []
+        statuses_by_phrasing = gate.runs if gate else []
+        kinds = gate.phrasings if gate else []
+        for number, ((kind, text), statuses) in enumerate(
+            zip(kinds, statuses_by_phrasing, strict=True)
+        ):
+            executions = [
+                self._execution_outcome(execution, statuses[execution.run])
+                for execution in self._executions
+                if execution.test_index == index and execution.phrasing == number
+            ]
+            phrasings.append(
+                PhrasingOutcome(
+                    kind=kind,
+                    text=self._mask(text),
+                    status=phrasing_status(statuses, min_pass),
+                    counts=_counts(statuses),
+                    executions=tuple(executions),
+                )
+            )
+        return TestOutcome(
+            id=self._mask(stable_key(reported.suite, test)),
+            suite=self._mask(reported.suite),
+            name=self._mask(test.plain_name),
+            definition_sha256=test.definition_sha256,
+            status=gate.status if gate else reported.status,
+            runs=runs,
+            min_pass=min_pass,
+            counts=_counts([status for run in statuses_by_phrasing for status in run]),
+            duration_ms=reported.duration_ms,
+            errors=self._mask(tuple(reported.errors)),
+            phrasings=tuple(phrasings),
+        )
+
+    def _execution_outcome(self, execution: _Execution, status: Status) -> ExecutionOutcome:
+        return ExecutionOutcome(
+            execution_id=execution.execution_id,
+            run=execution.run + 1,
+            started_at=iso_utc(execution.started_at),
+            status=status,
+            duration_ms=execution.duration_ms,
+            errors=self._mask(tuple(execution.errors)),
+            turns=tuple(
+                TurnOutcome(
+                    trigger=self._mask(turn.trigger),
+                    response=self._mask(turn.response),
+                    response_ms=turn.response_ms,
+                    correlate=self._mask(turn.correlate),
+                    tools=(
+                        *(self._tool_outcome(tool, late=False) for tool in turn.tools),
+                        *(self._tool_outcome(tool, late=True) for tool in turn.late),
+                    ),
+                )
+                for turn in execution.turns
+            ),
+        )
+
+    def _tool_outcome(self, tool: Trace, *, late: bool) -> ToolOutcome:
+        return ToolOutcome(
+            name=self._mask(tool.fn),
+            args=self._mask(tool.args),
+            error=self._mask(tool.error),
+            duration_ms=tool.duration_ms,
+            late=late,
+        )
+
+    def _mask(self, value: Any) -> Any:
+        return redact_value(value, self._secrets)
+
+    def _warn(self, message: str) -> None:
+        self._warnings.append(message)
+        self._reporter.on_warning(message)
+
+    def _settle(self) -> None:
+        """A run that stopped halfway still counts what its reads found about reported tests.
+
+        Those findings wait for the test in progress to end, and it never will: without
+        this, a test highbar knows failed would come out as passed.
+        """
+        self._report_late([f for f in self._findings if f.execution.test_index in self._reported])
+
+    def _report_late(self, findings: list[_Finding]) -> None:
+        """Judge a reported test again, and say so: its final state comes from the gate."""
         by_test: dict[int, list[_Finding]] = {}
         for finding in findings:
             by_test.setdefault(finding.execution.test_index, []).append(finding)
         for index, group in by_test.items():
-            name, before = reported[index]
-            gate = self._gates[index]
+            reported, gate = self._reported[index], self._gates[index]
+            name, before = reported.name, reported.status
             for finding in group:
                 gate.demote(finding)
             after = gate.status
@@ -371,16 +528,13 @@ class TestRunner:
                 f" ({gate.counts[0]}/{gate.counts[1]}, min {gate.counts[2]})" if gate.counts else ""
             )
             detail = "; ".join(gate.describe(f) for f in group)
+            reported.errors.extend(gate.describe(f) for f in group)
             if after is not before:
-                counts[before] -= 1
-                counts[after] += 1
-                reported[index] = (name, after)
+                reported.status = after
                 verdict = "now fails" if after is Status.FAILED else "is now unverified"
-                self._reporter.on_warning(f"{name}: {verdict}{tally}: {detail}")
+                self._warn(f"{name}: {verdict}{tally}: {detail}")
             elif after is Status.PASSED:
-                self._reporter.on_warning(
-                    f"{name}: a run now fails{tally}, and the test still passes: {detail}"
-                )
+                self._warn(f"{name}: a run now fails{tally}, and the test still passes: {detail}")
         self._findings = []
 
     def _read_after_last_test(self) -> None:
@@ -417,6 +571,8 @@ class TestRunner:
         for execution, calls in late.values():
             was_passing = execution.passed and execution.expect is not None
             execution.tools = [*execution.tools, *calls]
+            if execution.turns:
+                execution.turns[-1].late.extend(calls)
             if not was_passing or execution.expect is None:
                 continue
             errors = self._check(execution.tools, execution.response, execution.expect)
@@ -574,15 +730,13 @@ class TestRunner:
             else name
             for name in unseen
         )
-        self._reporter.on_warning(UNDECLARED_WARNING.format(names=names))
+        self._warn(UNDECLARED_WARNING.format(names=names))
 
     def _warn_once(self, template: str, correlate: Mapping[Any, Any]) -> None:
         if template in self._warned:
             return
         self._warned.add(template)
-        self._reporter.on_warning(
-            template.format(untagged=_untagged(correlate), hint=_tag_hint(correlate))
-        )
+        self._warn(template.format(untagged=_untagged(correlate), hint=_tag_hint(correlate)))
 
     def _missing_file(self) -> str:
         """An attached agent's trace file is not there: no test could see a call (FR3).
@@ -626,9 +780,10 @@ class TestRunner:
         a multi-turn test. The test passes only if every phrasing reaches ``min_pass``.
         """
         start = time.time()
-        name = _plain_name(test)
+        name = test.plain_name
         runs, min_pass = resolve_runs(test, self._default_runs, self._default_min_pass)
 
+        kinds: list[tuple[str, str | None]] = [("conversation", None)]
         if test.turns:
             phrasings = [("", test.turns)]
         else:
@@ -644,6 +799,10 @@ class TestRunner:
                         duration_ms=(time.time() - start) * 1000,
                     )
                 triggers.extend(paraphrases)
+            kinds = [
+                ("trigger" if index == 0 else "variation", phrasing)
+                for index, phrasing in enumerate(triggers)
+            ]
             phrasings = [
                 # The failing phrasing is the whole finding: without it the report says
                 # the intent broke but not which sentence broke it. Index 0 is the
@@ -682,6 +841,7 @@ class TestRunner:
             if index > 0:
                 self._variations_run += 1
             gate.runs.append([r.status for r in results])
+            gate.phrasings.append(kinds[index])
             statuses.append(phrasing_status(gate.runs[-1], min_pass))
             passed = sum(1 for r in results if r.passed)
             errors.extend(label + error for error in _merged_errors(results))
@@ -741,7 +901,13 @@ class TestRunner:
             test_id=uuid.uuid4().hex, test_name=name, spec_path=self._spec_path
         )
         execution = _Execution(
-            self._test_index, label, {"test": context.test_id}, phrasing=phrasing, run=run
+            self._test_index,
+            label,
+            {"test": context.test_id},
+            phrasing=phrasing,
+            run=run,
+            started_at=start,
+            execution_id=context.test_id,
         )
         self._executions.append(execution)
         session: dict[str, Any] = {}
@@ -750,11 +916,15 @@ class TestRunner:
                 session = self._session.setup(context)
             except Exception as e:
                 # No session, so nothing to tear down, and nothing was sent.
-                return TestResult(
-                    status=Status.ERROR, errors=[str(e)], duration_ms=(time.time() - start) * 1000
+                return execution.close(
+                    TestResult(
+                        status=Status.ERROR,
+                        errors=[str(e)],
+                        duration_ms=(time.time() - start) * 1000,
+                    )
                 )
         try:
-            return self._turns(turns, start, labelled, context, session, execution)
+            return execution.close(self._turns(turns, start, labelled, context, session, execution))
         finally:
             if self._session is not None:
                 try:
@@ -762,7 +932,7 @@ class TestRunner:
                 except Exception as e:
                     # The test's result stands; a session left open is worth knowing.
                     reason = str(e) if isinstance(e, SessionError) else f"{type(e).__name__}: {e}"
-                    self._reporter.on_warning(f"{name}: session teardown failed: {reason}")
+                    self._warn(f"{name}: session teardown failed: {reason}")
 
     def _turns(
         self,
@@ -814,6 +984,8 @@ class TestRunner:
     ) -> TestResult:
         """Send one message, read what the agent recorded for it, and check it."""
         execution.passed = False
+        log = _TurnLog(trigger=trigger)
+        execution.turns.append(log)
 
         def unverified(error: str) -> TestResult:
             duration = (time.time() - start) * 1000
@@ -825,6 +997,7 @@ class TestRunner:
             # Sending the raw "{{...}}" would test a message nobody meant to write; the
             # turn is unverified, and the rest of the run goes on.
             return unverified(str(e))
+        log.trigger = resolved_trigger
 
         try:
             execution.correlate = dict(
@@ -832,6 +1005,7 @@ class TestRunner:
             )
         except PlaceholderError as e:
             return unverified(f"agent.correlate: {e}")
+        log.correlate = dict(execution.correlate)
         if expect.requires_observation and any(
             other is not execution and _same_correlation(other.correlate, execution.correlate)
             for other in self._executions
@@ -842,6 +1016,7 @@ class TestRunner:
                 "give each test execution its own value"
             )
 
+        sent_at = time.time()
         try:
             response = self._client.send(
                 resolved_trigger, values=replace(values, message=resolved_trigger)
@@ -853,6 +1028,7 @@ class TestRunner:
         except Exception as e:
             # The message never reached the agent, so its behavior was not checked.
             return unverified(f"HTTP error: {e}")
+        log.response, log.response_ms = response, (time.time() - sent_at) * 1000
 
         time.sleep(self._settle_time)
         try:
@@ -880,6 +1056,7 @@ class TestRunner:
                 return unverified(self._not_observed_attached(window, execution.correlate))
             # Nothing in the window is tagged: it is all there is to go by.
             traces = window.tools
+            log.tools = list(traces)
             errors = self._check(traces, response, expect)
         else:
             self._judge_late(classified.other.tools, current=execution)
@@ -889,6 +1066,7 @@ class TestRunner:
             if expect.requires_observation and not (classified.mine.tools or classified.mine.turns):
                 return unverified(self._not_observed(classified, execution.correlate))
             traces = classified.mine.tools
+            log.tools = list(traces)
             errors = self._check(traces, response, expect)
             if untagged:
                 with_them = self._check([*traces, *untagged], response, expect)

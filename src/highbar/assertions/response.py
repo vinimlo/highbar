@@ -7,13 +7,14 @@ from typing import Any
 
 from highbar.assertions._match import value_match
 from highbar.domain.models import AssertionResult, Expect, Trace
+from highbar.engine.secrets import ELLIPSIS
 
 
 def truncate(text: str, limit: int = 300) -> str:
     """Cut ``text`` at ``limit`` characters, ending with an ellipsis only when it cut."""
     if len(text) <= limit:
         return text
-    return text[:limit] + "…"
+    return text[:limit] + ELLIPSIS
 
 
 class ResponseAssertion:

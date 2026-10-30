@@ -31,6 +31,7 @@ from highbar.domain.models import (
     Suite,
     Test,
     Turn,
+    stable_key,
 )
 from highbar.engine import placeholders
 from highbar.engine.placeholders import check_placeholders, uses_placeholder
@@ -108,6 +109,7 @@ def _parse_spec(raw: Any) -> Spec:
         raise SpecError("spec: has no tests (add a suite under 'suites')")
     require_type(suites_raw, list, "suites", "must be a list of suites")
     suites = [_parse_suite(s, f"suites[{i}]") for i, s in enumerate(suites_raw)]
+    _check_unique_keys(suites)
 
     default_runs = 1
     default_min_pass: int | float | None = None
@@ -409,6 +411,34 @@ def _optional_name(raw: dict[str, Any], where: str) -> str | None:
     return name
 
 
+def _optional_id(raw: dict[str, Any], where: str) -> str | None:
+    if "id" not in raw:
+        return None
+    test_id = raw["id"]
+    require_type(test_id, str, where, "id must be a string")
+    if not test_id:
+        raise SpecError(f"{where}: id must not be empty")
+    return test_id
+
+
+def _check_unique_keys(suites: list[Suite]) -> None:
+    """Two tests with one key could not be told apart in a report (D15).
+
+    A number for the second one would tie the key to its position, and moving a test
+    would swap two results without a word.
+    """
+    seen: dict[str, str] = {}
+    for i, suite in enumerate(suites):
+        for j, test in enumerate(suite.tests):
+            key, where = stable_key(suite.name, test), f"suites[{i}].tests[{j}]"
+            if key in seen:
+                raise SpecError(
+                    f"{where}: the key '{key}' is already used by {seen[key]}; "
+                    "give one of them an id or a different name"
+                )
+            seen[key] = where
+
+
 def _parse_test(raw: Any, where: str) -> Test:
     require_type(raw, dict, where, "a test must be a mapping")
     check_keys(raw, "test", where)
@@ -424,7 +454,10 @@ def _parse_test(raw: Any, where: str) -> Test:
             # that no longer happened. Multi-turn variations need a design of their own.
             raise SpecError(f"{where}: 'variations' is not supported on multi-turn tests")
         return Test(
-            turns=_parse_turns(raw["turns"], where), name=name, **_parse_repetition(raw, where)
+            turns=_parse_turns(raw["turns"], where),
+            name=name,
+            id=_optional_id(raw, where),
+            **_parse_repetition(raw, where),
         )
 
     trigger = _trigger(raw, where)
@@ -440,6 +473,7 @@ def _parse_test(raw: Any, where: str) -> Test:
         expect=expect,
         variations=variations,
         name=name,
+        id=_optional_id(raw, where),
         **_parse_repetition(raw, where),
     )
 
