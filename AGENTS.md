@@ -33,6 +33,7 @@ Before a commit: `make lint`, `uv run ruff format --check src/ tests/`, `make ty
 5. **Assertions.** `function_calls` pairs each expectation with a distinct call (bipartite matching), with `error`, `ordered`, `exclusive` and `forbid`; `response` uses the matchers of `params` (`contains`, `matches`, `not_matches`...). A call's `error` field is the only signal that a tool failed.
 6. **Repetition.** Each phrasing runs `runs` times and must reach `min_pass`. A late call (recorded after its window) fails its own run, and the test is judged again.
 7. **Results.** Three states: `passed`, `failed` (the agent did something else), `error` (could not verify). Exit codes: 0 all passed, 1 something failed or errored, 2 could not run at all. Interrupted runs stop the agent first and exit with 130 (Ctrl-C), 143 (SIGTERM) or 129 (SIGHUP).
+8. **The report.** `TestRunner.snapshot()` builds the result from the gates, never from what went to the reporter, because a late call changes a test after `on_test_result`. `--report json=<file>` (`reporters/json_report.py`) replaces the file before the first message and writes it again on every way out, so it never shows an older run. Its format is `reporters/report.schema.json`; a new field is additive, and `schema_version` changes only on a break.
 
 ## Modules
 
@@ -56,7 +57,7 @@ src/highbar/
 ├── adapters/              # subprocess_adapter.py, attached.py, http_client.py, file_collector.py, ports.py
 ├── assertions/            # function_calls.py, response.py, _match.py
 ├── variations/            # LLM paraphrases of a trigger, cached in a committed JSON file
-├── reporters/terminal.py
+├── reporters/             # terminal.py, json_report.py, report.schema.json
 └── cli/main.py            # run, validate, init, variations
 tests/
 ├── unit/                  # one directory per package

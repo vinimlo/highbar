@@ -22,18 +22,18 @@ from highbar.domain.models import (
     Spec,
     Status,
     Suite,
-    TestOutcome,
     ToolOutcome,
     TurnOutcome,
 )
 from highbar.domain.models import Test as Case
+from highbar.domain.models import TestOutcome as Outcome
 from highbar.reporters.json_report import JsonReport, ReportError
 
 STARTED = "2026-10-30T11:49:00.120Z"
 SPEC = Spec(agent=AgentConfig(endpoint="http://x/chat"), suites=[Suite(name="S", tests=[Case()])])
 
 
-def _test(*, response: str | None = "coração", args: dict[str, Any] | None = None) -> TestOutcome:
+def _test(*, response: str | None = "coração", args: dict[str, Any] | None = None) -> Outcome:
     tool = ToolOutcome("lookup", args if args is not None else {"q": "x"}, None, 120.0)
     late = ToolOutcome("log", {}, "boom", 1.0, late=True)
     turn = TurnOutcome("olá", response, 5.5, {"test": "abc"}, (tool, late))
@@ -41,7 +41,7 @@ def _test(*, response: str | None = "coração", args: dict[str, Any] | None = N
     broken = ExecutionOutcome(
         "def", 2, STARTED, Status.ERROR, 1.0, ("HTTP error",), (TurnOutcome("olá", None, None, {}),)
     )
-    return TestOutcome(
+    return Outcome(
         id="S/olá",
         suite="S",
         name="olá",
@@ -60,7 +60,7 @@ def _test(*, response: str | None = "coração", args: dict[str, Any] | None = N
     )
 
 
-def _summary(*tests: TestOutcome) -> RunSummary:
+def _summary(*tests: Outcome) -> RunSummary:
     return RunSummary(
         total=len(tests),
         passed=0,

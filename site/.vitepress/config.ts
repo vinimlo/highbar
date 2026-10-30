@@ -49,6 +49,7 @@ export default defineConfig({
         items: [
           { text: 'CLI', link: '/reference/cli' },
           { text: 'Spec format', link: '/reference/spec-format' },
+          { text: 'Report', link: '/reference/report' },
           { text: 'Trace contract v1', link: '/reference/trace-contract' },
           { text: 'Python SDK', link: '/reference/python-sdk' },
           { text: 'Python API', link: '/reference/python-api' },

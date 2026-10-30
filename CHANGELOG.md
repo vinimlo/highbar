@@ -5,6 +5,14 @@
 ### Added
 
 - `defaults.min_pass`: the threshold for every test without its own `min_pass`, stated once instead of in each test. It takes the same values as the test's: a whole number of runs, or a fraction of each test's runs, rounded up and computed again with `--runs`. A test's own `min_pass` still wins; without either, every run must pass, as before. A whole number above a test's runs is an error in `validate` and before `run` starts the agent, naming the test and `defaults.min_pass`.
+- `highbar run --report json=<file>`: the results as JSON, with one test, phrasing, execution and turn per entry, in their final state. The file is replaced before the first message and written on every way out of the run, with the code the process returns: a run that dies leaves `exit_code: null`, never an older green. See the report reference.
+- An optional `id` on a test, and a stable key for each one: its `id`, or `<suite>/<name>`.
+- `definition_sha256` on each test of the report, to tell whether two runs measured the same thing.
+- `highbar.run()` returns each test in `summary.tests` and the warnings in `summary.warnings`, and takes a `reporter`.
+
+### Upgrading from 0.1.0
+
+- A spec with two tests of the same key no longer parses: two tests with the same name in a suite, two without a name and with the same trigger, or two unnamed multi-turn tests with the same number of turns in a suite. Give one an `id` or a different `name`. The key is what tells them apart in a report, and numbering them would tie it to their position.
 ## 0.1.0
 
 The first final release. The code is the code of 0.1.0rc3, which has been running a production agent's evals since 2026-10-27: only the version changed.
