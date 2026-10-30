@@ -45,6 +45,10 @@ class JsonReport:
         self._specs: list[dict[str, Any]] = []
         self._stopped: dict[str, str] | None = None
 
+    @property
+    def path(self) -> Path:
+        return self._path
+
     def start(self) -> None:
         """Write the unfinished report. Raises ``ReportError``, before any message goes."""
         self._write(self._body(exit_code=None, complete=False))

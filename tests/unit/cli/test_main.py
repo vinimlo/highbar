@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 from highbar.cli.main import _discover_specs, app
 from highbar.domain.models import RunSummary
 from highbar.engine.run_spec import agent_log_path
+from highbar.reporters.json_report import ReportError
 
 runner = CliRunner()
 
@@ -251,3 +252,32 @@ class TestVariationsCommand:
 
         assert result.exit_code == 1
         assert "HIGHBAR_LLM_API_KEY" in result.output
+
+
+class TestReportOption:
+    def test_j13_crash_is_reported_and_exits_1(self, project: Path) -> None:
+        """A bug in highbar keeps its traceback and code; the file tells it from a red test."""
+        report = project / "report.json"
+
+        with patch("highbar.cli.main.run_spec", side_effect=RuntimeError("boom")):
+            result = runner.invoke(app, ["run", "--report", f"json={report}"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, RuntimeError)
+        data = json.loads(report.read_text(encoding="utf-8"))
+        assert data["exit_code"] == 1
+        assert data["complete"] is False
+        assert data["stopped"] == {"reason": "crashed", "message": "RuntimeError: boom"}
+
+    def test_final_write_failure_exits_2(self, project: Path) -> None:
+        """A green run without the file the CI counts on is not a 0."""
+        report = project / "report.json"
+
+        with (
+            patch("highbar.cli.main.run_spec", return_value=RunSummary(1, 1, 0, 0, 1.0)),
+            patch("highbar.cli.main.JsonReport.finish", side_effect=ReportError("cannot write it")),
+        ):
+            result = runner.invoke(app, ["run", "--report", f"json={report}"])
+
+        assert result.exit_code == 2
+        assert "cannot write it" in result.stdout
