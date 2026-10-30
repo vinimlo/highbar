@@ -6,6 +6,7 @@ import json
 import math
 import os
 import subprocess
+from datetime import date
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -75,6 +76,21 @@ def _summary(*tests: Outcome) -> RunSummary:
 
 def _read(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _schema() -> dict[str, Any]:
+    schema_file = resources.files("highbar.reporters").joinpath("report.schema.json")
+    return json.loads(schema_file.read_text(encoding="utf-8"))
+
+
+def _closed(schema: Any) -> Any:
+    """``schema`` with no room for a field it does not name."""
+    if isinstance(schema, list):
+        return [_closed(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    closed = {key: _closed(value) for key, value in schema.items()}
+    return {**closed, "additionalProperties": False} if "properties" in schema else closed
 
 
 @pytest.fixture
@@ -202,6 +218,15 @@ class TestWrite:
 
         assert "when" in json.dumps(data)
 
+    def test_a_key_from_yaml_that_is_not_text_is_written_as_text(self, workdir: Path) -> None:
+        """`default=str` covers values only: a date as a key would end the write."""
+        path = workdir / "report.json"
+
+        data = _finished(path, _spec_file(workdir), _summary(_test(args={date(2026, 10, 30): 1})))
+
+        (turn,) = data["specs"][0]["tests"][0]["phrasings"][0]["executions"][0]["turns"]
+        assert turn["tools"][0]["args"] == {"2026-10-30": 1}
+
     def test_file_mode_follows_the_umask(self, workdir: Path) -> None:
         path = workdir / "report.json"
         previous = os.umask(0o027)
@@ -227,18 +252,35 @@ class TestBody:
         path = workdir / "report.json"
         data = _finished(path, _spec_file(workdir), _summary(_test()))
 
-        schema_file = resources.files("highbar.reporters").joinpath("report.schema.json")
-        schema = json.loads(schema_file.read_text(encoding="utf-8"))
+        schema = _schema()
         jsonschema.Draft202012Validator.check_schema(schema)
         jsonschema.Draft202012Validator(schema).validate(data)
+
+    def test_the_schema_names_every_field_of_the_report(self, workdir: Path) -> None:
+        """The shipped schema has to allow new fields, so this checks a closed copy of it."""
+        path = workdir / "report.json"
+        data = _finished(path, _spec_file(workdir), _summary(_test()))
+
+        jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+
+    def test_i6_the_schema_accepts_a_field_it_does_not_know(self, workdir: Path) -> None:
+        """A new field stays within a version, so a validating reader must not break on it."""
+        path = workdir / "report.json"
+        data = _finished(path, _spec_file(workdir), _summary(_test()))
+        data["later"] = 1
+        data["specs"][0]["later"] = 1
+        data["specs"][0]["tests"][0]["later"] = 1
+        execution = data["specs"][0]["tests"][0]["phrasings"][0]["executions"][0]
+        execution["turns"][0]["usage"] = {"prompt_tokens": 12}
+        execution["turns"][0]["tools"][0]["later"] = 1
+
+        jsonschema.Draft202012Validator(_schema()).validate(data)
 
     def test_an_unfinished_report_matches_the_schema_too(self, workdir: Path) -> None:
         path = workdir / "report.json"
         JsonReport(path, version="1.2.3").start()
 
-        schema_file = resources.files("highbar.reporters").joinpath("report.schema.json")
-        schema = json.loads(schema_file.read_text(encoding="utf-8"))
-        jsonschema.Draft202012Validator(schema).validate(_read(path))
+        jsonschema.Draft202012Validator(_schema()).validate(_read(path))
 
     def test_the_body_says_what_ran(self, workdir: Path) -> None:
         spec_path = _spec_file(workdir)

@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from highbar.cli.main import _discover_specs, app
+from highbar.cli.main import _discover_specs, app, console
 from highbar.domain.models import RunSummary
 from highbar.engine.run_spec import agent_log_path
 from highbar.reporters.json_report import ReportError
@@ -281,3 +281,22 @@ class TestReportOption:
 
         assert result.exit_code == 2
         assert "cannot write it" in result.stdout
+
+    def test_i2_a_closed_stdout_cannot_change_the_code_the_file_states(self, project: Path) -> None:
+        """rich exits 1 on a broken pipe, and `Report:` is printed after the file is final."""
+        report = project / "report.json"
+        real = console.print
+
+        def gone(*objects: object, **options: object) -> None:
+            if any("Report:" in str(item) for item in objects):
+                raise SystemExit(1)
+            real(*objects, **options)
+
+        with (
+            patch("highbar.cli.main.run_spec", return_value=RunSummary(1, 1, 0, 0, 1.0)),
+            patch("highbar.cli.main.console.print", side_effect=gone),
+        ):
+            result = runner.invoke(app, ["run", "--report", f"json={report}"])
+
+        assert result.exit_code == 0
+        assert json.loads(report.read_text(encoding="utf-8"))["exit_code"] == 0

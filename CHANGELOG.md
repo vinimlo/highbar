@@ -10,9 +10,13 @@
 - `definition_sha256` on each test of the report, to tell whether two runs measured the same thing.
 - `highbar.run()` returns each test in `summary.tests` and the warnings in `summary.warnings`, and takes a `reporter`.
 
+### Fixed
+
+- A value from `${VAR}` is masked in every spec of a run, not only in the spec that uses it, and when a message is cut in the middle of it. Two or fewer of its first characters can still show at a cut: telling a shorter start from an ordinary word is not possible.
+
 ### Upgrading from 0.1.0
 
-- A spec with two tests of the same key no longer parses: two tests with the same name in a suite, two without a name and with the same trigger, or two unnamed multi-turn tests with the same number of turns in a suite. Give one an `id` or a different `name`. The key is what tells them apart in a report, and numbering them would tie it to their position.
+- A spec with two tests of the same key no longer parses. The key is `<suite>/<name>`, and a test without a name uses its trigger, or its number of turns for a multi-turn test. So this reaches two such tests in one suite, in two suites with the same name, and in two suites without a name. Give one an `id` or a different `name`. The key is what tells them apart in a report, and numbering them would tie it to their position.
 ## 0.1.0
 
 The first final release. The code is the code of 0.1.0rc3, which has been running a production agent's evals since 2026-10-27: only the version changed.

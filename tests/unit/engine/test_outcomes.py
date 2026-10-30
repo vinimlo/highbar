@@ -224,6 +224,52 @@ class TestSecrets:
         }
         assert summary.warnings == ("t: session teardown failed: could not close ${AGENT_TOKEN}",)
 
+    def test_i3_an_injected_reporter_gets_the_same_clean_data(self) -> None:
+        def script(message: str, test_id: str) -> Window:
+            tool = Trace(
+                fn="lookup",
+                args={"nested": {"key": [TOKEN]}},
+                result={"echo": TOKEN},
+                started_at=1.0,
+                ended_at=1.25,
+                error=f"refused {TOKEN}",
+                context={"test": test_id, "conv": TOKEN},
+            )
+            return Window(tools=[tool], turns=[_turn(test=test_id)])
+
+        reporter = MagicMock()
+
+        _run(
+            [Case(trigger="t", expect=SAYS_OK)],
+            FakeAgent(script),
+            reporter=reporter,
+            secrets={TOKEN: "AGENT_TOKEN"},
+        )
+
+        (_, result) = reporter.on_test_result.call_args[0]
+        (trace,) = result.traces
+        assert TOKEN not in repr(result)
+        assert trace.args == {"nested": {"key": ["${AGENT_TOKEN}"]}}
+        assert trace.result == {"echo": "${AGENT_TOKEN}"}
+        assert trace.error == "refused ${AGENT_TOKEN}"
+        assert trace.context["conv"] == "${AGENT_TOKEN}"
+
+    def test_i5_a_value_the_message_cuts_is_still_masked(self) -> None:
+        reporter = MagicMock()
+
+        summary = _run(
+            [Case(trigger="t", expect=Expect(response=ResponseExpect({"contains": "absent"})))],
+            Replying(["x" * 290 + TOKEN]),
+            reporter=reporter,
+            secrets={TOKEN: "AGENT_TOKEN"},
+        )
+
+        (_, result) = reporter.on_test_result.call_args[0]
+        (execution,) = summary.tests[0].phrasings[0].executions
+        for message in (result.errors[0], summary.tests[0].errors[0], execution.errors[0]):
+            assert "s3cr3t" not in message
+            assert "${AGENT_TOKEN}…" in message
+
 
 class TestShape:
     def test_a_test_carries_its_identity(self) -> None:
@@ -365,6 +411,66 @@ class TestSnapshot:
         summary = runner.snapshot()
         assert [test.id for test in summary.tests] == ["S/a"]
         assert (summary.total, summary.passed) == (1, 1)
+
+    @staticmethod
+    def _late_first(message: str, test_id: str) -> Window | tuple[Window, Window]:
+        now = Window(turns=[_turn(test=test_id)])
+        if message == "close my account":
+            return now, Window(tools=[_tool("delete_account", test=test_id)])
+        return now
+
+    def test_c1_a_late_call_read_before_the_interrupt_counts(self) -> None:
+        """The next test's read found it, and that test never ends to apply it."""
+        reporter = MagicMock()
+        runner = _runner(
+            Replying(["ok", "ok", KeyboardInterrupt()], self._late_first), reporter=reporter
+        )
+
+        with pytest.raises(KeyboardInterrupt):
+            runner.run(
+                _spec(
+                    [
+                        Case(trigger="close my account", expect=GUARDRAIL),
+                        Case(trigger="b", expect=GUARDRAIL, runs=3),
+                    ]
+                )
+            )
+
+        summary = runner.snapshot()
+        (test,) = summary.tests
+        assert test.status is Status.FAILED
+        assert test.counts == Counts(passed=0, failed=1, error=0)
+        assert "delete_account" in test.errors[0]
+        assert (summary.passed, summary.failed) == (0, 1)
+        # The terminal says it too: a ✓ with no warning would contradict the file.
+        (warning,) = [c.args[0] for c in reporter.on_warning.call_args_list]
+        assert "now fails" in warning
+
+    def test_c1_the_interrupt_can_land_while_the_next_test_is_shown(self) -> None:
+        reporter = MagicMock()
+        reporter.on_test_result.side_effect = [None, KeyboardInterrupt()]
+        runner = _runner(FakeAgent(self._late_first), reporter=reporter)
+
+        with pytest.raises(KeyboardInterrupt):
+            runner.run(
+                _spec(
+                    [
+                        Case(trigger="close my account", expect=GUARDRAIL),
+                        Case(trigger="b", expect=GUARDRAIL),
+                    ]
+                )
+            )
+
+        first, second = runner.snapshot().tests
+        assert (first.status, second.status) == (Status.FAILED, Status.PASSED)
+
+    def test_c1_a_late_call_of_the_test_in_progress_stays_out(self) -> None:
+        runner = _runner(Replying(["ok", "ok", KeyboardInterrupt()], self._late_first))
+
+        with pytest.raises(KeyboardInterrupt):
+            runner.run(_spec([Case(trigger="close my account", expect=GUARDRAIL, runs=3)]))
+
+        assert runner.snapshot().tests == ()
 
     def test_snapshot_before_the_agent_starts_is_empty(self) -> None:
         agent = FakeAgent()

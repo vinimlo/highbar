@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from highbar.adapters.http_client import AgentResponseError
-from highbar.assertions.response import ResponseAssertion
+from highbar.assertions.response import ResponseAssertion, truncate
 from highbar.domain.models import AgentConfig, Expect, ResponseExpect, Spec, Suite
 from highbar.domain.models import Test as Case
 from highbar.engine.parser import parse_spec
@@ -38,6 +38,38 @@ class TestRedact:
     def test_short_values_are_left_alone(self) -> None:
         """A ${PORT} of 8000 masked would turn every 8000 in a message into ${PORT}."""
         assert redact("port 8000", {"8000": "PORT"}) == "port 8000"
+
+
+class TestCutValues:
+    """A message stops at its limit, and that limit can fall inside a value (review I5)."""
+
+    SECRETS: dict[str, str] = {TOKEN: "AGENT_TOKEN"}  # noqa: RUF012
+
+    @pytest.mark.parametrize("shown", range(3, len(TOKEN)))
+    def test_i5_a_value_cut_anywhere_is_masked(self, shown: int) -> None:
+        text = truncate("x" * 290 + TOKEN, 290 + shown)
+
+        assert redact(text, self.SECRETS) == "x" * 290 + "${AGENT_TOKEN}…"
+
+    def test_i5_the_quoted_form_of_a_value_is_masked_too(self) -> None:
+        text = truncate("key=ab%2Fcd%3Def", 12)
+
+        assert redact(text, {"ab/cd=ef": "KEY"}) == "key=${KEY}…"
+
+    def test_i5_a_cut_in_a_repr_is_masked(self) -> None:
+        text = repr(truncate("x" * 290 + TOKEN, 300))
+
+        assert redact(text, self.SECRETS) == repr("x" * 290 + "${AGENT_TOKEN}…")
+
+    def test_i5_a_value_that_repeats_its_start_is_masked_whole(self) -> None:
+        assert redact("the abcabcab…", {"abcabcabc": "KEY"}) == "the ${KEY}…"
+
+    def test_a_cut_at_two_characters_of_the_value_shows_no_mask(self) -> None:
+        """Most messages cut at a letter some value starts with, and hold no value."""
+        assert redact("the s3…", self.SECRETS) == "the s3…"
+
+    def test_an_ellipsis_elsewhere_is_left_alone(self) -> None:
+        assert redact("one moment… done", self.SECRETS) == "one moment… done"
 
 
 def _spec(tmp_path: Path, agent: str) -> str:

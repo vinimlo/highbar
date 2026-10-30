@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import signal
 import socket
 import subprocess
@@ -238,6 +239,61 @@ def test_j7_interrupted_run_keeps_finished_tests(
     assert data["summary"]["total"] == 1
 
 
+def _turns_written(traces: Path) -> int:
+    return traces.read_text(encoding="utf-8").count('"type": "turn"')
+
+
+@pytest.mark.timeout(40)
+def test_c1_ctrl_c_keeps_a_late_failure_highbar_already_read(project: _Project) -> None:
+    """The next test's read found the call, and that test never ends to apply it."""
+    port = _free_port()
+    traces = project.root / "traces.jsonl"
+    traces.touch()
+    server = subprocess.Popen(
+        [
+            sys.executable,
+            str(SERVER),
+            "--port",
+            str(port),
+            "--slow-chat",
+            "0.4",
+            "--late-tool",
+            "refund:0.2",
+        ],  # fmt: skip
+        env={**os.environ, "HIGHBAR_TRACES_URL": str(traces)},
+    )
+    spec = project.root / "attached.highbar.yaml"
+    spec.write_text(
+        f'agent:\n  endpoint: "http://127.0.0.1:{port}/chat"\n'
+        f'  health: "http://127.0.0.1:{port}/health"\n'
+        f'  traces: "{traces}"\n  settle_time: 50\n'
+        "suites:\n  - name: S\n    tests:\n"
+        '      - {name: guardrail, trigger: "a late one", expect: {forbid: [refund]}}\n'
+        '      - {name: next, trigger: "b", runs: 3, expect: {forbid: [refund]}}\n',
+        encoding="utf-8",
+    )
+
+    try:
+        assert _wait_until(lambda: accepts_connections("127.0.0.1", port), 10)
+        cli = _start(project, spec.name)
+        # A third turn means the read of the second test's first run came before it.
+        assert _wait_until(lambda: _turns_written(traces) >= 3, 15)
+        cli.send_signal(signal.SIGINT)
+        output, _ = cli.communicate(timeout=15)
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+    assert cli.returncode == 130, output
+    assert "now fails" in output
+    data = project.data()
+    assert data["exit_code"] == 130
+    (test,) = data["specs"][0]["tests"]
+    assert (test["id"], test["status"]) == ("S/guardrail", "failed")
+    assert "refund" in test["errors"][0]
+    assert (data["summary"]["passed"], data["summary"]["failed"]) == (0, 1)
+
+
 @pytest.mark.timeout(40)
 def test_j4_killed_run_leaves_an_unfinished_report(project: _Project) -> None:
     """SIGKILL ends highbar with no chance to write: an older green must not survive."""
@@ -339,3 +395,77 @@ def test_report_cannot_be_a_spec_file(project: _Project) -> None:
     assert result.returncode == 2
     assert "is a spec" in result.stdout
     assert (project.root / spec).read_text(encoding="utf-8") == before
+
+
+@pytest.mark.timeout(30)
+def test_i1_a_yaml_key_that_is_not_text_keeps_every_result(project: _Project) -> None:
+    """YAML reads a bare `on:` as a boolean: the run and its report have to survive it."""
+    spec = project.spec("function_calls: [{name: switch, params: {on: true, device: lamp}}]")
+
+    result = project.run(spec)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Traceback" not in result.stdout + result.stderr
+    data = project.data()
+    assert (data["exit_code"], data["complete"]) == (1, True)
+    assert data["summary"]["failed"] == 1
+
+
+def _piped(project: _Project, spec: str, reader: str) -> subprocess.CompletedProcess[str]:
+    """The CLI with ``reader`` on its stdout; the code is the CLI's, not the reader's."""
+    command = shlex.join(project.command(spec, "--report", f"json={project.report}"))
+    return subprocess.run(
+        ["bash", "-c", f"set -o pipefail; {command} | {reader}"],
+        cwd=project.root,
+        env=project.env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+@pytest.mark.timeout(30)
+def test_i2_a_reader_that_left_after_the_summary_keeps_the_code(project: _Project) -> None:
+    """`Report:` comes after the summary. Printing it to nobody cannot turn a 0 into a 1."""
+    result = _piped(project, project.spec(PASSES), "sed -n '/passed/{p;q;}'")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert project.data()["exit_code"] == 0
+
+
+@pytest.mark.timeout(30)
+def test_a_reader_that_left_early_is_not_called_a_signal(project: _Project) -> None:
+    result = _piped(project, project.spec(PASSES), "head -1")
+
+    data = project.data()
+    assert data["exit_code"] == result.returncode
+    assert data["stopped"]["reason"] == "interrupted"
+    assert "signal" not in data["stopped"]["message"]
+
+
+@pytest.mark.timeout(40)
+def test_i4_a_value_from_one_spec_stays_masked_in_the_next(project: _Project) -> None:
+    token = "s3cr3t-token-value-0123456789"
+    project.spec(PASSES, name="specs/a.highbar.yaml")
+    first = project.root / "specs" / "a.highbar.yaml"
+    headers = '  request:\n    headers:\n      Authorization: "Bearer ${HB_TEST_TOKEN}"\n'
+    first.write_text(
+        first.read_text(encoding="utf-8").replace("suites:", headers + "suites:", 1),
+        encoding="utf-8",
+    )
+    project.spec(FAILS, name="specs/b.highbar.yaml", args=("--replies", f"token={token}"))
+
+    result = subprocess.run(
+        project.command("specs", "--report", f"json={project.report}"),
+        cwd=project.root,
+        env={**project.env, "HB_TEST_TOKEN": token},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert token not in project.report.read_text(encoding="utf-8")
+    assert token not in result.stdout + result.stderr
+    (turn,) = project.data()["specs"][1]["tests"][0]["phrasings"][0]["executions"][0]["turns"]
+    assert turn["response"] == "token=${HB_TEST_TOKEN}"

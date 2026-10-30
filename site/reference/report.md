@@ -13,7 +13,7 @@ jq -r '.specs[].tests[] | [.id, .counts.passed, .counts.failed, .counts.error] |
 ```
 
 ::: warning The file holds what the agent said
-Responses and tool arguments go in whole, so treat it like a trace file from `--keep-traces`. Values from `${VAR}` are masked everywhere, the same way as in the output. A tool's `result` and `context`, and the session's values, stay out.
+Responses and tool arguments go in whole, so treat it like a trace file from `--keep-traces`. Values from `${VAR}` are masked everywhere, the same way as in the output. A tool's `result` and `context` have no field of their own, but a `result` can still get in: a failed check quotes it in `errors`, and a <code v-pre>{{previous.*}}</code> template puts it in `turns[].trigger`. The session's values appear where `agent.correlate` uses them.
 :::
 
 ## What the file says about the run
@@ -104,7 +104,7 @@ The file is written before the first message and again on every way out of the r
 | Field | |
 |---|---|
 | `id` | The test's [`id`](/reference/spec-format#tests) in the spec, or `<suite>/<name>`. Unique in a spec. |
-| `definition_sha256` | Of the trigger, the turns, the expectation and the variations. `name`, `id`, `runs` and `min_pass` stay out. |
+| `definition_sha256` | Of the trigger, the turns, the expectation and the number of variations. `name`, `id`, `runs` and `min_pass` stay out. |
 | `status`, `errors` | The final ones, late calls included. |
 | `runs`, `min_pass` | As they applied to this test, with fractions resolved. |
 | `counts` | How the executions ended. There is no rate: an `error` is neither a pass nor a failure, so whoever computes one has to decide what to do with it. |
@@ -121,6 +121,6 @@ The file is written before the first message and again on every way out of the r
 
 A test is the pair `(specs[].key, tests[].id)`: the same `id` can appear in two specs.
 
-Before putting two results together, compare `definition_sha256`: equal hashes measured the same thing. A changed `sha256` of the spec says only that something in the file changed.
+Before putting two results together, compare `definition_sha256`: equal hashes measured the same thing. For a test with `variations`, the hash holds how many it asks for and not their text, so compare `phrasings[].text` too. A changed `sha256` of the spec says only that something in the file changed.
 
 Keep one report per run, and compare them as groups. Two rounds of an LLM agent can differ with nothing changed: when it chooses between two near-identical passages, the choice can hold within a round and flip in the next one. In that case 5 runs are not 5 independent observations, and a test of proportions over the executions reports a change that did not happen. Several short rounds show that variation, and one long round hides it.

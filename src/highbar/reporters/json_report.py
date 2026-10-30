@@ -138,12 +138,12 @@ def _totals(summaries: list[RunSummary]) -> dict[str, int]:
 
 
 def _finite(value: Any) -> Any:
-    """``value`` with NaN and the infinities as null: JSON has no way to say them."""
+    """``value`` with NaN and the infinities as null, and keys as text: what JSON can say."""
     if isinstance(value, float) and not math.isfinite(value):
         return None
     if isinstance(value, Mapping):
         mapping = cast("Mapping[Any, Any]", value)
-        return {key: _finite(item) for key, item in mapping.items()}
+        return {str(key): _finite(item) for key, item in mapping.items()}
     if isinstance(value, (list, tuple)):
         items = cast("list[Any] | tuple[Any, ...]", value)
         return [_finite(item) for item in items]

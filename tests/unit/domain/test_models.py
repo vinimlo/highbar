@@ -1,6 +1,10 @@
 """Tests for domain model construction and defaults."""
 
 from dataclasses import replace
+from datetime import date
+from typing import Any
+
+import pytest
 
 from highbar.domain.models import (
     AgentConfig,
@@ -201,3 +205,30 @@ class TestKeyAndDefinition:
         assert Test(turns=[turn]).definition_sha256 == Test(turns=[named]).definition_sha256
         changed = replace(turn, trigger="b")
         assert Test(turns=[turn]).definition_sha256 != Test(turns=[changed]).definition_sha256
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {True: "yes", "device": "lamp"},  # YAML reads a bare `on:` as a boolean
+            {None: "x", "a": "b"},
+            {date(2026, 10, 30): "x"},
+        ],
+    )
+    def test_i1_definition_takes_every_key_yaml_can_produce(self, params: dict[Any, Any]) -> None:
+        call = FunctionCallExpect(name="switch", params=params)
+
+        definition = Test(trigger="t", expect=Expect(function_calls=[call])).definition_sha256
+
+        assert len(definition) == 64
+
+    def test_i1_definition_takes_text_with_no_utf8_form(self) -> None:
+        assert len(Test(trigger="\ud800", expect=Expect(forbid=("a",))).definition_sha256) == 64
+
+    def test_definition_does_not_depend_on_the_order_of_the_keys(self) -> None:
+        first = FunctionCallExpect(name="f", params={"a": 1, "b": {"c": 2, "d": 3}})
+        second = FunctionCallExpect(name="f", params={"b": {"d": 3, "c": 2}, "a": 1})
+
+        assert (
+            Test(trigger="t", expect=Expect(function_calls=[first])).definition_sha256
+            == Test(trigger="t", expect=Expect(function_calls=[second])).definition_sha256
+        )

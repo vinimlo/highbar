@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import signal
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
+from dataclasses import replace
 from functools import partial
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -34,6 +35,7 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_UNRUNNABLE = 2
 EXIT_INTERRUPTED = 130  # the shell's code for a run stopped by Ctrl-C (128 + SIGINT)
+EXIT_SIGNALED = 128  # plus the signal's number
 
 app = typer.Typer(
     name="highbar",
@@ -127,10 +129,13 @@ def run(
     try:
         code = _run_all(paths, report, runs=runs, frozen=frozen, keep_traces=keep_traces)
     except SystemExit as e:
-        # SIGTERM or SIGHUP, from _terminate_as_exit: the agent is already down.
+        # SIGTERM or SIGHUP, from _terminate_as_exit, or rich when the reader closed
+        # stdout: the agent is already down.
         code = e.code if isinstance(e.code, int) else EXIT_FAILED
         if report is not None:
-            report.stop("interrupted", f"stopped by signal {code - 128}")
+            signaled = code > EXIT_SIGNALED
+            message = f"stopped by signal {code - EXIT_SIGNALED}" if signaled else "output closed"
+            report.stop("interrupted", message)
         raise SystemExit(_close_report(report, code)) from None
     except Exception as e:
         # A bug in highbar is not a test result. It ends as it always did, with its
@@ -174,10 +179,16 @@ def _close_report(report: JsonReport | None, code: int) -> int:
     try:
         report.finish(code)
     except ReportError as e:
-        console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)
+        _last_line(f"  [red]\u2717[/red] {escape(str(e))}")
         return EXIT_UNRUNNABLE
-    console.print(f"  Report: {escape(str(report.path))}\n", soft_wrap=True)
+    _last_line(f"  Report: {escape(str(report.path))}\n")
     return code
+
+
+def _last_line(message: str) -> None:
+    """Print after the verdict. rich exits 1 on a closed stdout, and the code is decided."""
+    with suppress(SystemExit):
+        console.print(message, soft_wrap=True)
 
 
 def _stopped(report: JsonReport | None, reason: str, message: str, code: int) -> int:
@@ -211,6 +222,7 @@ def _run_all(
     specs = _parse_all(paths, runs=runs, failures=failures)
     if specs is None:
         return _stopped(report, "spec_invalid", "; ".join(failures), EXIT_UNRUNNABLE)
+    specs = _sharing_secrets(specs)
     if report is not None:
         report.plan(specs)
     # Python session hooks are imported before any agent starts, like the specs parsed.
@@ -359,6 +371,14 @@ def validate(
 
     specs = _parse_all(paths, report_valid=True, runs=None)
     raise typer.Exit(EXIT_UNRUNNABLE if specs is None else EXIT_OK)
+
+
+def _sharing_secrets(specs: list[tuple[str, Spec]]) -> list[tuple[str, Spec]]:
+    """Each spec with the ${VAR} values of all: an agent can echo another spec's token."""
+    secrets = {value: name for _, spec in specs for value, name in spec.agent.secrets.items()}
+    return [
+        (path, replace(spec, agent=replace(spec.agent, secrets=secrets))) for path, spec in specs
+    ]
 
 
 def _load_all_hooks(

@@ -134,13 +134,26 @@ class _Masking:
 
     def on_test_result(self, test_name: str, result: TestResult) -> None:
         errors = [redact(error, self._secrets) for error in result.errors]
-        self._reporter.on_test_result(test_name, replace(result, errors=errors))
+        traces = [self._masked(trace) for trace in result.traces]
+        self._reporter.on_test_result(
+            redact(test_name, self._secrets), replace(result, errors=errors, traces=traces)
+        )
 
     def on_warning(self, message: str) -> None:
         self._reporter.on_warning(redact(message, self._secrets))
 
     def on_run_end(self, summary: RunSummary) -> None:
         self._reporter.on_run_end(summary)
+
+    def _masked(self, trace: Trace) -> Trace:
+        return replace(
+            trace,
+            fn=redact(trace.fn, self._secrets),
+            args=redact_value(trace.args, self._secrets),
+            result=redact_value(trace.result, self._secrets),
+            error=redact_value(trace.error, self._secrets),
+            context=redact_value(trace.context, self._secrets),
+        )
 
 
 def _same_correlation(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
@@ -360,8 +373,9 @@ class TestRunner:
                     self._last_variation_count = None
                     result = self._run_test(test)
                     own = [f for f in self._findings if f.execution.test_index == self._test_index]
-                    earlier = [f for f in self._findings if f not in own]
-                    self._findings = []
+                    # The rest stay in self._findings until applied: an interrupt can land
+                    # on any line below, and _settle must still find them.
+                    self._findings = [f for f in self._findings if f not in own]
                     # A run's late call lands in the next run's read: it is part of this
                     # test's result, not news about a reported one.
                     if own:
@@ -379,7 +393,7 @@ class TestRunner:
                         suite.name, test, name, result.status, result.duration_ms, [*result.errors]
                     )
                     self._reporter.on_test_result(name, result)
-                    self._report_late(earlier)
+                    self._report_late(self._findings)
                     self._test_index += 1
             if observes and self._executions:
                 # The last test has no next one whose read would show its late calls.
@@ -389,6 +403,7 @@ class TestRunner:
             self._warn_undeclared()
         finally:
             self._adapter.stop()
+            self._settle()
 
         summary = self.snapshot()
         self._reporter.on_run_end(summary)
@@ -489,6 +504,14 @@ class TestRunner:
     def _warn(self, message: str) -> None:
         self._warnings.append(message)
         self._reporter.on_warning(message)
+
+    def _settle(self) -> None:
+        """A run that stopped halfway still counts what its reads found about reported tests.
+
+        Those findings wait for the test in progress to end, and it never will: without
+        this, a test highbar knows failed would come out as passed.
+        """
+        self._report_late([f for f in self._findings if f.execution.test_index in self._reported])
 
     def _report_late(self, findings: list[_Finding]) -> None:
         """Judge a reported test again, and say so: its final state comes from the gate."""

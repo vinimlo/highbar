@@ -15,12 +15,19 @@ from urllib.parse import quote, quote_plus
 # "8000" in every message into ${PORT}.
 MIN_LENGTH = 6
 
+# What ends a message cut at its limit (``truncate``).
+ELLIPSIS = "…"
+# A cut value is told by this many characters: with fewer, every message that happens
+# to stop at a letter some value starts with would show a mask for nothing.
+MIN_CUT = 3
+
 
 def redact(text: str, secrets: Mapping[str, str]) -> str:
     """``text`` with each secret value, in each form it is printed in, as ``${NAME}``.
 
     The forms: as is, stripped (a value read with its newline), URL-quoted, and
-    escaped the way ``repr`` shows it.
+    escaped the way ``repr`` shows it. A message is cut before it gets here, so a value
+    that the cut split is matched by its start, against the ellipsis.
     """
     forms: dict[str, str] = {}
     for value, name in secrets.items():
@@ -30,6 +37,10 @@ def redact(text: str, secrets: Mapping[str, str]) -> str:
                 forms.setdefault(form, name)
     for form in sorted(forms, key=len, reverse=True):
         text = text.replace(form, f"${{{forms[form]}}}")
+    if ELLIPSIS in text:
+        starts = {form[:n]: name for form, name in forms.items() for n in range(MIN_CUT, len(form))}
+        for start in sorted(starts, key=len, reverse=True):
+            text = text.replace(start + ELLIPSIS, f"${{{starts[start]}}}{ELLIPSIS}")
     return text
 
 

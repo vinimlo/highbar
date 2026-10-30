@@ -16,7 +16,6 @@
     "summary",
     "specs"
   ],
-  "additionalProperties": false,
   "properties": {
     "schema_version": { "const": 1 },
     "highbar_version": { "type": "string" },
@@ -37,7 +36,6 @@
         {
           "type": "object",
           "required": ["reason", "message"],
-          "additionalProperties": false,
           "properties": {
             "reason": {
               "enum": [
@@ -76,7 +74,6 @@
       "description": "How the executions ended. An error is neither a pass nor a failure: there is no rate here on purpose.",
       "type": "object",
       "required": ["passed", "failed", "error"],
-      "additionalProperties": false,
       "properties": {
         "passed": { "type": "integer", "minimum": 0 },
         "failed": { "type": "integer", "minimum": 0 },
@@ -86,7 +83,6 @@
     "summary": {
       "type": "object",
       "required": ["total", "passed", "failed", "errored", "variations"],
-      "additionalProperties": false,
       "properties": {
         "total": { "type": "integer", "minimum": 0 },
         "passed": { "type": "integer", "minimum": 0 },
@@ -98,7 +94,6 @@
     "spec": {
       "type": "object",
       "required": ["key", "path", "sha256", "complete", "summary", "warnings", "tests"],
-      "additionalProperties": false,
       "properties": {
         "key": {
           "description": "The spec's path inside its repository: what joins it across reports. Outside a repository, the path as given.",
@@ -133,7 +128,6 @@
         "errors",
         "phrasings"
       ],
-      "additionalProperties": false,
       "properties": {
         "id": {
           "description": "The test's id in the spec, or <suite>/<name>. Unique in a spec.",
@@ -142,7 +136,7 @@
         "suite": { "type": "string" },
         "name": { "type": "string" },
         "definition_sha256": {
-          "description": "Of the trigger, the turns, the expectation and the variations. Equal hashes measured the same thing.",
+          "description": "Of the trigger, the turns, the expectation and the number of variations. Equal hashes measured the same thing, apart from which paraphrases a generator wrote.",
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
@@ -158,7 +152,6 @@
     "phrasing": {
       "type": "object",
       "required": ["kind", "text", "status", "counts", "executions"],
-      "additionalProperties": false,
       "properties": {
         "kind": { "enum": ["trigger", "variation", "conversation"] },
         "text": {
@@ -181,7 +174,6 @@
         "errors",
         "turns"
       ],
-      "additionalProperties": false,
       "properties": {
         "execution_id": {
           "description": "The X-Highbar-Test value of this execution.",
@@ -201,7 +193,6 @@
     "turn": {
       "type": "object",
       "required": ["trigger", "response", "response_ms", "correlate", "tools"],
-      "additionalProperties": false,
       "properties": {
         "trigger": { "type": "string" },
         "response": {
@@ -222,7 +213,6 @@
     "tool": {
       "type": "object",
       "required": ["name", "args", "error", "duration_ms", "late"],
-      "additionalProperties": false,
       "properties": {
         "name": { "type": "string" },
         "args": { "type": "object" },

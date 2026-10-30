@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 
 class Status(StrEnum):
@@ -267,8 +267,20 @@ class Test:
                 for turn in self.turns or []
             ],
         }
-        text = json.dumps(definition, sort_keys=True, ensure_ascii=False, default=str)
-        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+        # ASCII, so a lone surrogate from YAML is an escape and not a failed encode.
+        text = json.dumps(_canonical(definition), sort_keys=True, default=str)
+        return hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
+def _canonical(value: Any) -> Any:
+    """``value`` with text keys: YAML's can be booleans, dates or null, and JSON sorts text."""
+    if isinstance(value, dict):
+        mapping = cast("dict[Any, Any]", value)
+        return {str(key): _canonical(item) for key, item in mapping.items()}
+    if isinstance(value, (list, tuple)):
+        items = cast("list[Any] | tuple[Any, ...]", value)
+        return [_canonical(item) for item in items]
+    return value
 
 
 def stable_key(suite: str, test: Test) -> str:
