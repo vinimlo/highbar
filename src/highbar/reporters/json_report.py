@@ -164,10 +164,15 @@ def _file_mode(path: Path) -> int:
 
 
 def _git(*args: str, cwd: Path) -> str | None:
-    """One line of git's output, or None where there is no git or no repository."""
+    """One line of git's output, or None where there is no git or no repository.
+
+    A git hook exports GIT_DIR, and then git takes the cwd for the top level: the
+    repository has to come from ``cwd``, or a spec's key changes with who called highbar.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")}
     try:
         done = subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=GIT_TIMEOUT_S
+            ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=GIT_TIMEOUT_S
         )
     except (OSError, subprocess.SubprocessError):
         return None
