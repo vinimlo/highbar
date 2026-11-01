@@ -107,7 +107,6 @@ def run(
     runs: int | None = typer.Option(
         None,
         "--runs",
-        min=1,
         help=(
             "Run each phrasing N times, in place of the specs' defaults.runs; a test's own "
             "runs still wins. With min_pass, a flaky test becomes a gate."
@@ -128,6 +127,11 @@ def run(
     report = _open_report(report_to, paths)
     try:
         code = _run_all(paths, report, runs=runs, frozen=frozen, keep_traces=keep_traces)
+    except KeyboardInterrupt:
+        # Anywhere in the run, parsing and hooks included. If an agent was up, the
+        # runner's finally has already stopped its process group.
+        console.print("\n  Interrupted.")
+        code = _stopped(report, "interrupted", "stopped by Ctrl-C", EXIT_INTERRUPTED)
     except SystemExit as e:
         # SIGTERM or SIGHUP, from _terminate_as_exit, or rich when the reader closed
         # stdout: the agent is already down.
@@ -210,6 +214,11 @@ def _run_all(
     It returns the code rather than raising typer.Exit, which is a RuntimeError and
     would read as a crash on its way out.
     """
+    # Here and not in the option: the file has to be replaced before this exit too.
+    if runs is not None and runs < 1:
+        console.print("[red]--runs must be at least 1.[/red]")
+        return _stopped(report, "usage_error", "--runs must be at least 1.", EXIT_UNRUNNABLE)
+
     if not paths:
         console.print("[red]No spec files found.[/red]")
         return _stopped(report, "no_specs", "No spec files found.", EXIT_UNRUNNABLE)
@@ -264,10 +273,6 @@ def _run_all(
         # Nothing could be checked: the agent is up but not instrumented (or not ours).
         console.print(f"  [red]\u2717[/red] {escape(current)}: {escape(str(e))}", soft_wrap=True)
         return _stopped(report, "agent_not_observed", f"{current}: {e}", EXIT_UNRUNNABLE)
-    except KeyboardInterrupt:
-        # The runner's finally has already stopped the agent's process group.
-        console.print("\n  Interrupted.")
-        return _stopped(report, "interrupted", "stopped by Ctrl-C", EXIT_INTERRUPTED)
 
     total = _total(summaries)
     if len(summaries) > 1:

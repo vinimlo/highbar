@@ -189,6 +189,20 @@ def test_j6_unwritable_report_exits_2_before_any_message(project: _Project) -> N
     assert not (project.root / "agent-started").exists()
 
 
+@pytest.mark.timeout(30)
+def test_m2_runs_0_leaves_no_older_green_behind(project: _Project) -> None:
+    spec = project.spec(PASSES)
+    project.report.write_text('{"exit_code": 0}', encoding="utf-8")
+
+    result = project.run(spec, "--runs", "0")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "--runs" in result.stdout
+    data = project.data()
+    assert data["exit_code"] == 2
+    assert data["stopped"]["reason"] == "usage_error"
+
+
 def _start(project: _Project, spec: str) -> subprocess.Popen[str]:
     return subprocess.Popen(
         project.command(spec, "--report", f"json={project.report}"),
@@ -237,6 +251,35 @@ def test_j7_interrupted_run_keeps_finished_tests(
     # The test in progress is not a result.
     assert [test["id"] for test in spec_result["tests"]] == ["S/message 0"]
     assert data["summary"]["total"] == 1
+
+
+@pytest.mark.timeout(40)
+def test_m3_ctrl_c_before_the_first_spec_is_in_the_file(project: _Project) -> None:
+    spec = project.spec(PASSES)
+    path = project.root / spec
+    text = path.read_text(encoding="utf-8")
+    hook = "  session:\n    setup: {python: 'slow_hook:setup'}\n"
+    path.write_text(text.replace("suites:", hook + "suites:", 1), encoding="utf-8")
+    loading = project.root / "loading"
+    (project.root / "slow_hook.py").write_text(
+        f"import pathlib, time\npathlib.Path({str(loading)!r}).touch()\ntime.sleep(25)\n",
+        encoding="utf-8",
+    )
+
+    cli = _start(project, spec)
+    try:
+        assert _wait_until(loading.exists, 15)
+        cli.send_signal(signal.SIGINT)
+        cli.communicate(timeout=15)
+    finally:
+        if cli.poll() is None:
+            cli.kill()
+
+    assert cli.returncode == 130
+    data = project.data()
+    assert data["exit_code"] == 130
+    assert data["complete"] is False
+    assert data["stopped"]["reason"] == "interrupted"
 
 
 def _turns_written(traces: Path) -> int:

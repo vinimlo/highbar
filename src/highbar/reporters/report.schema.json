@@ -39,6 +39,7 @@
           "properties": {
             "reason": {
               "enum": [
+                "usage_error",
                 "spec_invalid",
                 "hooks_invalid",
                 "no_specs",
