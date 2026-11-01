@@ -40,7 +40,8 @@ expect:
 | `equals` | is exactly the operand. Use it to compare a whole object, or an object that looks like a matcher. |
 | `contains`, `icontains` | contains the text (`icontains` ignores case). For a list: has the item. |
 | `not_contains`, `not_icontains` | does not contain it. |
-| `matches`, `not_matches` | matches the regular expression somewhere (Python's `re.search`), or does not. |
+| `matches`, `not_matches` | matches the regular expression somewhere (Python's `re.search`), or does not. **Case-sensitive:** `matches: "eleven years"` fails on "Eleven years" at the start of a sentence. |
+| `imatches`, `not_imatches` | the same, ignoring case. `(?i)` at the start of a pattern does the same in `matches`. |
 
 A value that has no text form (an object, a list) never satisfies a negative matcher: "it does not contain the card number" is not evidence when there is no text to look at.
 

@@ -37,15 +37,20 @@ class ResponseAssertion:
 
 
 def _why(key: str, operand: Any, response: str) -> str:
-    if key == "not_matches":
-        found = re.search(str(operand), response)
+    if key in ("not_matches", "not_imatches"):
+        ignore_case = key == "not_imatches"
+        found = re.search(str(operand), response, re.IGNORECASE if ignore_case else 0)
         snippet = found.group(0) if found else ""
-        return f"Response matches forbidden pattern '{operand}' (found '{truncate(snippet, 80)}')"
+        how = " (ignoring case)" if ignore_case else ""
+        return (
+            f"Response matches forbidden pattern '{operand}'{how} (found '{truncate(snippet, 80)}')"
+        )
     return {
         "contains": f"Response does not contain '{operand}'",
         "icontains": f"Response does not contain '{operand}' (ignoring case)",
         "not_contains": f"Response contains forbidden text '{operand}'",
         "not_icontains": f"Response contains forbidden text '{operand}' (ignoring case)",
         "matches": f"Response does not match pattern '{operand}'",
+        "imatches": f"Response does not match pattern '{operand}' (ignoring case)",
         "equals": f"Response is not '{operand}'",
     }[key]
