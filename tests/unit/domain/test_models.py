@@ -1,6 +1,6 @@
 """Tests for domain model construction and defaults."""
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Any
 
@@ -20,6 +20,20 @@ from highbar.domain.models import (
     combine,
     stable_key,
 )
+
+
+@dataclass(frozen=True)
+class _GrownExpect(Expect):
+    """Expect with a field it does not have yet."""
+
+    context: str | None = None
+
+
+@dataclass(frozen=True)
+class _GrownCall(FunctionCallExpect):
+    """FunctionCallExpect with a field it does not have yet."""
+
+    latency_ms: int | None = None
 
 
 class TestTrace:
@@ -205,6 +219,34 @@ class TestKeyAndDefinition:
         assert Test(turns=[turn]).definition_sha256 == Test(turns=[named]).definition_sha256
         changed = replace(turn, trigger="b")
         assert Test(turns=[turn]).definition_sha256 != Test(turns=[changed]).definition_sha256
+
+    def test_m9_a_new_field_at_its_default_changes_no_hash(self) -> None:
+        base = Test(trigger="t", expect=Expect(forbid=("a",)))
+
+        grown = Test(trigger="t", expect=_GrownExpect(forbid=("a",)))
+        used = Test(trigger="t", expect=_GrownExpect(forbid=("a",), context="doc"))
+
+        assert grown.definition_sha256 == base.definition_sha256
+        assert used.definition_sha256 != base.definition_sha256
+
+    def test_m9_the_same_inside_a_turn_and_a_call(self) -> None:
+        def conversation(call: FunctionCallExpect) -> Test:
+            return Test(turns=[Turn(trigger="a", expect=Expect(function_calls=[call]))])
+
+        base = conversation(FunctionCallExpect(name="f"))
+
+        assert conversation(_GrownCall(name="f")).definition_sha256 == base.definition_sha256
+        assert (
+            conversation(_GrownCall(name="f", latency_ms=5)).definition_sha256
+            != base.definition_sha256
+        )
+
+    def test_m9_a_value_that_only_looks_empty_is_kept(self) -> None:
+        """`function_calls: []` is a guardrail: leaving it out would measure nothing."""
+        base = Test(trigger="t", expect=Expect()).definition_sha256
+
+        assert Test(trigger="t", expect=Expect(function_calls=[])).definition_sha256 != base
+        assert Test(trigger="t", expect=Expect(ordered=True)).definition_sha256 != base
 
     @pytest.mark.parametrize(
         "params",

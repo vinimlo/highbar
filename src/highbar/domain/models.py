@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass, field
+from dataclasses import MISSING, Field, dataclass, field, fields, is_dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, cast
@@ -260,11 +260,10 @@ class Test:
         """
         definition = {
             "trigger": self.trigger,
-            "expect": asdict(self.expect) if self.expect else None,
+            "expect": self.expect,
             "variations": self.variations,
             "turns": [
-                {"trigger": turn.trigger, "expect": asdict(turn.expect)}
-                for turn in self.turns or []
+                {"trigger": turn.trigger, "expect": turn.expect} for turn in self.turns or []
             ],
         }
         # ASCII, so a lone surrogate from YAML is an escape and not a failed encode.
@@ -272,8 +271,26 @@ class Test:
         return hashlib.sha256(text.encode("ascii")).hexdigest()
 
 
+def _default(declared: Field[Any]) -> Any:
+    if declared.default_factory is not MISSING:
+        return declared.default_factory()
+    return declared.default
+
+
 def _canonical(value: Any) -> Any:
-    """``value`` with text keys: YAML's can be booleans, dates or null, and JSON sorts text."""
+    """``value`` the same way however it was written, for a hash.
+
+    Keys are text: YAML's can be booleans, dates or null, and JSON sorts text. A field
+    of a dataclass at its default stays out, so a new optional field changes the hash
+    of no test that does not use it.
+    """
+    if is_dataclass(value) and not isinstance(value, type):
+        values = {declared: getattr(value, declared.name) for declared in fields(value)}
+        return {
+            declared.name: _canonical(item)
+            for declared, item in values.items()
+            if item != _default(declared)
+        }
     if isinstance(value, dict):
         mapping = cast("dict[Any, Any]", value)
         return {str(key): _canonical(item) for key, item in mapping.items()}
