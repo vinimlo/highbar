@@ -384,6 +384,22 @@ class TestGit:
         assert spec["key"] == "evals/specs/x.highbar.yaml"
         assert len(data["git_sha"]) == 40
 
+    @pytest.mark.parametrize("work_tree", [False, True])
+    def test_m7_key_is_the_same_with_git_variables_exported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, work_tree: bool
+    ) -> None:
+        """A git hook exports GIT_DIR, and then git takes the cwd for the top level."""
+        self._repository(tmp_path)
+        _spec_file(tmp_path / "evals" / "specs")
+        monkeypatch.chdir(tmp_path / "evals" / "specs")
+        monkeypatch.setenv("GIT_DIR", str(tmp_path / ".git"))
+        if work_tree:
+            monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path / "evals"))
+
+        data = _finished(tmp_path / "r.json", "x.highbar.yaml", _summary())
+
+        assert data["specs"][0]["key"] == "evals/specs/x.highbar.yaml"
+
     def test_key_is_the_path_outside_a_repository(self, workdir: Path) -> None:
         _spec_file(workdir)
 

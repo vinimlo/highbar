@@ -30,7 +30,7 @@ Responses and tool arguments go in whole, so treat it like a trace file from `--
 | `summary` | `total`, `passed`, `failed`, `errored` and `variations` of the whole run. |
 | `specs` | One entry per spec that started. |
 
-`stopped.reason` is one of `spec_invalid`, `hooks_invalid`, `no_specs`, `agent_start_failed`, `agent_not_observed`, `interrupted` and `crashed`.
+`stopped.reason` is one of `usage_error`, `spec_invalid`, `hooks_invalid`, `no_specs`, `agent_start_failed`, `agent_not_observed`, `interrupted` and `crashed`.
 
 The file is written before the first message and again on every way out of the run, through a temporary file and a rename. So it is never half written, and it never shows an older run:
 
@@ -38,6 +38,8 @@ The file is written before the first message and again on every way out of the r
 - A run that was killed leaves `exit_code: null`.
 - An interrupted run keeps the tests that finished, and the test in progress is left out.
 - A run that cannot write the final file exits with 2, whatever its tests did.
+
+The one exception is a command line that highbar cannot read: an unknown option, `--runs abc` or a `--report` value without a known format. It exits with 2 before the file is opened, so an older file stays in place. A script that keeps reports should check the exit code first.
 
 ## Each spec
 
@@ -56,7 +58,7 @@ The file is written before the first message and again on every way out of the r
   "id": "Orders/looks the order up",
   "suite": "Orders",
   "name": "looks the order up",
-  "definition_sha256": "d54e20d9f07f962144ce7e6892c018a3b1b940b00d8bd6860350fa418c909ba1",
+  "definition_sha256": "99be0aae47025a244100b9ab66aaf298c8d49f2b3f1966ad9520e6a9d2410e7c",
   "status": "passed",
   "runs": 1,
   "min_pass": 1,
@@ -104,7 +106,7 @@ The file is written before the first message and again on every way out of the r
 | Field | |
 |---|---|
 | `id` | The test's [`id`](/reference/spec-format#tests) in the spec, or `<suite>/<name>`. Unique in a spec. |
-| `definition_sha256` | Of the trigger, the turns, the expectation and the number of variations. `name`, `id`, `runs` and `min_pass` stay out. |
+| `definition_sha256` | Of the trigger, the turns, the expectation and the number of variations. `name`, `id`, `runs` and `min_pass` stay out, and so does an option left at its default, so a new one changes the hash of no test that does not use it. |
 | `status`, `errors` | The final ones, late calls included. |
 | `runs`, `min_pass` | As they applied to this test, with fractions resolved. |
 | `counts` | How the executions ended. There is no rate: an `error` is neither a pass nor a failure, so whoever computes one has to decide what to do with it. |

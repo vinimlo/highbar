@@ -412,6 +412,29 @@ class TestSnapshot:
         assert [test.id for test in summary.tests] == ["S/a"]
         assert (summary.total, summary.passed) == (1, 1)
 
+    def test_m6_variations_of_a_test_still_running_are_not_counted(self) -> None:
+        generator = MagicMock()
+        generator.generate.return_value = ["v1", "v2"]
+        runner = _runner(Replying(["ok", "ok", KeyboardInterrupt()]), variations=generator)
+
+        with pytest.raises(KeyboardInterrupt):
+            runner.run(_spec([Case(trigger="t", expect=SAYS_OK, variations=2)]))
+
+        summary = runner.snapshot()
+        assert (summary.total, summary.variations) == (0, 0)
+
+    def test_m6_variations_of_finished_tests_are_counted_once(self) -> None:
+        generator = MagicMock()
+        generator.generate.return_value = ["v1", "v2"]
+
+        summary = _run(
+            [Case(trigger="t", expect=SAYS_OK, variations=2, runs=2)],
+            FakeAgent(),
+            variations=generator,
+        )
+
+        assert summary.variations == 2
+
     @staticmethod
     def _late_first(message: str, test_id: str) -> Window | tuple[Window, Window]:
         now = Window(turns=[_turn(test=test_id)])
