@@ -327,7 +327,6 @@ class TestRunner:
         self._default_runs = default_runs
         # The spec's defaults.min_pass, set by run(): the value check_runs checked.
         self._default_min_pass: int | float | None = None
-        self._variations_run = 0
         self._last_variation_count: int | None = None
         self._warned: set[str] = set()
         # The tools the agent declared it records (None until it declares any), and the
@@ -349,7 +348,6 @@ class TestRunner:
 
     def run(self, spec: Spec) -> RunSummary:
         """Run all suites in the spec."""
-        self._variations_run = 0
         self._default_min_pass = spec.default_min_pass
         self._warned = set()
         self._inventory, self._seen, self._undeclared = None, set(), {}
@@ -424,7 +422,7 @@ class TestRunner:
             failed=statuses.count(Status.FAILED),
             errored=statuses.count(Status.ERROR),
             duration_ms=(time.time() - self._run_start) * 1000,
-            variations=self._variations_run,
+            variations=sum(p.kind == "variation" for test in tests for p in test.phrasings),
             tests=tests,
             warnings=tuple(redact(message, self._secrets) for message in self._warnings),
         )
@@ -838,8 +836,6 @@ class TestRunner:
                 )
                 for run in range(runs)
             ]
-            if index > 0:
-                self._variations_run += 1
             gate.runs.append([r.status for r in results])
             gate.phrasings.append(kinds[index])
             statuses.append(phrasing_status(gate.runs[-1], min_pass))
