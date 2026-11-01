@@ -630,6 +630,42 @@ class TestTotals:
         assert summary.totals.cost == {"${AGENT_TOKEN}": 1.0, "USD": 2.0}
 
 
+class TestContradictoryUsage:
+    """Q5: provider counters copied as they come, with the cached tokens left out of the input."""
+
+    COPIED = {
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "input_tokens": 12,
+        "output_tokens": 1,
+        "cached_input_tokens": 50_000,
+    }
+
+    def test_q5_it_cannot_pass_a_limit_on_tokens(self, tmp_path: Path) -> None:
+        agent = _Traced(tmp_path / "t.jsonl", _tagged(self.COPIED))
+
+        summary = _run([_budgeted(Budget(max_input_tokens=1000))], agent)
+
+        (test,) = summary.tests
+        assert test.status is Status.ERROR
+        assert any("cached_input_tokens" in warning for warning in summary.warnings)
+
+    def test_q5_it_cannot_pass_a_limit_on_cost(self, tmp_path: Path) -> None:
+        agent = _Traced(tmp_path / "t.jsonl", _tagged(self.COPIED))
+
+        (test,) = _run([_budgeted(Budget(max_cost=0.01))], agent).tests
+
+        assert test.status is Status.ERROR
+
+    def test_q5_its_sums_say_they_are_incomplete(self, tmp_path: Path) -> None:
+        agent = _Traced(tmp_path / "t.jsonl", _tagged(self.COPIED))
+
+        summary = _run([Case(trigger="t", expect=SAYS_OK)], agent)
+
+        assert summary.totals is not None
+        assert summary.totals.complete is False
+
+
 class TestUntaggedUsage:
     """Q1: `turn` records that lost their context, next to one that kept it."""
 
@@ -763,6 +799,56 @@ class TestUntaggedUsage:
         assert summary.totals.complete is False
         assert summary.untagged_cost == {"USD": 9.0}
         assert not any("counted only" in warning for warning in summary.warnings)
+
+    def test_q6_a_ceiling_counts_usage_tagged_for_no_test_of_the_run(self) -> None:
+        """A managed agent's spend is this run's, whatever context the record carries."""
+
+        def script(message: str, test_id: str) -> Window:
+            return Window(
+                turns=[
+                    TurnRecord(ts=1.0, context={"test": test_id}, usage=_usd(0.1)),
+                    TurnRecord(ts=1.0, context={"test": "someone-else"}, usage=_usd(9.0)),
+                ]
+            )
+
+        agent = FakeAgent(script)
+        tests = [Case(trigger="a", expect=SAYS_OK), Case(trigger="b", expect=SAYS_OK)]
+
+        summary = _run(tests, agent, max_cost=1)
+
+        assert [message for message, _ in agent.sent] == ["a"]
+        assert summary.stopped is not None
+        assert "9.1 USD (9.0 USD of it with no test context, in no total)" in summary.stopped
+        assert summary.totals is not None
+        assert summary.totals.cost == {"USD": 0.1}
+        assert summary.untagged_cost == {"USD": 9.0}
+
+    def test_q6_that_usage_stays_out_for_an_attached_agent(self) -> None:
+        def script(message: str, test_id: str) -> Window:
+            return Window(
+                turns=[
+                    TurnRecord(ts=1.0, context={"test": test_id}, usage=_usd(0.1)),
+                    TurnRecord(ts=1.0, context={"test": "someone-else"}, usage=_usd(9.0)),
+                ]
+            )
+
+        summary = _run([PLAIN], FakeAgent(script), managed=False, max_cost=1)
+
+        assert summary.stopped is None
+        assert summary.untagged_cost == {}
+
+    def test_q6_a_ceiling_warns_when_that_usage_has_no_cost(self) -> None:
+        def script(message: str, test_id: str) -> Window:
+            return Window(
+                turns=[
+                    TurnRecord(ts=1.0, context={"test": test_id}, usage=_usd(0.1)),
+                    TurnRecord(ts=1.0, context={"test": "someone-else"}, usage=_tokens(5)),
+                ]
+            )
+
+        summary = _run([PLAIN], FakeAgent(script), max_cost=5)
+
+        assert any("--max-cost 5 counted only" in warning for warning in summary.warnings)
 
     def test_q1_a_ceiling_leaves_it_out_for_an_attached_agent(self) -> None:
         """It may be someone else's: the run goes on, and says what it could not count."""

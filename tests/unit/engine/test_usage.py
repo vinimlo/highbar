@@ -72,6 +72,34 @@ class TestPriced:
         assert result.cost is None
         assert warning is not None
 
+    def test_q5_more_cached_tokens_than_input_leave_the_input_unknown(self) -> None:
+        """The contract's input includes the cached tokens, so this record contradicts itself."""
+        usage = Usage(**MINI, input_tokens=12, output_tokens=1, cached_input_tokens=50_000)
+
+        result, warning = priced(usage)
+
+        assert result.input_tokens is None
+        assert result.cost is None
+        assert warning is not None
+        assert "cached_input_tokens" in warning
+
+    def test_q5_a_cost_from_the_writer_still_stands(self) -> None:
+        usage = Usage(input_tokens=12, cached_input_tokens=50, cost=0.5, currency="USD")
+
+        result, warning = priced(usage)
+
+        assert (result.input_tokens, result.cost) == (None, 0.5)
+        assert warning is not None
+
+    def test_q5_cached_tokens_equal_to_the_input_are_no_contradiction(self) -> None:
+        usage = Usage(**MINI, input_tokens=800, output_tokens=1, cached_input_tokens=800)
+
+        result, warning = priced(usage)
+
+        assert result.input_tokens == 800
+        assert result.cost is not None
+        assert warning is None
+
     def test_no_model_says_nothing_here(self) -> None:
         usage = Usage(input_tokens=5, output_tokens=5)
 

@@ -77,7 +77,7 @@ A `turn` record is the proof that the agent handled a message. Against an attach
 Not every provider counts them that way. OpenAI's `prompt_tokens` already includes `cached_tokens`, but Anthropic's `input_tokens` leaves out `cache_read_input_tokens` and `cache_creation_input_tokens`: add them up before writing the field, or `max_input_tokens` will pass on a context bigger than it allows.
 :::
 
-A value that cannot be read counts as missing, and the line is still read: a `usage` that is not an object, a negative count, text where a number goes, `NaN`. A budget on a missing value is an `error`, never a pass.
+A value that cannot be read counts as missing, and the line is still read: a `usage` that is not an object, a negative count, text where a number goes, `NaN`. So does `input_tokens` below `cached_input_tokens`, which contradicts the table above: highbar warns and works out no cost from that record. A budget on a missing value is an `error`, never a pass.
 
 When several `turn` records of one message have `usage`, such as `highbar.asgi.Middleware` next to `hb.turn()`, they are added up, because all of it was spent. A value they disagree on, like the model, is unknown in the turn's `usage` in the report; the sums and budgets read each record, so a value one of them knows is never lost. A `usage` that cannot be read at all, next to one that can, counts as a record with nothing known. A `turn` without `usage`, or with an empty one like `null` or `{}`, counts for nothing.
 

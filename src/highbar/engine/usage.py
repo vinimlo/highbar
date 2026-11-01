@@ -21,6 +21,12 @@ from typing import Any
 from highbar._narrow import as_dict, as_list
 from highbar.domain.models import Budget, Usage, UsageTotals
 
+CONTRADICTORY = (
+    "a turn's usage has more cached_input_tokens than input_tokens, so its input counts as "
+    "unknown and no cost is worked out from it; input_tokens must include the cached tokens "
+    "(see the trace contract)"
+)
+
 NO_USAGE = (
     "the {scope} reported no usage, so its budget cannot be checked; the agent must write "
     "`usage` in its `turn` record before the reply goes out (see the trace contract). If "
@@ -116,8 +122,12 @@ def priced(usage: Usage) -> tuple[Usage, str | None]:
 
     The emitter's cost stands. Without one it comes from the price table, in the table's
     currency, and only from the whole count: a turn priced without its output tokens
-    would look cheaper than it was, and pass a budget it may not have met.
+    would look cheaper than it was, and pass a budget it may not have met. The input
+    includes the cached tokens, so a smaller one is a count that cannot be right.
     """
+    cached = usage.cached_input_tokens or 0
+    if usage.input_tokens is not None and cached > usage.input_tokens:
+        return replace(usage, input_tokens=None), CONTRADICTORY
     if usage.cost is not None or usage.model is None:
         return usage, None
     currency, prices = _table()
@@ -132,7 +142,6 @@ def priced(usage: Usage) -> tuple[Usage, str | None]:
             f"model '{usage.model}' cannot be priced from a turn without input_tokens and "
             "output_tokens; write them, or `cost` and `currency`, in the turn's usage"
         )
-    cached = min(usage.cached_input_tokens or 0, usage.input_tokens)
     cost = (
         (usage.input_tokens - cached) * price.prompt
         + cached * price.input_cache_read

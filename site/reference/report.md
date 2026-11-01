@@ -144,7 +144,7 @@ A turn's `usage` has the fields of the [trace contract](/reference/trace-contrac
 }
 ```
 
-`totals` adds up the turns of a level. It has the same shape at every level: each execution and each test (`tests[].totals`), each suite (`specs[].suites[].totals`), each spec (`specs[].totals`) and the run (`totals`). For a single turn, `turns[].usage` is the sum. When a message has several `turn` records, a value is `null` there unless all of them give it, and `totals` still holds what each one gave.
+`totals` adds up the turns of a level. It has the same shape at every level: each execution and each test (`tests[].totals`), each suite (`specs[].suites[].totals`), each spec (`specs[].totals`) and the run (`totals`). For a single turn, `turns[].usage` is the sum. When a message has several `turn` records, `input_tokens`, `output_tokens` and `cost` are `null` there unless all of them give the value, `cached_input_tokens` and `llm_calls` add up the ones given, and `totals` still holds what each one gave.
 
 ```json
 {

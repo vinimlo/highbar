@@ -719,6 +719,9 @@ class TestRunner:
         for turn in turns:
             owner = self._owner(turn.context, current)
             if owner is None or not owner.turns:
+                # Tagged for no test of the run: a managed agent's spend is still this run's.
+                if self._managed:
+                    self._strays.extend(self._read_usage([turn]))
                 continue
             records = self._read_usage([turn])
             if records:
@@ -967,6 +970,11 @@ class TestRunner:
                 f"--max-cost {amount(self._max_cost)} counted only the costs it knows: "
                 f"{missing} of {len(usages)} turns are missing a cost and currency, or have "
                 f"usage next to them with {context}, so the run may have spent more"
+            )
+        elif any(not has_cost(stray) for stray in self._strays):
+            self._warn(
+                f"--max-cost {amount(self._max_cost)} counted only the costs it knows: usage "
+                "tagged for no test of the run has no cost, so the run may have spent more"
             )
 
     def _priced(self, usage: Usage) -> Usage:

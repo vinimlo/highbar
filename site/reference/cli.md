@@ -29,7 +29,7 @@ The accumulated cost is checked at the end of each test, across every spec of th
 
 The ceiling has no currency of its own: each currency's sum is held against it separately, since costs in different currencies are not added. It sees only the costs it knows: a turn with no cost and currency cannot count, a run with one ends with a warning that it may have spent more, and an agent that reports no cost is never stopped.
 
-A `turn` record with no test context, next to records that have one, belongs to no test, so it stays out of every total and budget. The ceiling depends on who started the agent. An agent highbar started can only be spending for this run, so the ceiling counts that cost, and the message that stops the run says how much of the spend had no test context: that is why the totals can show less than what stopped it. An attached agent may be serving others, so the ceiling leaves that cost out, and the run ends with the same warning.
+A `turn` record with no test context, next to records that have one, belongs to no test, so it stays out of every total and budget. The ceiling depends on who started the agent. An agent highbar started can only be spending for this run, so the ceiling counts that cost, as it does a record tagged for no test of the run, and the message that stops the run says how much of the spend had no test context: that is why the totals can show less than what stopped it. An attached agent may be serving others, so the ceiling leaves that cost out, and the run ends with the same warning.
 
 ## `highbar validate [SPEC_PATH]`
 
