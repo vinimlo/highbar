@@ -44,6 +44,19 @@ def test_the_price_script_writes_a_table_highbar_reads() -> None:
     assert len(read_prices(table)) == 2
 
 
+def test_the_price_script_leaves_out_a_model_with_no_fixed_price() -> None:
+    models = {
+        "data": [
+            {"id": "a/fixed", "pricing": {"prompt": "1", "completion": "2"}},
+            {"id": "a/router", "pricing": {"prompt": "-1", "completion": "-1"}},
+        ]
+    }
+
+    table = _script("update_prices").prices_from(models)
+
+    assert [model["id"] for model in table["data"]] == ["a/fixed"]
+
+
 def _pyproject(tmp_path: Path, version: str) -> Path:
     path = tmp_path / "pyproject.toml"
     path.write_text(f'[project]\nname = "highbar"\nversion = "{version}"\n', encoding="utf-8")
