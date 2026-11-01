@@ -25,7 +25,7 @@ from highbar.engine.run_spec import load_session_hooks, run_spec
 from highbar.engine.runs import check_runs
 from highbar.engine.schema import SpecError
 from highbar.engine.session import SessionError, SessionHooks
-from highbar.engine.usage import add_up
+from highbar.engine.usage import add_costs, add_up
 from highbar.reporters.json_report import JsonReport, ReportError
 from highbar.reporters.terminal import format_summary
 from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
@@ -281,6 +281,7 @@ def _run_all(
                         on_end=partial(report.add, current, spec) if report else None,
                         max_cost=max_cost,
                         spent=_spent(summaries),
+                        spent_untagged=_spent_untagged(summaries),
                     )
                 )
                 # The ceiling is the whole run's, so the specs left do not start either.
@@ -315,9 +316,14 @@ def _run_all(
 
 
 def _spent(summaries: list[RunSummary]) -> dict[str, float]:
-    """What the specs that finished spent, per currency."""
+    """What the specs that finished spent, per currency, as --max-cost counts it."""
     totals = _total(summaries).totals
-    return dict(totals.cost) if totals is not None else {}
+    return add_costs(totals.cost if totals is not None else {}, _spent_untagged(summaries))
+
+
+def _spent_untagged(summaries: list[RunSummary]) -> dict[str, float]:
+    """The part of that with no test context, which no total shows."""
+    return add_costs(*(summary.untagged_cost for summary in summaries))
 
 
 @app.command()

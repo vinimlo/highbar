@@ -310,6 +310,28 @@ def test_q1_usage_with_no_test_context_cannot_pass_a_budget(project: _Project) -
     assert "no test context" in result.stdout
 
 
+@pytest.mark.timeout(40)
+def test_q1_the_ceiling_counts_cost_with_no_test_context_across_specs(project: _Project) -> None:
+    """Spec a's stray is in no total, and spec b still has to stop on it."""
+    stray = ("--cost", "0.01", "--stray-cost", "0.01")
+    project.spec(PASSES, name="specs/a.highbar.yaml", args=stray)
+    project.spec(PASSES, name="specs/b.highbar.yaml", args=("--cost", "0.01"))
+    project.spec(PASSES, name="specs/c.highbar.yaml", args=("--cost", "0.01"))
+
+    result = project.run("specs", "--max-cost", "0.025")
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    data = project.data()
+    jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+    assert [spec["path"] for spec in data["specs"]] == [
+        "specs/a.highbar.yaml",
+        "specs/b.highbar.yaml",
+    ]
+    assert "0.03 USD (0.01 USD of it with no test context" in data["stopped"]["message"]
+    assert data["totals"]["cost"] == {"USD": 0.02}
+    assert data["totals"]["complete"] is False
+
+
 @pytest.mark.timeout(30)
 def test_j5_invalid_spec_reports_why(project: _Project) -> None:
     (project.root / "bad.highbar.yaml").write_text("agent: {endpoint: 1}\n", encoding="utf-8")

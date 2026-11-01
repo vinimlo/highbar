@@ -38,7 +38,7 @@ The file is written before the first message and again on every way out of the r
 - A path that cannot be written stops the run with exit code 2 before anything is sent.
 - A run that was killed leaves `exit_code: null`.
 - An interrupted run keeps the tests that finished, and the test in progress is left out.
-- A run stopped by `--max-cost` keeps every test that ran, with `stopped.reason: "budget_exceeded"`. The test in progress had time to finish, and the ones after it are not in the file.
+- A run stopped by `--max-cost` keeps every test that ran, with `stopped.reason: "budget_exceeded"`. The test in progress had time to finish, and the ones after it are not in the file. `stopped.message` says how much of the spend had no test context: that part of an agent highbar started counts for the ceiling and is in no `totals`.
 - A run that cannot write the final file exits with 2, whatever its tests did.
 
 The one exception is a command line that highbar cannot read: an unknown option, `--runs abc` or a `--report` value without a known format. It exits with 2 before the file is opened, so an older file stays in place. A script that keeps reports should check the exit code first.

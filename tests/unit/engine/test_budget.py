@@ -126,6 +126,7 @@ def _runner(
     managed: bool = True,
     max_cost: float | None = None,
     spent: Mapping[str, float] | None = None,
+    spent_untagged: Mapping[str, float] | None = None,
     secrets: Mapping[str, str] | None = None,
     variations: Any = None,
 ) -> Runner:
@@ -140,6 +141,7 @@ def _runner(
         managed=managed,
         max_cost=max_cost,
         spent=spent,
+        spent_untagged=spent_untagged,
         secrets=secrets,
     )
 
@@ -746,17 +748,90 @@ class TestUntaggedUsage:
 
         assert test.status is Status.FAILED
 
-    def test_q1_a_ceiling_says_it_could_not_count_it(self) -> None:
+    def test_q1_a_ceiling_counts_it_when_highbar_started_the_agent(self) -> None:
+        """It can only be this run's, so the run stops, and the totals stay as they were."""
         agent = _spending((_usd(0.1),), stray=_usd(9.0))
         tests = [Case(trigger="a", expect=SAYS_OK), Case(trigger="b", expect=SAYS_OK)]
 
         summary = _run(tests, agent, max_cost=1)
+
+        assert [message for message, _ in agent.sent] == ["a"]
+        assert summary.stopped is not None
+        assert "9.1 USD (9.0 USD of it with no test context, in no total)" in summary.stopped
+        assert summary.totals is not None
+        assert summary.totals.cost == {"USD": 0.1}
+        assert summary.totals.complete is False
+        assert summary.untagged_cost == {"USD": 9.0}
+        assert not any("counted only" in warning for warning in summary.warnings)
+
+    def test_q1_a_ceiling_leaves_it_out_for_an_attached_agent(self) -> None:
+        """It may be someone else's: the run goes on, and says what it could not count."""
+        agent = _spending((_usd(0.1),), stray=_usd(9.0))
+        tests = [Case(trigger="a", expect=SAYS_OK), Case(trigger="b", expect=SAYS_OK)]
+
+        summary = _run(tests, agent, managed=False, max_cost=1)
 
         assert summary.stopped is None
         assert any("--max-cost 1 counted only" in warning for warning in summary.warnings)
         assert any("2 of 2 turns" in warning for warning in summary.warnings)
         assert summary.totals is not None
         assert summary.totals.complete is False
+        assert summary.untagged_cost == {}
+
+    def test_q1_a_ceiling_counts_it_once(self) -> None:
+        """It sits on the turn it was read in and on the last turn of the test before."""
+        agent = _spending((_usd(0.1),), stray=_usd(0.4))
+        tests = [Case(trigger=name, expect=SAYS_OK) for name in "abc"]
+
+        summary = _run(tests, agent, max_cost=1.3)
+
+        assert [message for message, _ in agent.sent] == ["a", "b", "c"]
+        assert summary.stopped is not None
+        assert "1.5 USD (1.2 USD of it" in summary.stopped
+
+    def test_q1_a_ceiling_counts_it_after_the_last_test(self) -> None:
+        def script(message: str, test_id: str) -> tuple[Window, Window]:
+            turn = TurnRecord(ts=1.0, context={"test": test_id}, usage=_usd(0.1))
+            return Window(turns=[turn]), Window(turns=[TurnRecord(ts=1.0, usage=_usd(5.0))])
+
+        summary = _run([_budgeted(Budget(max_cost=100))], FakeAgent(script), max_cost=1)
+
+        assert summary.stopped is not None
+        assert "5.1 USD (5.0 USD of it" in summary.stopped
+
+    def test_q1_a_ceiling_still_warns_of_one_with_no_cost(self) -> None:
+        agent = _spending((_usd(0.1),), stray=_tokens(10))
+
+        summary = _run([Case(trigger="t", expect=SAYS_OK)], agent, max_cost=5)
+
+        assert summary.stopped is None
+        assert any(
+            "--max-cost 5 counted only" in warning and "no test context and no cost" in warning
+            for warning in summary.warnings
+        )
+
+    def test_q1_the_stop_message_says_it_of_the_currency_that_stopped_the_run(self) -> None:
+        agent = _spending((_usd(2.0),), stray=Usage(cost=0.5, currency="EUR"))
+
+        summary = _run([Case(trigger="t", expect=SAYS_OK)], agent, max_cost=1)
+
+        assert summary.stopped is not None
+        assert "2.0 USD by the end of" in summary.stopped
+        assert "no test context" not in summary.stopped
+
+    def test_q1_a_stray_of_an_earlier_spec_stays_in_the_stop_message(self) -> None:
+        for managed in (True, False):
+            summary = _run(
+                [Case(trigger="t", expect=SAYS_OK)],
+                _reporting(_usd(0.01)),
+                managed=managed,
+                max_cost=0.025,
+                spent={"USD": 0.02},
+                spent_untagged={"USD": 0.02},
+            )
+
+            assert summary.stopped is not None
+            assert "0.03 USD (0.02 USD of it" in summary.stopped
 
     def test_q1_it_may_be_the_late_usage_of_the_test_before(self) -> None:
         def script(message: str, test_id: str) -> Window:
@@ -876,9 +951,7 @@ class TestKnownSpend:
         (test,) = _run([_budgeted(Budget(max_input_tokens=150))], agent).tests
 
         assert test.status is Status.FAILED
-        assert test.errors == (
-            "the execution used 999999 input tokens, over max_input_tokens 150",
-        )
+        assert test.errors == ("the execution used 999999 input tokens, over max_input_tokens 150",)
 
     def test_q3_a_known_cost_over_a_limit_fails_it(self) -> None:
         agent = _spending((_usd(5.0), Usage(input_tokens=1)))

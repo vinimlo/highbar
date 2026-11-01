@@ -537,6 +537,9 @@ class RunSummary:
 
     ``stopped`` says why the run ended before its last test, when it was stopped by its
     cost ceiling; ``tests`` then holds the ones that finished.
+
+    ``untagged_cost`` is what an agent highbar started spent, per currency, in `turn`
+    records with no test context: in no total, and counted by the cost ceiling.
     """
 
     total: int
@@ -550,3 +553,4 @@ class RunSummary:
     totals: UsageTotals | None = None
     suites: tuple[SuiteOutcome, ...] = ()
     stopped: str | None = None
+    untagged_cost: dict[str, float] = field(default_factory=dict[str, float])

@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -186,6 +186,15 @@ class _Masking:
         )
 
 
+def _cost_of(usages: Iterable[Usage | None]) -> dict[str, float]:
+    totals = add_up(usages)
+    return totals.cost if totals is not None else {}
+
+
+def _amounts(costs: Mapping[str, float]) -> str:
+    return ", ".join(f"{amount(cost)} {name}" for name, cost in sorted(costs.items()))
+
+
 def _same_correlation(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     return bool(a) and a.keys() == b.keys() and all(same_value(a[k], b[k]) for k in a)
 
@@ -350,6 +359,7 @@ class TestRunner:
         default_runs: int = 1,
         max_cost: float | None = None,
         spent: Mapping[str, float] | None = None,
+        spent_untagged: Mapping[str, float] | None = None,
     ) -> None:
         self._adapter = adapter
         self._client = client
@@ -369,11 +379,15 @@ class TestRunner:
         # The spec's defaults.min_pass, set by run(): the value check_runs checked.
         self._default_min_pass: int | float | None = None
         self._default_budget: Budget | None = None
-        # The run's ceiling (--max-cost), what earlier specs of the run already spent, and
-        # why this one stopped because of it.
+        # The run's ceiling (--max-cost), what earlier specs of the run already spent, the
+        # part of that with no test context, and why this one stopped because of it.
         self._max_cost = max_cost
         self._spent: Mapping[str, float] = spent or {}
+        self._spent_untagged: Mapping[str, float] = spent_untagged or {}
         self._stopped: str | None = None
+        # What a managed agent spent with no test context, each record once: the turns have
+        # it twice, on the one it was read in and on the one it may be the late usage of.
+        self._strays: list[Usage] = []
         self._last_variation_count: int | None = None
         self._warned: set[str] = set()
         # The tools the agent declared it records (None until it declares any), and the
@@ -398,6 +412,7 @@ class TestRunner:
         self._default_min_pass = spec.default_min_pass
         self._default_budget = spec.default_budget
         self._stopped = None
+        self._strays = []
         self._warned = set()
         self._inventory, self._seen, self._undeclared = None, set(), {}
         self._executions, self._findings, self._test_index = [], [], 0
@@ -488,6 +503,7 @@ class TestRunner:
             totals=add_up(usage for test in tests for usage in test.usages),
             suites=_suites(tests),
             stopped=self._mask(self._stopped),
+            untagged_cost=_cost_of(self._masked_parts(stray) for stray in self._strays),
         )
 
     def _budget_of(self, test: Test) -> Budget | None:
@@ -759,6 +775,9 @@ class TestRunner:
         only without that, the test is unverified."""
         if not stray:
             return
+        # An attached agent may be serving others, so its cost stays out of the ceiling.
+        if self._managed:
+            self._strays.extend(stray)
         self._warn_once(UNATTRIBUTED_USAGE_WARNING, correlate)
         if execution is None or not execution.turns:
             return
@@ -900,9 +919,9 @@ class TestRunner:
         self._warn(template.format(untagged=_untagged(correlate), hint=_tag_hint(correlate)))
 
     def _costs(self) -> dict[str, float]:
-        """What this run has spent, per currency, earlier specs included."""
-        totals = add_up(self._usages())
-        return add_costs(self._spent, totals.cost if totals is not None else {})
+        """What --max-cost counts, per currency: earlier specs included, and what a managed
+        agent spent with no test context, which is in no total."""
+        return add_costs(self._spent, _cost_of(self._usages()), _cost_of(self._strays))
 
     def _usages(self) -> list[Usage | None]:
         return [turn.usage for execution in self._executions for turn in execution.turns]
@@ -917,23 +936,37 @@ class TestRunner:
             return
         over = over_limit(self._costs(), self._max_cost)
         if over:
-            spent = ", ".join(f"{amount(cost)} {name}" for name, cost in sorted(over.items()))
             self._stopped = (
-                f"--max-cost {amount(self._max_cost)}: the run spent {spent} by the end of "
-                f"'{last_test}', so it stopped there; raise the ceiling to run the rest"
+                f"--max-cost {amount(self._max_cost)}: the run spent {_amounts(over)}"
+                f"{self._untagged_share(over)} by the end of '{last_test}', so it stopped "
+                "there; raise the ceiling to run the rest"
             )
+
+    def _untagged_share(self, over: Mapping[str, float]) -> str:
+        """How much of ``over`` had no test context: why the totals show less than that."""
+        costs = add_costs(self._spent_untagged, _cost_of(self._strays))
+        shares = {name: cost for name, cost in costs.items() if name in over and cost}
+        return f" ({_amounts(shares)} of it with no test context, in no total)" if shares else ""
+
+    def _unmetered(self, usage: Usage | None) -> bool:
+        """--max-cost could not count all of a turn: its own cost, or usage next to it."""
+        if usage is None or not has_cost(usage):
+            return True
+        strays = usage.unattributed
+        return any(not has_cost(stray) for stray in strays) if self._managed else bool(strays)
 
     def _warn_unmetered(self) -> None:
         """A ceiling that cannot see a cost could be passed in silence."""
         if self._max_cost is None:
             return
         usages = self._usages()
-        missing = sum(not has_cost(u) or (u is not None and bool(u.unattributed)) for u in usages)
+        missing = sum(self._unmetered(usage) for usage in usages)
         if missing:
+            context = "no test context and no cost" if self._managed else "no test context"
             self._warn(
                 f"--max-cost {amount(self._max_cost)} counted only the costs it knows: "
                 f"{missing} of {len(usages)} turns are missing a cost and currency, or have "
-                "usage next to them with no test context, so the run may have spent more"
+                f"usage next to them with {context}, so the run may have spent more"
             )
 
     def _priced(self, usage: Usage) -> Usage:

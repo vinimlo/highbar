@@ -51,6 +51,7 @@ def run_spec(
     on_end: OnEnd | None = None,
     max_cost: float | None = None,
     spent: Mapping[str, float] | None = None,
+    spent_untagged: Mapping[str, float] | None = None,
 ) -> RunSummary:
     """Run one spec against its agent.
 
@@ -62,7 +63,8 @@ def run_spec(
     ``reporter`` takes the place of the terminal output of each test. ``on_end`` gets
     the result on every way out, including a run that stopped halfway. ``max_cost`` is the
     ceiling of a whole run, of which earlier specs already ``spent`` that much per
-    currency: over it, the spec stops at the end of a test, and ``stopped`` says so.
+    currency, ``spent_untagged`` of it with no test context: over it, the spec stops at
+    the end of a test, and ``stopped`` says so.
     """
     console.print(f"  Running {escape(path)}")
     agent = spec.agent
@@ -93,6 +95,7 @@ def run_spec(
             reporter=reporter,
             max_cost=max_cost,
             spent=spent,
+            spent_untagged=spent_untagged,
         )
         return _run(runner, spec, on_end)
 
@@ -122,6 +125,7 @@ def run_spec(
         reporter=reporter,
         max_cost=max_cost,
         spent=spent,
+        spent_untagged=spent_untagged,
     )
 
     try:
@@ -152,6 +156,7 @@ def _runner(
     reporter: Reporter,
     max_cost: float | None,
     spent: Mapping[str, float] | None,
+    spent_untagged: Mapping[str, float] | None,
 ) -> TestRunner:
     return TestRunner(
         adapter=adapter,  # type: ignore[arg-type]
@@ -169,6 +174,7 @@ def _runner(
         default_runs=default_runs,
         max_cost=max_cost,
         spent=spent,
+        spent_untagged=spent_untagged,
     )
 
 
