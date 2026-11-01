@@ -20,8 +20,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
 
-from highbar.domain.models import RunSummary, Spec, iso_utc
+from highbar.domain.models import RunSummary, Spec, UsageTotals, iso_utc
 from highbar.engine.secrets import redact
+from highbar.engine.usage import add_up
 
 SCHEMA_VERSION = 1
 GIT_TIMEOUT_S = 2
@@ -70,7 +71,9 @@ class JsonReport:
                 "sha256": self._planned.get(path),
                 "complete": complete,
                 "summary": _totals([summary]),
+                "totals": _usage_totals(summary.totals),
                 "warnings": list(summary.warnings),
+                "suites": [asdict(suite) for suite in summary.suites],
                 "tests": [asdict(test) for test in summary.tests],
             }
         )
@@ -90,6 +93,7 @@ class JsonReport:
         self._write(self._body(exit_code=exit_code, complete=complete))
 
     def _body(self, *, exit_code: int | None, complete: bool) -> dict[str, Any]:
+        usages = [u for summary in self._summaries for test in summary.tests for u in test.usages]
         return {
             "schema_version": SCHEMA_VERSION,
             "highbar_version": self._version,
@@ -100,6 +104,7 @@ class JsonReport:
             "stopped": self._stopped,
             "git_sha": self._git_sha,
             "summary": _totals(self._summaries),
+            "totals": _usage_totals(add_up(usages)),
             "specs": self._specs,
         }
 
@@ -135,6 +140,10 @@ def _totals(summaries: list[RunSummary]) -> dict[str, int]:
         "errored": sum(s.errored for s in summaries),
         "variations": sum(s.variations for s in summaries),
     }
+
+
+def _usage_totals(totals: UsageTotals | None) -> dict[str, Any] | None:
+    return asdict(totals) if totals is not None else None
 
 
 def _finite(value: Any) -> Any:

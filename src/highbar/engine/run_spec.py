@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from rich.console import Console
@@ -49,6 +49,8 @@ def run_spec(
     default_runs: int | None = None,
     reporter: Reporter | None = None,
     on_end: OnEnd | None = None,
+    max_cost: float | None = None,
+    spent: Mapping[str, float] | None = None,
 ) -> RunSummary:
     """Run one spec against its agent.
 
@@ -58,7 +60,9 @@ def run_spec(
     neither stops it nor touches its file.
 
     ``reporter`` takes the place of the terminal output of each test. ``on_end`` gets
-    the result on every way out, including a run that stopped halfway.
+    the result on every way out, including a run that stopped halfway. ``max_cost`` is the
+    ceiling of a whole run, of which earlier specs already ``spent`` that much per
+    currency: over it, the spec stops at the end of a test, and ``stopped`` says so.
     """
     console.print(f"  Running {escape(path)}")
     agent = spec.agent
@@ -87,6 +91,8 @@ def run_spec(
             managed=False,
             default_runs=runs,
             reporter=reporter,
+            max_cost=max_cost,
+            spent=spent,
         )
         return _run(runner, spec, on_end)
 
@@ -114,6 +120,8 @@ def run_spec(
         managed=True,
         default_runs=runs,
         reporter=reporter,
+        max_cost=max_cost,
+        spent=spent,
     )
 
     try:
@@ -142,6 +150,8 @@ def _runner(
     managed: bool,
     default_runs: int,
     reporter: Reporter,
+    max_cost: float | None,
+    spent: Mapping[str, float] | None,
 ) -> TestRunner:
     return TestRunner(
         adapter=adapter,  # type: ignore[arg-type]
@@ -157,6 +167,8 @@ def _runner(
         correlate=spec.agent.correlate,
         secrets=spec.agent.secrets,
         default_runs=default_runs,
+        max_cost=max_cost,
+        spent=spent,
     )
 
 
@@ -165,7 +177,7 @@ def _run(runner: TestRunner, spec: Spec, on_end: OnEnd | None) -> RunSummary:
     complete = False
     try:
         summary = runner.run(spec)
-        complete = True
+        complete = summary.stopped is None
         return summary
     except (AgentStartError, AgentNotObservedError) as e:
         if not spec.agent.secrets:

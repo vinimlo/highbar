@@ -105,4 +105,4 @@ jobs:
 
 - `--runs 3` is a reasonable floor for a gate; raise it for the tests that decide a release.
 - `--frozen` makes the run use only the committed [variations](/guides/variations), so it never calls an LLM to paraphrase.
-- The exit code is the gate: 0 when every test passed, 1 when any failed or errored, 2 when nothing could run.
+- The exit code is the gate: 0 when every test passed, 1 when any failed or errored, 2 when nothing could run, 3 when `--max-cost` stopped the run.

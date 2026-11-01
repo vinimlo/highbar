@@ -6,6 +6,7 @@ spec, so an error says where it is: ``suites[0].tests[2].expect: unknown key ...
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shlex
@@ -19,6 +20,7 @@ from highbar._narrow import as_dict, as_list
 from highbar.assertions._match import MATCHER_KEYS, REGEX_KEYS, validate_expected
 from highbar.domain.models import (
     AgentConfig,
+    Budget,
     CommandHook,
     Expect,
     FunctionCallExpect,
@@ -113,6 +115,7 @@ def _parse_spec(raw: Any) -> Spec:
 
     default_runs = 1
     default_min_pass: int | float | None = None
+    default_budget: Budget | None = None
     if "defaults" in raw:
         defaults = raw["defaults"]
         require_type(defaults, dict, "defaults", "must be a mapping")
@@ -121,20 +124,26 @@ def _parse_spec(raw: Any) -> Spec:
             default_runs = _parse_runs(defaults["runs"], "defaults")
         if "min_pass" in defaults:
             default_min_pass = _parse_min_pass(defaults["min_pass"], "defaults")
+        if "budget" in defaults:
+            default_budget = _parse_budget(defaults["budget"], "defaults")
 
     if not agent.managed and agent.traces is None:
         for i, suite in enumerate(suites):
             for j, test in enumerate(suite.tests):
-                if test.requires_observation:
+                if test.requires_observation or default_budget is not None:
                     raise SpecError(
                         "agent: attach mode (no 'start') needs 'traces', the file the agent "
-                        f"writes: suites[{i}].tests[{j}] checks function_calls"
+                        f"writes: suites[{i}].tests[{j}] checks function_calls or a budget"
                     )
 
     # min_pass is checked against runs where the run's runs are known: --runs (or
     # highbar.run(runs=...)) takes the place of defaults.runs.
     return Spec(
-        agent=agent, suites=suites, default_runs=default_runs, default_min_pass=default_min_pass
+        agent=agent,
+        suites=suites,
+        default_runs=default_runs,
+        default_min_pass=default_min_pass,
+        default_budget=default_budget,
     )
 
 
@@ -162,6 +171,30 @@ def _parse_repetition(raw: dict[str, Any], where: str) -> dict[str, Any]:
     if "min_pass" in raw:
         fields["min_pass"] = _parse_min_pass(raw["min_pass"], where)
     return fields
+
+
+def _parse_budget(raw: Any, where: str) -> Budget:
+    where = f"{where}.budget"
+    require_type(raw, dict, where, "must be a mapping with max_input_tokens or max_cost")
+    check_keys(raw, "budget", where)
+    if not user_keys(raw):
+        raise SpecError(f"{where}: has no limit (use max_input_tokens or max_cost)")
+    limits: dict[str, Any] = {}
+    if "max_input_tokens" in raw:
+        tokens = raw["max_input_tokens"]
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+            raise SpecError(
+                f"{where}: max_input_tokens must be a whole number of at least 0, got {tokens!r}"
+            )
+        limits["max_input_tokens"] = tokens
+    if "max_cost" in raw:
+        cost = raw["max_cost"]
+        number = isinstance(cost, (int, float)) and not isinstance(cost, bool)
+        # YAML reads `.inf` and `.nan` as numbers, and neither is a limit.
+        if not number or not 0 <= cost < math.inf:
+            raise SpecError(f"{where}: max_cost must be a number of at least 0, got {cost!r}")
+        limits["max_cost"] = cost
+    return Budget(**limits)
 
 
 def _parse_agent(raw: Any) -> AgentConfig:
@@ -447,14 +480,14 @@ def _parse_test(raw: Any, where: str) -> Test:
     if "turns" in raw:
         if "trigger" in raw:
             raise SpecError(f"{where}: a test has either 'trigger' or 'turns', not both")
-        if "expect" in raw:
-            raise SpecError(f"{where}: with 'turns', each turn has its own 'expect'")
         if raw.get("variations"):
             # Paraphrasing turn 1 would leave the later turns answering a conversation
             # that no longer happened. Multi-turn variations need a design of their own.
             raise SpecError(f"{where}: 'variations' is not supported on multi-turn tests")
+        expect = _parse_conversation_expect(raw, where)
         return Test(
-            turns=_parse_turns(raw["turns"], where),
+            turns=_parse_turns(raw["turns"], where, budgeted=expect is not None),
+            expect=expect,
             name=name,
             id=_optional_id(raw, where),
             **_parse_repetition(raw, where),
@@ -488,13 +521,26 @@ def _trigger(raw: dict[str, Any], where: str) -> str:
     return trigger
 
 
-def _parse_turns(raw: Any, where: str) -> list[Turn]:
+def _parse_conversation_expect(raw: dict[str, Any], where: str) -> Expect | None:
+    """A conversation's own ``expect``: a budget for all its turns, and nothing else."""
+    if "expect" not in raw:
+        return None
+    mapping = as_dict(raw["expect"])
+    if mapping is None or set(user_keys(mapping)) != {"budget"}:
+        raise SpecError(
+            f"{where}: with 'turns', each turn has its own 'expect'; the test's can only "
+            "hold a 'budget', for the whole conversation"
+        )
+    return _parse_expect(mapping, f"{where}.expect")
+
+
+def _parse_turns(raw: Any, where: str, *, budgeted: bool = False) -> list[Turn]:
     require_type(raw, list, where, "turns must be a list")
     if not raw:
         raise SpecError(f"{where}: turns cannot be empty")
 
     turns = [_parse_turn(t, f"{where}.turns[{k}]") for k, t in enumerate(raw)]
-    if not any(_asserts_something(turn.expect) for turn in turns):
+    if not budgeted and not any(_asserts_something(turn.expect) for turn in turns):
         raise SpecError(f"{where}: asserts nothing — no turn has an 'expect'")
     return turns
 
@@ -511,7 +557,12 @@ def _parse_turn(raw: Any, where: str) -> Turn:
 
 
 def _asserts_something(expect: Expect) -> bool:
-    return expect.function_calls is not None or expect.response is not None or bool(expect.forbid)
+    return (
+        expect.function_calls is not None
+        or expect.response is not None
+        or bool(expect.forbid)
+        or expect.budget is not None
+    )
 
 
 def _parse_variations(raw: Any, where: str) -> int:
@@ -528,7 +579,7 @@ def _parse_expect(raw: Any, where: str) -> Expect:
     check_keys(raw, "expect", where)
     if not user_keys(raw):
         raise SpecError(
-            f"{where}: asserts nothing — use function_calls, response, forbid, or "
+            f"{where}: asserts nothing — use function_calls, response, forbid, budget, or "
             "function_calls: [] to check that no tool is called"
         )
 
@@ -560,7 +611,11 @@ def _parse_expect(raw: Any, where: str) -> Expect:
     if "response" in raw:
         response = _parse_response(raw["response"], where)
 
-    return Expect(function_calls=function_calls, response=response, forbid=forbid, **flags)
+    budget = _parse_budget(raw["budget"], where) if "budget" in raw else None
+
+    return Expect(
+        function_calls=function_calls, response=response, forbid=forbid, budget=budget, **flags
+    )
 
 
 def _parse_response(raw: Any, where: str) -> ResponseExpect:

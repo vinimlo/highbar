@@ -61,6 +61,24 @@ class Trace:
 
 
 @dataclass(frozen=True)
+class Usage:
+    """What handling a message consumed, from the optional `usage` of a `turn` record.
+
+    Every field is optional, and None means the emitter did not say, which is not zero.
+    ``input_tokens`` is the whole input, with ``cached_input_tokens`` already in it.
+    """
+
+    model: str | None = None
+    provider: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    cost: float | None = None
+    currency: str | None = None
+    llm_calls: int | None = None
+
+
+@dataclass(frozen=True)
 class TurnRecord:
     """A `turn` record: the instrumented agent received and handled a message."""
 
@@ -68,6 +86,7 @@ class TurnRecord:
     context: dict[str, Any] = field(default_factory=dict[str, Any])
     message: str | None = None
     response: str | None = None
+    usage: Usage | None = None
 
 
 @dataclass(frozen=True)
@@ -191,6 +210,18 @@ class ResponseExpect:
 
 
 @dataclass(frozen=True)
+class Budget:
+    """What a turn, or a whole execution, may spend. A value equal to a limit is within it.
+
+    ``max_input_tokens`` counts the whole input, cached tokens included. ``max_cost`` has
+    no currency of its own: it holds for the sum in each currency the costs came in.
+    """
+
+    max_input_tokens: int | None = None
+    max_cost: int | float | None = None
+
+
+@dataclass(frozen=True)
 class Expect:
     """Expected outcomes for a test or turn."""
 
@@ -199,15 +230,17 @@ class Expect:
     ordered: bool = False  # the expected calls happen in this order
     exclusive: bool = False  # no call beyond the expected ones
     forbid: tuple[str, ...] = ()  # tools that must not be called, failed or not
+    budget: Budget | None = None  # per turn in a turn, per execution in a test
 
     @property
     def requires_observation(self) -> bool:
-        """Checks tool calls, so it needs proof the instrumented agent saw the message.
+        """Checks what the agent recorded, so it needs proof that it saw the message.
 
         ``function_calls: []`` and ``forbid`` included: "no tool was called" means
-        nothing unless the message reached an agent that would have recorded one.
+        nothing unless the message reached an agent that would have recorded one. A
+        budget reads the usage of the turn's own record.
         """
-        return self.function_calls is not None or bool(self.forbid)
+        return self.function_calls is not None or bool(self.forbid) or self.budget is not None
 
 
 @dataclass(frozen=True)
@@ -226,6 +259,9 @@ class Test:
     ``variations`` asks for N paraphrases of ``trigger`` to be generated and run through
     the same assertions. The agent must route the intent correctly however the user
     words it — not just for the one phrasing the product team happened to write.
+
+    With ``turns``, ``expect`` holds only a ``budget``, for the whole conversation: what
+    the conversation must do is in the ``expect`` of each turn.
     """
 
     trigger: str | None = None
@@ -242,9 +278,8 @@ class Test:
 
     @property
     def requires_observation(self) -> bool:
-        if self.turns:
-            return any(turn.expect.requires_observation for turn in self.turns)
-        return self.expect is not None and self.expect.requires_observation
+        own = self.expect is not None and self.expect.requires_observation
+        return own or any(turn.expect.requires_observation for turn in self.turns or [])
 
     @property
     def plain_name(self) -> str:
@@ -322,6 +357,8 @@ class Spec:
     default_runs: int = 1  # defaults.runs; the CLI's --runs overrides it
     # defaults.min_pass, for the tests without their own; None: every run must pass.
     default_min_pass: int | float | None = None
+    # defaults.budget: what an execution may spend, for the tests without their own.
+    default_budget: Budget | None = None
 
 
 @dataclass(frozen=True)
@@ -379,12 +416,32 @@ class ToolOutcome:
 
 
 @dataclass(frozen=True)
+class UsageTotals:
+    """The tokens and cost of a level of the result, added up (``engine.usage.add_up``).
+
+    Only what is known goes in, and ``warnings`` says what was left out: with any,
+    ``complete`` is False. A count is None when no turn reported it, which is not zero.
+    ``cost`` has one sum per currency, because two currencies do not add up to a number.
+    """
+
+    turns: int  # how many turns are behind these numbers, with usage or without
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    llm_calls: int | None = None
+    cost: dict[str, float] = field(default_factory=dict[str, float])
+    complete: bool = True
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class TurnOutcome:
     """One message of an execution.
 
     ``response`` is None when no reply came, which is not the same as an empty one.
     ``response_ms`` is the send alone, without ``settle_time``. ``correlate`` holds the
-    values that lead to this turn's records in the trace file (D18).
+    values that lead to this turn's records in the trace file (D18). ``usage`` is None
+    when the turn reported none, and ``budget`` is the turn's own limit, if it has one.
     """
 
     trigger: str
@@ -392,6 +449,8 @@ class TurnOutcome:
     response_ms: float | None
     correlate: dict[str, Any]
     tools: tuple[ToolOutcome, ...] = ()
+    usage: Usage | None = None
+    budget: Budget | None = None
 
 
 @dataclass(frozen=True)
@@ -405,6 +464,7 @@ class ExecutionOutcome:
     duration_ms: float
     errors: tuple[str, ...] = ()
     turns: tuple[TurnOutcome, ...] = ()
+    totals: UsageTotals | None = None  # None: no turn reported usage
 
 
 @dataclass(frozen=True)
@@ -433,6 +493,26 @@ class TestOutcome:
     duration_ms: float
     errors: tuple[str, ...] = ()
     phrasings: tuple[PhrasingOutcome, ...] = ()
+    budget: Budget | None = None  # what each execution may spend, default included
+    totals: UsageTotals | None = None
+
+    @property
+    def usages(self) -> list[Usage | None]:
+        """The usage of every turn that ran, None for a turn that reported none."""
+        return [
+            turn.usage
+            for phrasing in self.phrasings
+            for execution in phrasing.executions
+            for turn in execution.turns
+        ]
+
+
+@dataclass(frozen=True)
+class SuiteOutcome:
+    """A suite's sums. Its tests carry the suite's name; a report keeps them in one list."""
+
+    name: str
+    totals: UsageTotals | None = None
 
 
 @dataclass(frozen=True)
@@ -445,6 +525,9 @@ class RunSummary:
 
     ``tests`` holds every finished test in its final state, and the counts are theirs:
     a late call can change a test after its result was first shown.
+
+    ``stopped`` says why the run ended before its last test, when it was stopped by its
+    cost ceiling; ``tests`` then holds the ones that finished.
     """
 
     total: int
@@ -455,3 +538,6 @@ class RunSummary:
     variations: int = 0
     tests: tuple[TestOutcome, ...] = ()
     warnings: tuple[str, ...] = ()
+    totals: UsageTotals | None = None
+    suites: tuple[SuiteOutcome, ...] = ()
+    stopped: str | None = None

@@ -132,6 +132,7 @@ The run exits with 1. Exit codes are what a CI job reads:
 | 0 | Every test passed |
 | 1 | A test failed (the agent did something else) or errored (highbar could not verify it) |
 | 2 | Nothing could run: an invalid spec, an agent that did not start, a port already in use |
+| 3 | The run spent more than `--max-cost`, and stopped at the end of a test |
 
 ## Connect your own agent
 

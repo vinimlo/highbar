@@ -28,15 +28,17 @@ Responses and tool arguments go in whole, so treat it like a trace file from `--
 | `stopped` | Why the run ended early, or `null`: `{"reason": ..., "message": ...}`. |
 | `git_sha` | `HEAD` where highbar ran, which is not always the agent's version. `null` outside a repository. |
 | `summary` | `total`, `passed`, `failed`, `errored` and `variations` of the whole run. |
+| `totals` | [Tokens and cost](#tokens-and-cost) of the whole run. |
 | `specs` | One entry per spec that started. |
 
-`stopped.reason` is one of `usage_error`, `spec_invalid`, `hooks_invalid`, `no_specs`, `agent_start_failed`, `agent_not_observed`, `interrupted` and `crashed`.
+`stopped.reason` is one of `usage_error`, `spec_invalid`, `hooks_invalid`, `no_specs`, `agent_start_failed`, `agent_not_observed`, `budget_exceeded`, `interrupted` and `crashed`.
 
 The file is written before the first message and again on every way out of the run, through a temporary file and a rename. So it is never half written, and it never shows an older run:
 
 - A path that cannot be written stops the run with exit code 2 before anything is sent.
 - A run that was killed leaves `exit_code: null`.
 - An interrupted run keeps the tests that finished, and the test in progress is left out.
+- A run stopped by `--max-cost` keeps every test that ran, with `stopped.reason: "budget_exceeded"`. The test in progress had time to finish, and the ones after it are not in the file.
 - A run that cannot write the final file exits with 2, whatever its tests did.
 
 The one exception is a command line that highbar cannot read: an unknown option, `--runs abc` or a `--report` value without a known format. It exits with 2 before the file is opened, so an older file stays in place. A script that keeps reports should check the exit code first.
@@ -48,7 +50,9 @@ The one exception is a command line that highbar cannot read: an unknown option,
 | `key` | The spec's path inside its repository. Outside a repository, the path as given. |
 | `path` | As given on the command line. |
 | `sha256` | Of the file, read before the first test. |
-| `complete`, `summary`, `warnings` | As above, for this spec. |
+| `complete`, `summary`, `totals` | As above, for this spec. |
+| `warnings` | What the run warned about. |
+| `suites` | One entry per suite that ran: its `name` and its `totals`. |
 | `tests` | The tests that finished. |
 
 ## Each test
@@ -106,7 +110,7 @@ The one exception is a command line that highbar cannot read: an unknown option,
 | Field | |
 |---|---|
 | `id` | The test's [`id`](/reference/spec-format#tests) in the spec, or `<suite>/<name>`. Unique in a spec. |
-| `definition_sha256` | Of the trigger, the turns, the expectation and the number of variations. `name`, `id`, `runs` and `min_pass` stay out, and so does an option left at its default, so a new one changes the hash of no test that does not use it. |
+| `definition_sha256` | Of the trigger, the turns, the expectation and the number of variations. `name`, `id`, `runs` and `min_pass` stay out, and so does an option left at its default, so a new one changes the hash of no test that does not use it. A budget changes what counts as right, so it is part of the expectation: one from `defaults.budget` hashes the same as one written in the test. |
 | `status`, `errors` | The final ones, late calls included. |
 | `runs`, `min_pass` | As they applied to this test, with fractions resolved. |
 | `counts` | How the executions ended. There is no rate: an `error` is neither a pass nor a failure, so whoever computes one has to decide what to do with it. |
@@ -118,6 +122,60 @@ The one exception is a command line that highbar cannot read: an unknown option,
 | `turns[].response_ms` | The send alone, without `agent.settle_time`. |
 | `turns[].correlate` | The values of `agent.correlate` for this turn: what finds its records in the trace file. |
 | `tools[].late` | Recorded after the test's window closed. |
+| `turns[].usage` | What the turn consumed, or `null` when it reported nothing. See below. |
+| `turns[].budget` | The turn's own limit, or `null`. |
+| `budget` | What each execution of the test could spend, or `null`: its own budget, else `defaults.budget`. |
+| `totals` | On each test and each execution, its [tokens and cost](#tokens-and-cost). |
+
+## Tokens and cost
+
+A turn's `usage` has the fields of the [trace contract](/reference/trace-contract#usage-tokens-and-cost), with the `cost` and `currency` of the price table when the agent sent no cost:
+
+```json
+{
+  "model": "gpt-4o-mini",
+  "provider": "openai",
+  "input_tokens": 1000,
+  "output_tokens": 200,
+  "cached_input_tokens": 800,
+  "cost": 0.00021,
+  "currency": "USD",
+  "llm_calls": 2
+}
+```
+
+`totals` adds up the turns of a level. It has the same shape at every level: each execution and each test (`tests[].totals`), each suite (`specs[].suites[].totals`), each spec (`specs[].totals`) and the run (`totals`). For a single turn, `turns[].usage` is the sum.
+
+```json
+{
+  "turns": 3,
+  "input_tokens": 3000,
+  "output_tokens": 300,
+  "cached_input_tokens": 800,
+  "llm_calls": 3,
+  "cost": {"USD": 0.0123},
+  "complete": false,
+  "warnings": ["1 of 3 turns with no cost"]
+}
+```
+
+| Field | |
+|---|---|
+| `turns` | How many turns are behind the numbers, with usage or without. |
+| `input_tokens`, `output_tokens`, `cached_input_tokens`, `llm_calls` | The sum of what is known. `null` when no turn reported it, which is not zero. |
+| `cost` | One sum per currency. |
+| `complete` | `false` when something was left out, or when costs came in more than one currency. |
+| `warnings` | What was left out. |
+
+`totals` is `null` at a level where no turn reported usage, with no warning: an agent that writes no usage owes none. Once a turn at that level does, each of these makes the sum partial, holding only the parts that are known:
+
+- A turn with no usage at all.
+- A turn without `input_tokens` or `output_tokens`.
+- A turn without a cost: not sent, and not in the price table.
+- A cost without a currency. It stays in `turns[].usage`, and is left out of the sum.
+- Costs in more than one currency. They are never added together: each has its own sum in `cost`, so no number is lost, and `complete` is `false` because no single total exists.
+
+Which turns are counted follows the results: a turn that ran is counted whether or not the test passed, and the test in progress when a run stops is left out. Tokens recorded after a test's window closed are not counted.
 
 ## Comparing runs
 

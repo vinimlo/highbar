@@ -12,17 +12,21 @@ Rules of the contract (v1) that live here:
 - A line without ``v`` is v0, the format Gauntlet and early emitters wrote: a tool
   call whose extra top-level fields are its context.
 - Only lines that end in a newline are read. A writer may be in the middle of one.
+- A turn's ``usage`` is optional, and what cannot be read in it counts as missing: a
+  writer that had its own ``usage`` field keeps working, and a budget on a value that
+  was dropped ends in ``error``, never in a pass.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
 
 from highbar._narrow import as_dict, as_list
-from highbar.domain.models import Hello, Trace, TurnRecord, Window
+from highbar.domain.models import Hello, Trace, TurnRecord, Usage, Window
 
 CONTRACT_VERSION = 1
 
@@ -196,6 +200,7 @@ def _add(window: Window, raw: bytes) -> None:
                 context=_context(record),
                 message=_text(record.get("message")),
                 response=_text(record.get("response")),
+                usage=_usage(record.get("usage")),
             )
         )
     elif kind == "hello":
@@ -237,6 +242,54 @@ def _tool(record: dict[str, Any], *, context: dict[str, Any]) -> Trace:
         error=error,
         context=context,
     )
+
+
+def _usage(raw: Any) -> Usage | None:
+    """A turn's ``usage``, or None when it has nothing that can be read."""
+    fields = as_dict(raw)
+    if fields is None:
+        return None
+    usage = Usage(
+        model=_label(fields.get("model")),
+        provider=_label(fields.get("provider")),
+        input_tokens=_count(fields.get("input_tokens")),
+        output_tokens=_count(fields.get("output_tokens")),
+        cached_input_tokens=_count(fields.get("cached_input_tokens")),
+        cost=_cost(fields.get("cost")),
+        currency=_currency(fields.get("currency")),
+        llm_calls=_count(fields.get("llm_calls")),
+    )
+    return None if usage == Usage() else usage
+
+
+def _label(value: Any) -> str | None:
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def _currency(value: Any) -> str | None:
+    """Upper case: `usd` and `USD` are one currency, and must add up as one."""
+    label = _label(value)
+    return label.upper() if label is not None else None
+
+
+def _count(value: Any) -> int | None:
+    """A whole number of at least 0. Some writers serialize every number as a float."""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _cost(value: Any) -> float | None:
+    """A finite number of at least 0: Python's JSON reads a bare NaN as a number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:  # an integer too long for a float
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
 
 
 def _names(record: dict[str, Any], key: str) -> tuple[str, ...]:

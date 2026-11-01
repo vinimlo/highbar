@@ -14,8 +14,20 @@ Runs the tests of a spec file, or of every `*.highbar.yaml` under a directory. W
 | `--frozen` | Never generate variations: a phrasing missing from the committed cache fails. Use it in CI. |
 | `--keep-traces` | Keep the trace file of each spec whose agent highbar started, and print its path. |
 | `--report json=FILE` | Also write the results to FILE. See the [report](/reference/report). |
+| `--max-cost AMOUNT` | A ceiling on what the whole run spends. Over it, the run stops at the end of the test in progress and exits with 3. |
 
-All specs are parsed and validated before any agent starts. With several specs, each one prints its own summary, and a total follows at the end.
+All specs are parsed and validated before any agent starts. With several specs, each one prints its own summary, and a total follows at the end. When the turns report [usage](/reference/trace-contract#usage-tokens-and-cost), a summary ends with its tokens and cost, and says `incomplete`, with what is missing, when they are only part of the sum:
+
+```console
+  2 passed | 1.31s | 3000 input tokens (800 cached) | 300 output tokens | 0.0123 USD | incomplete
+  ! incomplete sum: 1 of 3 turns with no cost
+```
+
+### `--max-cost`
+
+The accumulated cost is checked at the end of each test, across every spec of the run, so a test in progress always finishes, and the ceiling can be passed by what that test spends. Above the ceiling, not at it, the tests and specs left do not run. The agent highbar started is stopped, the results so far are kept, and the [report](/reference/report) says `stopped.reason: "budget_exceeded"`. The check also runs after the last test: a run that ended over its ceiling exits with 3, with every test in the report.
+
+The ceiling has no currency of its own: each currency's sum is held against it separately, since costs in different currencies are not added. It sees only the costs it knows. A turn with no cost and currency cannot count, so a run with one ends with a warning that it may have spent more, and an agent that reports no cost is never stopped.
 
 ## `highbar validate [SPEC_PATH]`
 
@@ -36,6 +48,7 @@ Generates the paraphrases that tests with `variations` ask for, and stores them 
 | 0 | Every test passed. |
 | 1 | A test failed or ended in `error`. |
 | 2 | Nothing could run: an invalid spec, no spec found, an agent that did not start or never wrote its trace, a port already in use, a session hook that cannot be imported. |
+| 3 | `--max-cost` was exceeded, whatever the tests that ran did. The report says how each of them ended. |
 | 130 | Interrupted with Ctrl-C. The agent highbar started is stopped first. |
 | 143, 129 | Stopped by SIGTERM or SIGHUP, the same way. |
 

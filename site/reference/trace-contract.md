@@ -46,12 +46,44 @@ A call that failed has its `error`, even when the tool returned the failure as d
 |---|---|---|
 | `message` | string | Optional: the message the agent received. |
 | `response` | string | Optional: what it answered. |
+| `usage` | object | Optional: what handling the message consumed. See below. |
 
 A `turn` record is the proof that the agent handled a message. Against an attached agent, a test that checks tool calls needs a record of its own, `turn` or `tool`: without one, "no tool was called" could just mean "the agent never saw this message". Write it at the end of the handling, before the reply goes out, and write it even when the handling fails.
 
 ```json
 {"v": 1, "type": "turn", "ts": 1792983750.216, "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
 ```
+
+### `usage`: tokens and cost
+
+`usage` is what the report adds up, and what a [`budget`](/reference/spec-format#budget) checks. It is optional, and so is every field in it: a writer without it works as before, and older versions of highbar ignore it. The contract stays at v1.
+
+| Field | Type | |
+|---|---|---|
+| `model` | string | The model that answered, such as `gpt-4o-mini`. Looked up in the price table when `cost` is missing. |
+| `provider` | string | Who served it, such as `openai`. Tells apart a model name that several providers use. |
+| `input_tokens` | integer | The whole input, **cached tokens included**. |
+| `output_tokens` | integer | |
+| `cached_input_tokens` | integer | How many of `input_tokens` came from a cache. |
+| `cost` | number | What the message cost. |
+| `currency` | string | The currency of `cost`, such as `USD`. Compared without regard to case. |
+| `llm_calls` | integer | How many model calls the message took. |
+
+```json
+{"v": 1, "type": "turn", "ts": 1792983750.216, "context": {"test": "9784235d06704e5da37c3230a9e99b34"}, "usage": {"model": "gpt-4o-mini", "provider": "openai", "input_tokens": 1000, "output_tokens": 200, "cached_input_tokens": 800, "cost": 0.00021, "currency": "USD", "llm_calls": 2}}
+```
+
+::: warning The input includes the cached tokens
+Not every provider counts them that way. OpenAI's `prompt_tokens` already includes `cached_tokens`, but Anthropic's `input_tokens` leaves out `cache_read_input_tokens` and `cache_creation_input_tokens`: add them up before writing the field, or `max_input_tokens` will pass on a context bigger than it allows.
+:::
+
+A value that cannot be read counts as missing, and the line is still read: a `usage` that is not an object, a negative count, text where a number goes, `NaN`. A budget on a missing value is an `error`, never a pass.
+
+When several `turn` records of one message have `usage`, such as `highbar.asgi.Middleware` next to `hb.turn()`, they are added up, because all of it was spent. A value they disagree on, like the model, becomes unknown.
+
+A `cost` from the writer always stands. Without one, highbar works it out from `src/highbar/engine/prices.json`, a table of list prices in USD per token, in the format of [OpenRouter's model list](https://openrouter.ai/api/v1/models). The price of cached tokens applies to `cached_input_tokens`. It needs `model`, `input_tokens` and `output_tokens`; it uses the table's currency, whatever `currency` says; and it finds the model by its exact name, ignoring case and with `.` the same as `-`, so a dated snapshot like `gpt-4o-2024-05-13` is not its alias. A model without a price leaves the cost missing, with a warning. `provider` is required when two providers in the table use the name. An agent on prices of its own, or on a model outside the table, writes `cost` and `currency`.
+
+Tokens recorded after a test's window closed are not counted: raise `agent.settle_time` if a `turn` arrives late.
 
 ## `hello`: the writer started
 
@@ -125,12 +157,12 @@ def tool(fn, args, *, result=None, error=None, started_at, test=None) -> None:
     _write({"type": "tool", **record, "started_at": started_at, "ended_at": time.time()}, test)
 
 
-def turn(test: str | None) -> None:
+def turn(test: str | None, usage: dict | None = None) -> None:
     """One message handled: before the reply goes out, also when the handling failed."""
-    _write({"type": "turn"}, test)
+    _write({"type": "turn", "usage": usage}, test)
 ```
 
-The agent calls `hello(TOOLS)` before it listens, with the tools it records, `tool()` for each call, and `turn()` for each message, with the `X-Highbar-Test` header it received.
+The agent calls `hello(TOOLS)` before it listens, with the tools it records, `tool()` for each call, and `turn()` for each message, with the `X-Highbar-Test` header it received and the message's `usage`.
 
 ## Version 0
 

@@ -29,10 +29,10 @@ Before a commit: `make lint`, `uv run ruff format --check src/ tests/`, `make ty
 1. **Parse.** `engine/parser.py` reads the spec against `engine/schema.py`: an unknown key, a wrong type, an invalid regex or a test that asserts nothing is a spec error (exit 2) with a "did you mean".
 2. **The agent.** Managed mode (`agent.start`): highbar starts the agent in its own process group, sets `HIGHBAR_TRACES_URL` to a fresh trace file, logs its output to `.highbar/logs/`, and stops it at the end. Attach mode (no `start`): the agent is already running and writes `agent.traces` itself; highbar never stops it.
 3. **Each test execution** gets an id, sent in the `X-Highbar-Test` header and available as `{{test.id}}`. Session hooks (`agent.session`) open a clean session per execution. The request and the reply path are configurable (`agent.request`, `agent.response`).
-4. **Observation.** The collector reads the trace file from a byte offset: `tool`, `turn` and `hello` records (contract v1; v0 lines are read too). `engine/observation.py` keeps the records whose `context` matches `agent.correlate` (default `{test: "{{test.id}}"}`). A test that checks tool calls needs a record of its own; without one it is `error` ("not observed").
-5. **Assertions.** `function_calls` pairs each expectation with a distinct call (bipartite matching), with `error`, `ordered`, `exclusive` and `forbid`; `response` uses the matchers of `params` (`contains`, `matches`, `not_matches`...). A call's `error` field is the only signal that a tool failed.
+4. **Observation.** The collector reads the trace file from a byte offset: `tool`, `turn` and `hello` records (contract v1; v0 lines are read too). `engine/observation.py` keeps the records whose `context` matches `agent.correlate` (default `{test: "{{test.id}}"}`). A test that checks tool calls or a budget needs a record of its own; without one it is `error` ("not observed").
+5. **Assertions.** `function_calls` pairs each expectation with a distinct call (bipartite matching), with `error`, `ordered`, `exclusive` and `forbid`; `response` uses the matchers of `params` (`contains`, `matches`, `not_matches`...). A call's `error` field is the only signal that a tool failed. `budget` is held against the `usage` of the turn's records (`engine/usage.py`), per turn in a turn's `expect` and per execution in a test's or in `defaults.budget`: over a limit is `failed`, unknown is `error`, and known parts over a limit are enough to fail.
 6. **Repetition.** Each phrasing runs `runs` times and must reach `min_pass`. A late call (recorded after its window) fails its own run, and the test is judged again.
-7. **Results.** Three states: `passed`, `failed` (the agent did something else), `error` (could not verify). Exit codes: 0 all passed, 1 something failed or errored, 2 could not run at all. Interrupted runs stop the agent first and exit with 130 (Ctrl-C), 143 (SIGTERM) or 129 (SIGHUP).
+7. **Results.** Three states: `passed`, `failed` (the agent did something else), `error` (could not verify). Exit codes: 0 all passed, 1 something failed or errored, 2 could not run at all, 3 `--max-cost` stopped the run. Interrupted runs stop the agent first and exit with 130 (Ctrl-C), 143 (SIGTERM) or 129 (SIGHUP).
 8. **The report.** `TestRunner.snapshot()` builds the result from the gates, never from what went to the reporter, because a late call changes a test after `on_test_result`. `--report json=<file>` (`reporters/json_report.py`) replaces the file before the first message and writes it again on every way out, so it never shows an older run. Its format is `reporters/report.schema.json`; a new field is additive, and `schema_version` changes only on a break.
 
 ## Modules
@@ -51,6 +51,7 @@ src/highbar/
 │   ├── runner.py                 # executions, windows, late calls, runs
 │   ├── observation.py            # which records belong to a test
 │   ├── runs.py                   # runs and min_pass
+│   ├── usage.py, prices.json     # tokens and cost: prices, sums per level, budgets
 │   ├── placeholders.py, paths.py, templates.py
 │   ├── session.py                # session hooks (commands or Python)
 │   └── secrets.py                # ${VAR} values masked in every message

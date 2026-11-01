@@ -40,6 +40,18 @@ def answer(message: str, test: str | None) -> str:
     return "How can I help with your order?"
 
 
+def usage(message: str, reply: str) -> dict[str, Any]:
+    """What a model's response reports. This agent has no model, so it counts words."""
+    return {
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "input_tokens": len(message.split()),
+        "output_tokens": len(reply.split()),
+        "cached_input_tokens": 0,
+        "llm_calls": 1,
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # the health check
         self._reply({"status": "ok"})
@@ -47,10 +59,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         test = self.headers.get("X-Highbar-Test")
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        reply = ""
         try:
             reply = answer(body["message"], test)
         finally:
-            emitter.turn(test)
+            emitter.turn(test, usage(body["message"], reply))
         self._reply({"reply": reply})
 
     def _reply(self, body: dict[str, Any]) -> None:
