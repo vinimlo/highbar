@@ -173,6 +173,37 @@ class TestValidateExpected:
             validate_expected({"order": {"status": {"matches": "("}}}, "result")
 
 
+class TestIgnoringCase:
+    def test_imatches_finds_what_matches_misses(self) -> None:
+        answer = {"note": "Onze anos de garantia"}
+
+        assert subset_match({"note": {"imatches": "^onze anos"}}, answer)
+        assert not subset_match({"note": {"matches": "^onze anos"}}, answer)
+        assert not subset_match({"note": {"imatches": "^seis anos"}}, answer)
+
+    def test_not_imatches_refuses_what_not_matches_lets_through(self) -> None:
+        answer = {"note": "Onze anos de garantia"}
+
+        assert not subset_match({"note": {"not_imatches": "onze"}}, answer)
+        assert subset_match({"note": {"not_matches": "onze"}}, answer)
+        assert subset_match({"note": {"not_imatches": "seis"}}, answer)
+
+    @pytest.mark.parametrize("actual", [None, {"a": 1}, ["abc"]])
+    def test_a_value_with_no_text_form_fails_both(self, actual: object) -> None:
+        assert not subset_match({"v": {"imatches": ".*"}}, {"v": actual})
+        assert not subset_match({"v": {"not_imatches": "x"}}, {"v": actual})
+
+    @pytest.mark.parametrize("key", ["imatches", "not_imatches"])
+    def test_invalid_regex_is_rejected(self, key: str) -> None:
+        with pytest.raises(ValueError, match=rf"params.note: invalid regex in '{key}'"):
+            validate_expected({"note": {key: "("}}, "params")
+
+    @pytest.mark.parametrize("key", ["imatches", "not_imatches"])
+    def test_a_pattern_has_to_be_text(self, key: str) -> None:
+        with pytest.raises(ValueError, match=rf"'{key}' needs a regex string"):
+            validate_expected({"note": {key: 123}}, "params")
+
+
 class TestNotMatches:
     def test_not_matches_in_params_and_on_a_non_text_value(self) -> None:
         assert subset_match({"note": {"not_matches": "[0-9]{16}"}}, {"note": "card on file"})

@@ -4,6 +4,7 @@
 
 ### Added
 
+- `imatches` and `not_imatches`: `matches` and `not_matches`, ignoring case, in `response`, `params` and `result`.
 - `defaults.min_pass`: the threshold for every test without its own `min_pass`, stated once instead of in each test. It takes the same values as the test's: a whole number of runs, or a fraction of each test's runs, rounded up and computed again with `--runs`. A test's own `min_pass` still wins; without either, every run must pass, as before. A whole number above a test's runs is an error in `validate` and before `run` starts the agent, naming the test and `defaults.min_pass`.
 - `highbar run --report json=<file>`: the results as JSON, with one test, phrasing, execution and turn per entry, in their final state. The file is replaced before the first message and written on every way out of the run, with the code the process returns: a run that dies leaves `exit_code: null`, never an older green. See the report reference.
 - An optional `id` on a test, and a stable key for each one: its `id`, or `<suite>/<name>`.

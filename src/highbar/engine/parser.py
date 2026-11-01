@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from highbar._narrow import as_dict, as_list
-from highbar.assertions._match import MATCHER_KEYS, validate_expected
+from highbar.assertions._match import MATCHER_KEYS, REGEX_KEYS, validate_expected
 from highbar.domain.models import (
     AgentConfig,
     CommandHook,
@@ -580,7 +580,7 @@ def _parse_response(raw: Any, where: str) -> ResponseExpect:
                 f"{response_where}.{key}: templates are only resolved in triggers; "
                 "here '{{...}}' would be compared as literal text"
             )
-        if key in ("matches", "not_matches"):
+        if key in REGEX_KEYS:
             try:
                 re.compile(value)
             except re.error as e:

@@ -91,15 +91,21 @@ def _negative(ignore_case: bool) -> Callable[[Any, Any], bool]:
     return lambda actual, operand: _contains(actual, operand, ignore_case=ignore_case) is False
 
 
-def _matches(actual: Any, operand: Any) -> bool:
+def _found(actual: Any, operand: Any, *, ignore_case: bool) -> bool | None:
+    """Whether the regex is in the value. None when the value has no text form."""
     text = _as_text(actual)
-    return text is not None and re.search(str(operand), text) is not None
+    if text is None:
+        return None
+    return re.search(str(operand), text, re.IGNORECASE if ignore_case else 0) is not None
 
 
-def _not_matches(actual: Any, operand: Any) -> bool:
+def _regex_positive(ignore_case: bool) -> Callable[[Any, Any], bool]:
+    return lambda actual, operand: _found(actual, operand, ignore_case=ignore_case) is True
+
+
+def _regex_negative(ignore_case: bool) -> Callable[[Any, Any], bool]:
     # Like the other negatives, a value with no text form fails rather than passing.
-    text = _as_text(actual)
-    return text is not None and re.search(str(operand), text) is None
+    return lambda actual, operand: _found(actual, operand, ignore_case=ignore_case) is False
 
 
 # Mirrors the vocabulary `response:` already uses (contains / not_contains / matches),
@@ -112,11 +118,15 @@ _CONDITIONS: dict[str, Callable[[Any, Any], bool]] = {
     "icontains": _positive(ignore_case=True),
     "not_contains": _negative(ignore_case=False),
     "not_icontains": _negative(ignore_case=True),
-    "matches": _matches,
-    "not_matches": _not_matches,
+    "matches": _regex_positive(ignore_case=False),
+    "imatches": _regex_positive(ignore_case=True),
+    "not_matches": _regex_negative(ignore_case=False),
+    "not_imatches": _regex_negative(ignore_case=True),
 }
 
 MATCHER_KEYS = frozenset(_CONDITIONS)
+# Their operand is a regex, so a spec has to find out it is broken before a run does.
+REGEX_KEYS = ("matches", "imatches", "not_matches", "not_imatches")
 
 
 def _is_matcher(expected: Any) -> bool:
@@ -180,7 +190,7 @@ def validate_expected(expected: Any, where: str) -> None:
         return
 
     # A matcher. The operand of `equals` is a literal and is deliberately not inspected.
-    for key in ("matches", "not_matches"):
+    for key in REGEX_KEYS:
         if key not in mapping:
             continue
         pattern = mapping[key]

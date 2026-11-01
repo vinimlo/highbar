@@ -559,8 +559,28 @@ class TestResponseMatchers:
             with pytest.raises(SpecError, match=rf"{where}.*invalid regex"):
                 parse_spec(path)
 
+    @pytest.mark.parametrize("key", ["imatches", "not_imatches"])
+    def test_invalid_regex_ignoring_case_is_a_spec_error(self, tmp_path: Path, key: str) -> None:
+        for expect, where in [
+            (f'{{response: {{{key}: "("}}}}', f"response.{key}"),
+            (f'{{function_calls: [{{name: a, params: {{q: {{{key}: "("}}}}}}]}}', "params.q"),
+        ]:
+            path = _spec(tmp_path, _one_test(f'- trigger: "hi"\n  expect: {expect}\n'))
+            with pytest.raises(SpecError, match=rf"{where}.*invalid regex"):
+                parse_spec(path)
+
     @pytest.mark.parametrize(
-        "key", ["contains", "icontains", "not_contains", "not_icontains", "matches", "not_matches"]
+        "key",
+        [
+            "contains",
+            "icontains",
+            "not_contains",
+            "not_icontains",
+            "matches",
+            "not_matches",
+            "imatches",
+            "not_imatches",
+        ],
     )
     def test_response_keeps_rejecting_empty_operands_and_templates(
         self, tmp_path: Path, key: str

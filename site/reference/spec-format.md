@@ -80,6 +80,7 @@ Used in `response`, in values of `params` and `result`, and in `error`:
 | `equals` | Exactly this value. |
 | `contains` / `icontains` | Contains the text (`i`: ignoring case); for a list, has the item. |
 | `not_contains` / `not_icontains` | Does not. |
-| `matches` / `not_matches` | A regular expression is found (Python `re.search`), or is not. Checked when the spec is loaded. |
+| `matches` / `not_matches` | A regular expression is found (Python `re.search`), or is not. **Case-sensitive.** Checked when the spec is loaded. |
+| `imatches` / `not_imatches` | The same, ignoring case. `(?i)` at the start of a pattern does the same in `matches`. |
 
 Negative matchers fail on a value with no text form, such as an object or `null`. Templates (<code v-pre>{{previous.*}}</code>) are only allowed in triggers.

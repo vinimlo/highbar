@@ -38,6 +38,29 @@ class TestResponseAssertion:
         results = self.assertion.evaluate([], "not exact match at all", expect)
         assert any(not r.passed for r in results)
 
+    def test_imatches_pass(self) -> None:
+        expect = Expect(response=ResponseExpect(matcher={"imatches": "^onze anos"}))
+        results = self.assertion.evaluate([], "Onze anos de garantia", expect)
+        assert all(r.passed for r in results)
+
+    def test_imatches_fail_says_why(self) -> None:
+        expect = Expect(response=ResponseExpect(matcher={"imatches": "^seis anos"}))
+        (result,) = self.assertion.evaluate([], "Onze anos de garantia", expect)
+        assert not result.passed
+        assert result.message == (
+            "Response does not match pattern '^seis anos' (ignoring case). "
+            "Got: 'Onze anos de garantia'"
+        )
+
+    def test_not_imatches_fail_shows_what_it_found(self) -> None:
+        expect = Expect(response=ResponseExpect(matcher={"not_imatches": "onze anos"}))
+        (result,) = self.assertion.evaluate([], "Onze anos de garantia", expect)
+        assert not result.passed
+        assert result.message == (
+            "Response matches forbidden pattern 'onze anos' (ignoring case) (found 'Onze anos'). "
+            "Got: 'Onze anos de garantia'"
+        )
+
     def test_no_response_expect_returns_empty(self) -> None:
         expect = Expect()
         results = self.assertion.evaluate([], "anything", expect)
