@@ -14,7 +14,8 @@ Rules of the contract (v1) that live here:
 - Only lines that end in a newline are read. A writer may be in the middle of one.
 - A turn's ``usage`` is optional, and what cannot be read in it counts as missing: a
   writer that had its own ``usage`` field keeps working, and a budget on a value that
-  was dropped ends in ``error``, never in a pass.
+  was dropped ends in ``error``, never in a pass. A ``usage`` with nothing readable is
+  remembered as such: alone it says nothing, but next to a readable one it was spent too.
 """
 
 from __future__ import annotations
@@ -194,13 +195,17 @@ def _add(window: Window, raw: bytes) -> None:
     if kind == "tool":
         window.tools.append(_tool(record, context=_context(record)))
     elif kind == "turn":
+        raw_usage = record.get("usage")
+        usage = _usage(raw_usage)
         window.turns.append(
             TurnRecord(
                 ts=_number(record, "ts", 0.0),
                 context=_context(record),
                 message=_text(record.get("message")),
                 response=_text(record.get("response")),
-                usage=_usage(record.get("usage")),
+                usage=usage,
+                # An empty one says nothing. Anything else said something highbar cannot read.
+                usage_unreadable=usage is None and bool(raw_usage),
             )
         )
     elif kind == "hello":

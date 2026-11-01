@@ -101,6 +101,8 @@ A test's `budget` replaces `defaults.budget` whole: a limit it leaves out is not
 | The agent wrote no `usage`, or not the field the limit needs. | `error`: nothing was verified. |
 | Some of the usage is missing, and what is known is already over a limit. | `failed`: more usage can only add to it. |
 | Some of the usage is missing, and what is known is within the limit. | `error`. |
+| A `turn` with no test context has usage, and the budget holds only without it. | `error`: it may be this test's. |
+| A `turn` with usage was recorded after the test's window, and takes it over a limit. | `failed`, like a late tool call. |
 
 `max_cost` has no currency of its own. A sum in any currency above it fails the budget; costs in more than one currency that are all within it end in `error`, because they do not add up to one number. A cost without a `currency` counts as missing. The agent's cost and the price table are in the [trace contract](/reference/trace-contract#usage-tokens-and-cost).
 

@@ -7,6 +7,8 @@ this runs an agent that uses it, started by highbar (PR 8 review, I2).
 from __future__ import annotations
 
 import ast
+import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -63,6 +65,32 @@ def test_ac14_the_reference_emitter_writes_usage_and_the_report_shows_it(tmp_pat
     assert turn["usage"]["cost"] > 0
     assert data["totals"]["complete"] is True
     assert [suite["name"] for suite in spec["suites"]] == ["Orders", "Guardrails"]
+
+
+def test_a_message_that_breaks_the_handler_still_writes_its_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`emitter.turn` promises it: "also when the handling failed"."""
+    traces = tmp_path / "traces.jsonl"
+    monkeypatch.setenv("HIGHBAR_TRACES_URL", str(traces))
+    monkeypatch.syspath_prepend(str(EXAMPLE))
+    monkeypatch.delitem(sys.modules, "emitter", raising=False)
+    spec = importlib.util.spec_from_file_location("trace_contract_agent", EXAMPLE / "agent.py")
+    assert spec is not None
+    assert spec.loader is not None
+    agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(agent)
+    handler = agent.Handler.__new__(agent.Handler)
+    handler.headers = {"X-Highbar-Test": "t1", "Content-Length": "2"}
+    handler.rfile = io.BytesIO(b"{}")
+
+    with pytest.raises(KeyError):
+        handler.do_POST()
+
+    (line,) = traces.read_text(encoding="utf-8").splitlines()
+    record = json.loads(line)
+    assert (record["type"], record["context"]) == ("turn", {"test": "t1"})
+    assert record["usage"]["input_tokens"] == 0
 
 
 def test_i2_the_example_imports_no_highbar_and_the_emitter_fits_in_40_lines() -> None:

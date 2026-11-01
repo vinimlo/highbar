@@ -66,6 +66,12 @@ class Usage:
 
     Every field is optional, and None means the emitter did not say, which is not zero.
     ``input_tokens`` is the whole input, with ``cached_input_tokens`` already in it.
+
+    A message with several records has their sum here, unknown wherever one of them says
+    nothing. ``records`` keeps each one, so that what is known still counts: sums and
+    budgets read those. ``unattributed`` is usage read next to them that no context ties
+    to a test: it counts for none, and may still be this message's. Neither is part of
+    the value, or of the report.
     """
 
     model: str | None = None
@@ -76,6 +82,8 @@ class Usage:
     cost: float | None = None
     currency: str | None = None
     llm_calls: int | None = None
+    records: tuple[Usage, ...] = field(default=(), compare=False)
+    unattributed: tuple[Usage, ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -87,6 +95,7 @@ class TurnRecord:
     message: str | None = None
     response: str | None = None
     usage: Usage | None = None
+    usage_unreadable: bool = False  # it had a `usage`, and nothing in it could be read
 
 
 @dataclass(frozen=True)

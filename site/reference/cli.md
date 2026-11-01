@@ -27,7 +27,7 @@ All specs are parsed and validated before any agent starts. With several specs, 
 
 The accumulated cost is checked at the end of each test, across every spec of the run, so a test in progress always finishes, and the ceiling can be passed by what that test spends. Above the ceiling, not at it, the tests and specs left do not run. The agent highbar started is stopped, the results so far are kept, and the [report](/reference/report) says `stopped.reason: "budget_exceeded"`. The check also runs after the last test: a run that ended over its ceiling exits with 3, with every test in the report.
 
-The ceiling has no currency of its own: each currency's sum is held against it separately, since costs in different currencies are not added. It sees only the costs it knows. A turn with no cost and currency cannot count, so a run with one ends with a warning that it may have spent more, and an agent that reports no cost is never stopped.
+The ceiling has no currency of its own: each currency's sum is held against it separately, since costs in different currencies are not added. It sees only the costs it knows. A turn with no cost and currency cannot count, and neither can a `turn` record with no test context, whose usage belongs to no test. A run with either ends with a warning that it may have spent more, and an agent that reports no cost is never stopped.
 
 ## `highbar validate [SPEC_PATH]`
 

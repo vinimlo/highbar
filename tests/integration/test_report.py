@@ -294,6 +294,23 @@ def test_ac9_a_budget_without_usage_is_an_error_in_the_file(project: _Project) -
 
 
 @pytest.mark.timeout(30)
+def test_q1_usage_with_no_test_context_cannot_pass_a_budget(project: _Project) -> None:
+    spec = project.spec("budget: {max_cost: 1}", args=("--cost", "0.1", "--stray-cost", "9"))
+
+    result = project.run(spec)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    data = project.data()
+    jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+    (test,) = data["specs"][0]["tests"]
+    assert test["status"] == "error"
+    assert "cannot tell which test" in test["errors"][0]
+    assert data["totals"]["cost"] == {"USD": 0.1}
+    assert data["totals"]["complete"] is False
+    assert "no test context" in result.stdout
+
+
+@pytest.mark.timeout(30)
 def test_j5_invalid_spec_reports_why(project: _Project) -> None:
     (project.root / "bad.highbar.yaml").write_text("agent: {endpoint: 1}\n", encoding="utf-8")
 

@@ -32,6 +32,17 @@ def _sdk_version() -> str:
         return "dev"
 
 
+def _plain(usage: Any) -> Any:
+    """``usage`` as a dict: another mapping would be written as its text, and read as nothing.
+
+    This runs in the agent's ``finally``, so a value that is not a mapping goes as it is.
+    """
+    try:
+        return dict(usage)
+    except Exception:
+        return usage
+
+
 class TurnHandle:
     """Handed out by ``Highbar.turn``; set ``response`` to record what the agent said.
 
@@ -207,7 +218,7 @@ class Highbar:
         if response is not None:
             record["response"] = response
         if usage is not None:
-            record["usage"] = usage
+            record["usage"] = _plain(usage)
         self._write(record)
 
     def _write(self, record: dict[str, Any]) -> None:

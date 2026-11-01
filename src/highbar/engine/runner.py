@@ -60,9 +60,10 @@ from highbar.engine.usage import (
     add_up,
     amount,
     check_budget,
-    merged,
+    has_cost,
     over_limit,
     priced,
+    turn_usage,
 )
 
 # A window with no tagged record: its untagged calls are all there is, and count.
@@ -77,6 +78,13 @@ UNATTRIBUTED_WARNING = (
     "some tool calls carry {untagged}, so they count for no test, and a test whose result "
     "they would change is an error; {hint}; a thread the agent starts itself needs "
     "contextvars.copy_context() to keep the tag"
+)
+
+# The same for usage: a `turn` that lost its context is in no sum, and no budget passes on it.
+UNATTRIBUTED_USAGE_WARNING = (
+    "some `turn` records with usage carry {untagged}, so they count for no test and the sums "
+    "are incomplete, and a test whose budget they would change is an error; {hint}; a thread "
+    "the agent starts itself needs contextvars.copy_context() to keep the tag"
 )
 
 UNDECLARED_WARNING = (
@@ -97,8 +105,13 @@ class _TurnLog:
     response_ms: float | None = None
     tools: list[Trace] = field(default_factory=list[Trace])
     late: list[Trace] = field(default_factory=list[Trace])
-    usage: Usage | None = None
+    records: list[Usage] = field(default_factory=list[Usage])  # the usage of its `turn` records
+    untagged: list[Usage] = field(default_factory=list[Usage])  # read next to it, no context
     budget: Budget | None = None
+
+    @property
+    def usage(self) -> Usage | None:
+        return turn_usage(self.records, self.untagged)
 
 
 @dataclass
@@ -441,6 +454,9 @@ class TestRunner:
                 time.sleep(self._settle_time)
                 self._read_after_last_test()
                 self._report_late(self._findings)
+                # That read can add to what the run spent: it may have ended over its ceiling.
+                if self._stopped is None:
+                    self._check_ceiling(self._reported[self._test_index - 1].name)
             self._warn_undeclared()
             self._warn_unmetered()
         finally:
@@ -565,14 +581,17 @@ class TestRunner:
         )
 
     def _masked_usage(self, usage: Usage | None) -> Usage | None:
+        return None if usage is None else self._masked_parts(usage)
+
+    def _masked_parts(self, usage: Usage) -> Usage:
         """The agent's text masked. The counts stay numbers: they are what a reader adds."""
-        if usage is None:
-            return None
         return replace(
             usage,
             model=self._mask(usage.model),
             provider=self._mask(usage.provider),
             currency=self._mask(usage.currency),
+            records=tuple(self._masked_parts(record) for record in usage.records),
+            unattributed=tuple(self._masked_parts(stray) for stray in usage.unattributed),
         )
 
     def _mask(self, value: Any) -> Any:
@@ -627,6 +646,13 @@ class TestRunner:
         untagged = self._untagged(window.tools, last)
         self._judge_late([t for t in window.tools if t not in untagged], current=None)
         self._suspect(last, untagged)
+        stray = [
+            turn
+            for turn in window.turns
+            if attribute(turn.context, last.correlate) is Attribution.UNATTRIBUTED
+        ]
+        self._judge_late_usage([t for t in window.turns if t not in stray], current=None)
+        self._suspect_usage(last, self._read_usage(stray), last.correlate)
 
     def _untagged(self, tools: list[Trace], execution: _Execution) -> list[Trace]:
         return [
@@ -635,16 +661,22 @@ class TestRunner:
             if attribute(t.context, execution.correlate) is Attribution.UNATTRIBUTED
         ]
 
+    def _owner(self, context: Mapping[str, Any], current: _Execution | None) -> _Execution | None:
+        """The earlier execution a late record's context names, if any."""
+        for execution in reversed(self._executions):
+            if execution is current:
+                continue
+            if attribute(context, execution.correlate) is Attribution.MINE:
+                return execution
+        return None
+
     def _judge_late(self, tools: list[Trace], current: _Execution | None) -> None:
         """Calls tagged with an earlier execution count for it, though its window closed."""
         late: dict[int, tuple[_Execution, list[Trace]]] = {}
         for tool in tools:
-            for execution in reversed(self._executions):
-                if execution is current:
-                    continue
-                if attribute(tool.context, execution.correlate) is Attribution.MINE:
-                    late.setdefault(id(execution), (execution, []))[1].append(tool)
-                    break
+            owner = self._owner(tool.context, current)
+            if owner is not None:
+                late.setdefault(id(owner), (owner, []))[1].append(tool)
         for execution, calls in late.values():
             was_passing = execution.passed and execution.expect is not None
             execution.tools = [*execution.tools, *calls]
@@ -665,6 +697,42 @@ class TestRunner:
                     )
                 )
 
+    def _judge_late_usage(self, turns: list[TurnRecord], current: _Execution | None) -> None:
+        """Usage tagged with an earlier execution counts for it too, and its budgets hold again."""
+        changed: dict[int, _Execution] = {}
+        for turn in turns:
+            owner = self._owner(turn.context, current)
+            if owner is None or not owner.turns:
+                continue
+            records = self._read_usage([turn])
+            if records:
+                owner.turns[-1].records.extend(records)
+                changed[id(owner)] = owner
+        for execution in changed.values():
+            check = self._budgets_of(execution)
+            problems = [*check.exceeded, *check.unverified]
+            if execution.passed and problems:
+                execution.passed = False
+                self._findings.append(
+                    _Finding(
+                        execution,
+                        Status.FAILED if check.exceeded else Status.ERROR,
+                        "a `turn` with usage was recorded after the test's window closed "
+                        f"(settle_time {self._settle_time * 1000:.0f} ms): "
+                        f"{'; '.join(problems)}. Raise agent.settle_time to read it in time",
+                    )
+                )
+
+    def _budgets_of(self, execution: _Execution) -> BudgetCheck:
+        """The limits of ``execution`` against what is known of its usage now."""
+        last = execution.turns[-1]
+        turn = self._budget_check(last.budget, last.usage)
+        if execution.budget is None:
+            return turn
+        usages = [log.usage for log in execution.turns]
+        whole = check_budget(execution.budget, usages, "execution")
+        return BudgetCheck([*turn.exceeded, *whole.exceeded], [*turn.unverified, *whole.unverified])
+
     def _suspect(self, execution: _Execution | None, untagged: list[Trace]) -> None:
         """An untagged call may be the late call of ``execution``: if it would fail it,
         that test is unverified."""
@@ -683,6 +751,22 @@ class TestRunner:
                     "contextvars.copy_context() to keep the tag",
                 )
             )
+
+    def _suspect_usage(
+        self, execution: _Execution | None, stray: list[Usage], correlate: Mapping[Any, Any]
+    ) -> None:
+        """Untagged usage may be the late usage of ``execution``: if a budget of it holds
+        only without that, the test is unverified."""
+        if not stray:
+            return
+        self._warn_once(UNATTRIBUTED_USAGE_WARNING, correlate)
+        if execution is None or not execution.turns:
+            return
+        execution.turns[-1].untagged.extend(stray)
+        check = self._budgets_of(execution)
+        if execution.passed and check.unverified:
+            execution.passed = False
+            self._findings.append(_Finding(execution, Status.ERROR, "; ".join(check.unverified)))
 
     def _not_observed(self, classified: Classified, correlate: dict[str, Any]) -> str:
         records = [*classified.other.tools, *classified.other.turns]
@@ -844,12 +928,12 @@ class TestRunner:
         if self._max_cost is None:
             return
         usages = self._usages()
-        missing = sum(u is None or u.cost is None or u.currency is None for u in usages)
+        missing = sum(not has_cost(u) or (u is not None and bool(u.unattributed)) for u in usages)
         if missing:
             self._warn(
                 f"--max-cost {amount(self._max_cost)} counted only the costs it knows: "
-                f"{missing} of {len(usages)} turns have no cost and currency, so the run may "
-                "have spent more"
+                f"{missing} of {len(usages)} turns are missing a cost and currency, or have "
+                "usage next to them with no test context, so the run may have spent more"
             )
 
     def _priced(self, usage: Usage) -> Usage:
@@ -859,10 +943,13 @@ class TestRunner:
             self._warn(warning)
         return result
 
-    def _turn_usage(self, turns: list[TurnRecord]) -> Usage | None:
-        """What one message spent, from the records that belong to it."""
-        records = [self._priced(turn.usage) for turn in turns if turn.usage is not None]
-        return merged(records) if records else None
+    def _read_usage(self, turns: list[TurnRecord]) -> list[Usage]:
+        """The usage of each of ``turns`` that has any, priced. Unreadable, nothing is known."""
+        return [
+            Usage() if turn.usage is None else self._priced(turn.usage)
+            for turn in turns
+            if turn.usage is not None or turn.usage_unreadable
+        ]
 
     def _budget_check(self, budget: Budget | None, usage: Usage | None) -> BudgetCheck:
         """The turn's own limit, against the turn's own usage."""
@@ -1207,18 +1294,21 @@ class TestRunner:
             # agent may be serving others, and their tokens are not this test's.
             traces = window.tools
             log.tools = list(traces)
-            log.usage = self._turn_usage(window.turns) if self._managed else None
+            log.records = self._read_usage(window.turns) if self._managed else []
             errors = self._check(traces, response, expect)
         else:
             self._judge_late(classified.other.tools, current=execution)
-            if untagged:
-                earlier = [e for e in self._executions if e is not execution]
-                self._suspect(earlier[-1] if earlier else None, untagged)
+            self._judge_late_usage(classified.other.turns, current=execution)
+            earlier = [e for e in self._executions if e is not execution]
+            previous = earlier[-1] if earlier else None
+            self._suspect(previous, untagged)
+            log.untagged = self._read_usage(classified.unattributed.turns)
+            self._suspect_usage(previous, log.untagged, execution.correlate)
             if observes and not (classified.mine.tools or classified.mine.turns):
                 return unverified(self._not_observed(classified, execution.correlate))
             traces = classified.mine.tools
             log.tools = list(traces)
-            log.usage = self._turn_usage(classified.mine.turns)
+            log.records = self._read_usage(classified.mine.turns)
             errors = self._check(traces, response, expect)
             if untagged:
                 with_them = self._check([*traces, *untagged], response, expect)

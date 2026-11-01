@@ -16,6 +16,8 @@ Serves ``GET /health`` -> 200 and ``POST /chat`` -> ``{"response": "ok"}``.
                      call to tool T, like work the agent left running in the background
     --cost C         each `turn` reports a usage of 100 input tokens, 10 output tokens
                      and C USD
+    --stray-cost C   each POST also writes a `turn` with no context and that usage, at
+                     C USD, like an hb.turn() in a thread that lost it
 
 With HIGHBAR_TRACES_URL set (and no --no-traces), it writes the trace contract the
 way any emitter would, without the SDK: a `hello` when it starts and a `turn` per
@@ -48,6 +50,7 @@ def main() -> None:
     parser.add_argument("--replies", default="ok")
     parser.add_argument("--late-tool", default=None)
     parser.add_argument("--cost", type=float, default=None)
+    parser.add_argument("--stray-cost", type=float, default=None)
     args = parser.parse_args()
     replies = itertools.cycle(args.replies.split(","))
     replies_lock = threading.Lock()
@@ -100,6 +103,8 @@ def main() -> None:
             tags = {k: v for k, v in context.items() if v is not None}
             usage = {"input_tokens": 100, "output_tokens": 10, "cost": args.cost, "currency": "USD"}
             record({"type": "turn", "context": tags, "usage": usage if args.cost else None})
+            if args.stray_cost:
+                record({"type": "turn", "usage": {**usage, "cost": args.stray_cost}})
             if args.late_tool and "late" in str(payload):
                 tool, seconds = args.late_tool.split(":")
                 late = {"type": "tool", "fn": tool, "args": {}, "context": tags}

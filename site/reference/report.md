@@ -144,7 +144,7 @@ A turn's `usage` has the fields of the [trace contract](/reference/trace-contrac
 }
 ```
 
-`totals` adds up the turns of a level. It has the same shape at every level: each execution and each test (`tests[].totals`), each suite (`specs[].suites[].totals`), each spec (`specs[].totals`) and the run (`totals`). For a single turn, `turns[].usage` is the sum.
+`totals` adds up the turns of a level. It has the same shape at every level: each execution and each test (`tests[].totals`), each suite (`specs[].suites[].totals`), each spec (`specs[].totals`) and the run (`totals`). For a single turn, `turns[].usage` is the sum. When a message has several `turn` records, a value is `null` there unless all of them give it, and `totals` still holds what each one gave.
 
 ```json
 {
@@ -174,8 +174,9 @@ A turn's `usage` has the fields of the [trace contract](/reference/trace-contrac
 - A turn without a cost: not sent, and not in the price table.
 - A cost without a currency. It stays in `turns[].usage`, and is left out of the sum.
 - Costs in more than one currency. They are never added together: each has its own sum in `cost`, so no number is lost, and `complete` is `false` because no single total exists.
+- A `turn` with usage and no test context, read next to a test's records. It counts for no test, so it is left out of the sum. It marks the turn it was read with and the last turn before it, since either may have made it.
 
-Which turns are counted follows the results: a turn that ran is counted whether or not the test passed, and the test in progress when a run stops is left out. Tokens recorded after a test's window closed are not counted.
+Which turns are counted follows the results: a turn that ran is counted whether or not the test passed, and the test in progress when a run stops is left out. Usage recorded after a test's window closed counts for that test.
 
 ## Comparing runs
 

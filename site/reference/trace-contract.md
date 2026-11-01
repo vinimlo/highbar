@@ -79,11 +79,13 @@ Not every provider counts them that way. OpenAI's `prompt_tokens` already includ
 
 A value that cannot be read counts as missing, and the line is still read: a `usage` that is not an object, a negative count, text where a number goes, `NaN`. A budget on a missing value is an `error`, never a pass.
 
-When several `turn` records of one message have `usage`, such as `highbar.asgi.Middleware` next to `hb.turn()`, they are added up, because all of it was spent. A value they disagree on, like the model, becomes unknown.
+When several `turn` records of one message have `usage`, such as `highbar.asgi.Middleware` next to `hb.turn()`, they are added up, because all of it was spent. A value they disagree on, like the model, is unknown in the turn's `usage` in the report; the sums and budgets read each record, so a value one of them knows is never lost. A `usage` that cannot be read at all, next to one that can, counts as a record with nothing known. A `turn` without `usage`, or with an empty one like `null` or `{}`, counts for nothing.
+
+A `turn` with `usage` but no test context, next to records that have one, counts for no test, as an untagged tool call does. It is left out of the sums, which say `complete: false`, and a test whose budget holds only without it is an `error`. A `hb.turn()` in a thread the agent starts itself needs `contextvars.copy_context()` to keep the tag.
 
 A `cost` from the writer always stands. Without one, highbar works it out from `src/highbar/engine/prices.json`, a table of list prices in USD per token, in the format of [OpenRouter's model list](https://openrouter.ai/api/v1/models). The price of cached tokens applies to `cached_input_tokens`. It needs `model`, `input_tokens` and `output_tokens`; it uses the table's currency, whatever `currency` says; and it finds the model by its exact name, ignoring case and with `.` the same as `-`, so a dated snapshot like `gpt-4o-2024-05-13` is not its alias. A model without a price leaves the cost missing, with a warning. `provider` is required when two providers in the table use the name. An agent on prices of its own, or on a model outside the table, writes `cost` and `currency`.
 
-Tokens recorded after a test's window closed are not counted: raise `agent.settle_time` if a `turn` arrives late.
+Write `turn` before the reply goes out. A `turn` with `usage` recorded after its test's window closed still counts for that test, like a late tool call: it goes in the sums, and the test's budget is checked again, so a run within it can now fail. Raise `agent.settle_time` if that happens.
 
 ## `hello`: the writer started
 

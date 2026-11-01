@@ -31,7 +31,7 @@ from highbar.domain.models import (
 )
 from highbar.domain.models import Test as Case
 from highbar.domain.models import TestOutcome as Outcome
-from highbar.engine.usage import add_up
+from highbar.engine.usage import add_up, merged, turn_usage
 from highbar.reporters.json_report import JsonReport, ReportError
 
 STARTED = "2026-10-30T11:49:00.120Z"
@@ -475,6 +475,38 @@ class TestUsage:
         assert totals["cost"] == {"USD": 0.00021, "EUR": 1.5}
         assert totals["complete"] is False
         assert "1 of 3 turns with no usage" in totals["warnings"]
+
+    def test_q3_a_turn_of_several_records_fits_the_closed_schema(self, workdir: Path) -> None:
+        euro = Usage(cost=1.5, currency="EUR")
+        turn = turn_usage([USAGE, euro], [USAGE])
+
+        data = _finished(workdir / "r.json", _spec_file(workdir), _spending(turn))
+
+        jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+        (shown,) = data["specs"][0]["tests"][0]["phrasings"][0]["executions"][0]["turns"]
+        assert (shown["usage"]["cost"], shown["usage"]["currency"]) == (None, None)
+        assert data["totals"]["cost"] == {"USD": 0.00021, "EUR": 1.5}
+        assert "1 of 1 turn next to usage with no test context" in " ".join(
+            data["totals"]["warnings"]
+        )
+
+    def test_a_tools_own_records_key_stays_in_the_file(self, workdir: Path) -> None:
+        """What leaves the file is a field of a usage, not a key of what the agent sent."""
+        test = _test(args={"records": [1], "unattributed": 2})
+
+        data = _finished(workdir / "r.json", _spec_file(workdir), _summary(test))
+
+        execution = data["specs"][0]["tests"][0]["phrasings"][0]["executions"][0]
+        assert execution["turns"][0]["tools"][0]["args"] == {"records": [1], "unattributed": 2}
+
+    def test_merged_is_the_sum_the_file_shows(self, workdir: Path) -> None:
+        turn = merged([USAGE, USAGE])
+
+        data = _finished(workdir / "r.json", _spec_file(workdir), _spending(turn))
+
+        assert data["totals"]["input_tokens"] == 2000
+        (shown,) = data["specs"][0]["tests"][0]["phrasings"][0]["executions"][0]["turns"]
+        assert shown["usage"]["input_tokens"] == 2000
 
     def test_ac1_a_report_without_usage_has_null_totals(self, workdir: Path) -> None:
         data = _finished(workdir / "r.json", _spec_file(workdir), _summary(_test()))

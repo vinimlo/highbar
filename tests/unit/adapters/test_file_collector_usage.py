@@ -76,6 +76,42 @@ class TestUsage:
         assert turn.usage is None
 
     @pytest.mark.parametrize(
+        "value",
+        [
+            "lots",
+            12,
+            ["a list"],
+            {"prompt_tokens": 12},
+            {"input_tokens": "999999"},
+            {"cost": "9.0", "currency": 5},
+        ],
+        ids=lambda value: repr(value),
+    )
+    def test_q2_a_usage_nothing_can_be_read_in_is_remembered(
+        self, tmp_path: Path, value: object
+    ) -> None:
+        (turn,) = _read(tmp_path / "t.jsonl", _turn(usage=value))
+
+        assert turn.usage is None
+        assert turn.usage_unreadable is True
+
+    @pytest.mark.parametrize(
+        "fields", [{}, {"usage": None}, {"usage": {}}, {"usage": []}, {"usage": ""}], ids=repr
+    )
+    def test_q2_a_usage_that_says_nothing_is_not_unreadable(
+        self, tmp_path: Path, fields: dict[str, Any]
+    ) -> None:
+        """The middleware's `turn` has none, and the reference emitter writes null."""
+        (turn,) = _read(tmp_path / "t.jsonl", _turn(**fields))
+
+        assert turn.usage_unreadable is False
+
+    def test_q2_a_usage_with_something_readable_is_read(self, tmp_path: Path) -> None:
+        (turn,) = _read(tmp_path / "t.jsonl", _turn(usage={"input_tokens": "x", "llm_calls": 1}))
+
+        assert (turn.usage, turn.usage_unreadable) == (Usage(llm_calls=1), False)
+
+    @pytest.mark.parametrize(
         "bad", [-1, "1000", True, 10.5, math.nan, math.inf], ids=lambda value: repr(value)
     )
     def test_a_count_that_cannot_be_read_counts_as_missing(

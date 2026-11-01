@@ -59,11 +59,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         test = self.headers.get("X-Highbar-Test")
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        reply = ""
+        message = reply = ""
         try:
-            reply = answer(body["message"], test)
-        finally:
-            emitter.turn(test, usage(body["message"], reply))
+            message = body["message"]
+            reply = answer(message, test)
+        finally:  # also when the handling failed: the turn must not depend on what broke it
+            emitter.turn(test, usage(str(message), reply))
         self._reply({"reply": reply})
 
     def _reply(self, body: dict[str, Any]) -> None:

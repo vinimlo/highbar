@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import itertools
-from collections.abc import Mapping
+import json
+from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+from highbar.adapters.file_collector import FileTraceCollector
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
 from highbar.domain.models import (
@@ -30,6 +33,7 @@ from highbar.domain.models import (
 )
 from highbar.domain.models import Test as Case
 from highbar.engine.observation import AgentNotObservedError
+from highbar.engine.placeholders import Values
 from highbar.engine.runner import TestRunner as Runner
 from tests.unit.engine.fakes import FakeAgent
 
@@ -63,8 +67,60 @@ def _reporting(*usages: Usage | None) -> FakeAgent:
     return FakeAgent(script)
 
 
+def _spending(*records: tuple[Usage | None, ...], stray: Usage | None = None) -> FakeAgent:
+    """An agent whose messages each write ``records`` in turn, and an untagged ``stray``."""
+    sent = itertools.count()
+
+    def script(message: str, test_id: str) -> Window:
+        written = records[min(next(sent), len(records) - 1)]
+        turns = [TurnRecord(ts=1.0, context={"test": test_id}, usage=usage) for usage in written]
+        return Window(turns=[*turns, *([TurnRecord(ts=1.0, usage=stray)] if stray else [])])
+
+    return FakeAgent(script)
+
+
+def _late(on_time: Usage | None, late: Usage | None) -> Callable[[str, str], Any]:
+    """A script: the first message reports ``on_time``, and ``late`` after its window."""
+    sends = itertools.count()
+
+    def script(message: str, test_id: str) -> Window | tuple[Window, Window]:
+        now = Window(turns=[TurnRecord(ts=1.0, context={"test": test_id}, usage=on_time)])
+        record = TurnRecord(ts=1.0, context={"test": test_id}, usage=late)
+        return (now, Window(turns=[record])) if next(sends) == 0 else now
+
+    return script
+
+
+class _Traced(FileTraceCollector):
+    """An agent that writes real JSONL: the whole way from a line to the verdict."""
+
+    def __init__(self, path: Path, *lines: dict[str, Any]) -> None:
+        super().__init__(path)
+        self._lines = lines
+        self._write({"type": "hello", "sdk": "test", "pid": 1})
+
+    def _write(self, record: dict[str, Any]) -> None:
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"v": 1, "ts": 1.0, **record}) + "\n")
+
+    def send(self, message: str, *, values: Values) -> str:
+        for line in self._lines:
+            context = {} if "untagged" in line else {"context": {"test": values.test_id}}
+            fields = {key: value for key, value in line.items() if key != "untagged"}
+            self._write({"type": "turn", **context, **fields})
+        return "ok"
+
+
+def _tagged(usage: object = None) -> dict[str, Any]:
+    return {"usage": usage}
+
+
+def _untagged(usage: object) -> dict[str, Any]:
+    return {"usage": usage, "untagged": True}
+
+
 def _runner(
-    agent: FakeAgent,
+    agent: FakeAgent | _Traced,
     *,
     reporter: MagicMock | None = None,
     managed: bool = True,
@@ -89,7 +145,7 @@ def _runner(
 
 
 def _run(
-    tests: list[Case], agent: FakeAgent, *, default: Budget | None = None, **options: Any
+    tests: list[Case], agent: FakeAgent | _Traced, *, default: Budget | None = None, **options: Any
 ) -> RunSummary:
     spec = Spec(
         agent=AgentConfig(start="agent", endpoint="http://127.0.0.1:1/chat"),
@@ -506,19 +562,17 @@ class TestTotals:
         assert test.totals is not None
         assert test.totals.cost == {"USD": 0.1}
 
-    def test_a_late_turn_is_not_counted(self) -> None:
-        sends = itertools.count()
-
-        def script(message: str, test_id: str) -> Window | tuple[Window, Window]:
-            turn = TurnRecord(ts=1.0, context={"test": test_id}, usage=_usd(5.0))
-            on_time = Window(turns=[TurnRecord(ts=1.0, context={"test": test_id})])
-            return (Window(), Window(turns=[turn])) if next(sends) == 0 else on_time
-
+    def test_q4_a_late_turn_counts_for_the_test_that_made_it(self) -> None:
         tests = [Case(trigger="a", expect=SAYS_OK), Case(trigger="b", expect=SAYS_OK)]
 
-        summary = _run(tests, FakeAgent(script))
+        summary = _run(tests, FakeAgent(_late(None, _usd(5.0))))
 
-        assert summary.totals is None
+        first, second = summary.tests
+        assert first.totals is not None
+        assert first.totals.cost == {"USD": 5.0}
+        assert second.totals is None
+        assert summary.totals is not None
+        assert summary.totals.warnings == ("1 of 2 turns with no usage",)
 
     def test_a_managed_agent_without_context_counts_what_is_there(self) -> None:
         def script(message: str, test_id: str) -> Window:
@@ -562,6 +616,430 @@ class TestTotals:
         assert (turn.usage.model, turn.usage.currency) == ("${AGENT_TOKEN}", "${AGENT_TOKEN}")
         assert summary.totals is not None
         assert summary.totals.cost == {"${AGENT_TOKEN}": 1.0}
+
+    def test_nothing_from_a_var_reaches_a_sum_through_a_record(self) -> None:
+        records = (Usage(cost=1.0, currency=TOKEN), Usage(cost=2.0, currency="USD"))
+        agent = _spending(records, stray=Usage(model=TOKEN, cost=1.0, currency=TOKEN))
+
+        summary = _run([Case(trigger="t", expect=SAYS_OK)], agent, secrets={TOKEN: "AGENT_TOKEN"})
+
+        assert TOKEN not in repr(summary)
+        assert summary.totals is not None
+        assert summary.totals.cost == {"${AGENT_TOKEN}": 1.0, "USD": 2.0}
+
+
+class TestUntaggedUsage:
+    """Q1: `turn` records that lost their context, next to one that kept it."""
+
+    def test_q1_it_counts_for_the_test_when_nothing_is_tagged(self, tmp_path: Path) -> None:
+        agent = _Traced(tmp_path / "t.jsonl", _untagged({"input_tokens": 999_999}))
+
+        (test,) = _run([_budgeted(Budget(max_input_tokens=150))], agent).tests
+
+        assert test.status is Status.FAILED
+
+    def test_q1_tokens_that_would_break_a_budget_leave_it_unverified(self, tmp_path: Path) -> None:
+        agent = _Traced(
+            tmp_path / "t.jsonl",
+            _tagged({"input_tokens": 100}),
+            _untagged({"input_tokens": 999_999}),
+        )
+
+        summary = _run([_budgeted(Budget(max_input_tokens=150))], agent)
+
+        (test,) = summary.tests
+        assert test.status is Status.ERROR
+        assert "cannot tell which test" in test.errors[0]
+        assert any("no test context" in warning for warning in summary.warnings)
+
+    def test_q1_a_cost_that_would_break_a_budget_leaves_it_unverified(self, tmp_path: Path) -> None:
+        agent = _Traced(
+            tmp_path / "t.jsonl",
+            _tagged({"input_tokens": 1, "output_tokens": 1, "cost": 0.1, "currency": "USD"}),
+            _untagged({"input_tokens": 1, "output_tokens": 1, "cost": 9, "currency": "USD"}),
+        )
+
+        (test,) = _run([_budgeted(Budget(max_cost=1))], agent).tests
+
+        assert test.status is Status.ERROR
+        assert test.totals is not None
+        assert test.totals.cost == {"USD": 0.1}
+        assert test.totals.complete is False
+
+    def test_q1_it_holds_for_a_limit_on_a_turn(self) -> None:
+        limit = Expect(budget=Budget(max_input_tokens=150))
+        agent = _spending((_tokens(100),), stray=_tokens(999_999))
+
+        (test,) = _run([Case(turns=[Turn(trigger="a", expect=limit)])], agent).tests
+
+        assert test.status is Status.ERROR
+        assert "the turn keeps to its budget only without it" in test.errors[0]
+
+    def test_q1_it_holds_for_the_sum_of_a_conversation(self) -> None:
+        test = Case(
+            expect=Expect(budget=Budget(max_input_tokens=300)),
+            turns=[Turn(trigger="a", expect=Expect()), Turn(trigger="b", expect=Expect())],
+        )
+        agent = _spending((_tokens(100),), stray=_tokens(150))
+
+        (outcome,) = _run([test], agent).tests
+
+        assert outcome.status is Status.ERROR
+        assert "the execution keeps to its budget only without it" in outcome.errors[0]
+
+    def test_q1_usage_that_changes_nothing_warns_and_leaves_the_sum_partial(self) -> None:
+        agent = _spending((_tokens(100),), stray=_tokens(10))
+        reporter = MagicMock()
+
+        summary = _run([_budgeted(Budget(max_input_tokens=150))], agent, reporter=reporter)
+
+        (test,) = summary.tests
+        assert test.status is Status.PASSED
+        assert test.totals is not None
+        assert test.totals.input_tokens == 100
+        assert test.totals.complete is False
+        assert (
+            "1 of 1 turn next to usage with no test context, left out of the sum"
+            in test.totals.warnings
+        )
+        (warning,) = summary.warnings
+        assert "count for no test" in warning
+        assert reporter.on_warning.call_count == 1
+
+    def test_q1_a_tagged_turn_with_no_usage_of_its_own(self, tmp_path: Path) -> None:
+        """The middleware tags its `turn`, and a worker's `hb.turn()` has the usage."""
+        agent = _Traced(
+            tmp_path / "t.jsonl",
+            _tagged(),
+            _untagged({"input_tokens": 1, "output_tokens": 1, "cost": 9, "currency": "USD"}),
+        )
+
+        (test,) = _run([Case(trigger="t", expect=SAYS_OK)], agent).tests
+
+        assert test.status is Status.PASSED
+        assert test.totals is not None
+        assert test.totals.cost == {}
+        assert test.totals.complete is False
+
+    def test_q1_that_turn_cannot_pass_a_budget(self, tmp_path: Path) -> None:
+        agent = _Traced(tmp_path / "t.jsonl", _tagged(), _untagged({"input_tokens": 1}))
+
+        (test,) = _run([_budgeted(Budget(max_input_tokens=150))], agent).tests
+
+        assert test.status is Status.ERROR
+
+    def test_q1_an_unreadable_one_is_no_more_a_pass(self, tmp_path: Path) -> None:
+        agent = _Traced(
+            tmp_path / "t.jsonl",
+            _tagged({"input_tokens": 100}),
+            _untagged({"input_tokens": "999999"}),
+        )
+
+        (test,) = _run([_budgeted(Budget(max_input_tokens=150))], agent).tests
+
+        assert test.status is Status.ERROR
+
+    def test_q1_a_failure_stays_a_failure(self) -> None:
+        agent = _spending((_tokens(200),), stray=_tokens(999_999))
+
+        (test,) = _run([_budgeted(Budget(max_input_tokens=150))], agent).tests
+
+        assert test.status is Status.FAILED
+
+    def test_q1_a_ceiling_says_it_could_not_count_it(self) -> None:
+        agent = _spending((_usd(0.1),), stray=_usd(9.0))
+        tests = [Case(trigger="a", expect=SAYS_OK), Case(trigger="b", expect=SAYS_OK)]
+
+        summary = _run(tests, agent, max_cost=1)
+
+        assert summary.stopped is None
+        assert any("--max-cost 1 counted only" in warning for warning in summary.warnings)
+        assert any("2 of 2 turns" in warning for warning in summary.warnings)
+        assert summary.totals is not None
+        assert summary.totals.complete is False
+
+    def test_q1_it_may_be_the_late_usage_of_the_test_before(self) -> None:
+        def script(message: str, test_id: str) -> Window:
+            turn = TurnRecord(ts=1.0, context={"test": test_id}, usage=_tokens(100))
+            stray = TurnRecord(ts=1.0, usage=_tokens(999_999))
+            return Window(turns=[turn, *([stray] if message == "b" else [])])
+
+        tests = [_budgeted(Budget(max_input_tokens=150)), Case(trigger="b", expect=SAYS_OK)]
+
+        first, second = _run(tests, FakeAgent(script)).tests
+
+        assert first.status is Status.ERROR
+        assert "cannot tell which test" in first.errors[0]
+        assert second.status is Status.PASSED
+
+    def test_q1_it_may_arrive_after_the_last_test(self) -> None:
+        def script(message: str, test_id: str) -> tuple[Window, Window]:
+            turn = TurnRecord(ts=1.0, context={"test": test_id}, usage=_tokens(100))
+            return Window(turns=[turn]), Window(turns=[TurnRecord(ts=1.0, usage=_tokens(999_999))])
+
+        summary = _run([_budgeted(Budget(max_input_tokens=150))], FakeAgent(script))
+
+        (test,) = summary.tests
+        assert test.status is Status.ERROR
+        assert any("no test context" in warning for warning in summary.warnings)
+
+    def test_a_turn_with_no_usage_says_nothing(self, tmp_path: Path) -> None:
+        agent = _Traced(tmp_path / "t.jsonl", _tagged({"input_tokens": 100}), _untagged(None))
+
+        summary = _run([_budgeted(Budget(max_input_tokens=150))], agent)
+
+        assert summary.tests[0].status is Status.PASSED
+        assert summary.warnings == ()
+
+
+class TestUnreadableUsage:
+    """Q2: a `usage` highbar cannot read, next to one it can, was spent too."""
+
+    READABLE = {"input_tokens": 100, "output_tokens": 1, "cost": 0.1, "currency": "USD"}
+
+    def test_q2_a_cost_that_cannot_be_read_leaves_the_budget_unverified(
+        self, tmp_path: Path
+    ) -> None:
+        agent = _Traced(
+            tmp_path / "t.jsonl",
+            _tagged(self.READABLE),
+            _tagged({"cost": "9.0", "currency": 5}),
+        )
+
+        (test,) = _run([_budgeted(Budget(max_cost=1))], agent).tests
+
+        assert test.status is Status.ERROR
+        assert "cannot check max_cost" in test.errors[0]
+        assert test.totals is not None
+        assert test.totals.complete is False
+        assert test.totals.cost == {"USD": 0.1}
+
+    def test_q2_tokens_that_cannot_be_read_leave_the_budget_unverified(
+        self, tmp_path: Path
+    ) -> None:
+        agent = _Traced(
+            tmp_path / "t.jsonl",
+            _tagged({"input_tokens": 100}),
+            _tagged({"input_tokens": "999999"}),
+        )
+
+        (test,) = _run([_budgeted(Budget(max_input_tokens=150))], agent).tests
+
+        assert test.status is Status.ERROR
+        assert "cannot check max_input_tokens" in test.errors[0]
+
+    @pytest.mark.parametrize("value", ["lots", 12, {"prompt_tokens": 12}], ids=repr)
+    def test_q2_any_usage_that_cannot_be_read_counts(self, tmp_path: Path, value: object) -> None:
+        agent = _Traced(tmp_path / "t.jsonl", _tagged(self.READABLE), _tagged(value))
+
+        (test,) = _run([_budgeted(Budget(max_input_tokens=150))], agent).tests
+
+        assert test.status is Status.ERROR
+
+    @pytest.mark.parametrize("fields", [{}, {"usage": None}, {"usage": {}}], ids=repr)
+    def test_q2_a_record_that_says_nothing_is_still_ignored(
+        self, tmp_path: Path, fields: dict[str, Any]
+    ) -> None:
+        """The middleware's `turn`, next to the `hb.turn()` that has the usage."""
+        agent = _Traced(tmp_path / "t.jsonl", _tagged(self.READABLE), fields)
+
+        (test,) = _run([_budgeted(Budget(max_cost=1))], agent).tests
+
+        assert test.status is Status.PASSED
+        assert test.totals is not None
+        assert test.totals.complete is True
+
+    def test_q2_alone_it_reads_as_no_usage(self, tmp_path: Path) -> None:
+        """AC1: a writer with a `usage` of its own works as before, and owes no warning."""
+        agent = _Traced(tmp_path / "t.jsonl", _tagged({"prompt_tokens": 12}))
+
+        summary = _run([Case(trigger="t", expect=SAYS_OK)], agent)
+
+        assert summary.totals is None
+        assert summary.warnings == ()
+
+    def test_q2_alone_it_cannot_pass_a_budget(self, tmp_path: Path) -> None:
+        agent = _Traced(tmp_path / "t.jsonl", _tagged({"input_tokens": "1"}))
+
+        (test,) = _run([_budgeted(Budget(max_input_tokens=150))], agent).tests
+
+        assert test.status is Status.ERROR
+        assert "no usage" in test.errors[0]
+
+
+class TestKnownSpend:
+    """Q3: what one record knows counts, whatever the record next to it leaves out."""
+
+    def test_q3_known_tokens_over_a_limit_fail_it(self) -> None:
+        agent = _spending((Usage(input_tokens=999_999), Usage(cost=1.0, currency="USD")))
+
+        (test,) = _run([_budgeted(Budget(max_input_tokens=150))], agent).tests
+
+        assert test.status is Status.FAILED
+        assert test.errors == (
+            "the execution used 999999 input tokens, over max_input_tokens 150",
+        )
+
+    def test_q3_a_known_cost_over_a_limit_fails_it(self) -> None:
+        agent = _spending((_usd(5.0), Usage(input_tokens=1)))
+
+        (test,) = _run([_budgeted(Budget(max_cost=1))], agent).tests
+
+        assert test.status is Status.FAILED
+        assert test.totals is not None
+        assert test.totals.cost == {"USD": 5.0}
+        assert test.totals.complete is False
+
+    def test_q3_a_limit_on_a_turn_holds_the_same(self) -> None:
+        turns = [Turn(trigger="a", expect=Expect(budget=Budget(max_cost=1)))]
+        agent = _spending((_usd(5.0), Usage(input_tokens=1)))
+
+        (test,) = _run([Case(turns=turns)], agent).tests
+
+        assert test.status is Status.FAILED
+
+    def test_q3_the_ceiling_sees_a_known_cost(self) -> None:
+        agent = _spending((_usd(5.0), Usage(input_tokens=1)))
+        tests = [Case(trigger="a", expect=SAYS_OK), Case(trigger="b", expect=SAYS_OK)]
+
+        summary = _run(tests, agent, max_cost=1)
+
+        assert len(agent.sent) == 1
+        assert summary.stopped is not None
+        assert "5.0 USD" in summary.stopped
+
+    def test_q3_its_warning_does_not_deny_a_cost_it_counted(self) -> None:
+        agent = _spending((_usd(0.1), Usage(input_tokens=1)))
+
+        summary = _run([Case(trigger="a", expect=SAYS_OK)], agent, max_cost=5)
+
+        (warning,) = summary.warnings
+        assert "1 of 1 turns are missing a cost" in warning
+
+    def test_q3_two_currencies_in_one_message_lose_no_number(self) -> None:
+        agent = _spending((_usd(5.0), Usage(cost=7.0, currency="EUR")))
+
+        (test,) = _run([Case(trigger="t", expect=SAYS_OK)], agent).tests
+
+        (turn,) = test.phrasings[0].executions[0].turns
+        assert turn.usage is not None
+        assert turn.usage.cost is None
+        assert test.totals is not None
+        assert test.totals.cost == {"USD": 5.0, "EUR": 7.0}
+
+    def test_q3_the_ceiling_holds_each_of_them(self) -> None:
+        agent = _spending((_usd(0.1), Usage(cost=7.0, currency="EUR")))
+
+        summary = _run([Case(trigger="t", expect=SAYS_OK)], agent, max_cost=1)
+
+        assert summary.stopped is not None
+        assert "7.0 EUR" in summary.stopped
+
+
+class TestLateUsage:
+    """Q4: a tagged `turn` read after its window, judged as a late call is."""
+
+    LIMIT = Budget(max_input_tokens=150)
+
+    def test_q4_it_fails_a_test_it_takes_over_its_budget(self) -> None:
+        tests = [_budgeted(self.LIMIT), Case(trigger="b", expect=SAYS_OK)]
+        reporter = MagicMock()
+
+        summary = _run(tests, FakeAgent(_late(_tokens(100), _tokens(999_999))), reporter=reporter)
+
+        first, second = summary.tests
+        assert first.status is Status.FAILED
+        assert "after the test's window closed" in first.errors[0]
+        assert "1000099 input tokens" in first.errors[0]
+        assert "agent.settle_time" in first.errors[0]
+        assert first.totals is not None
+        assert first.totals.input_tokens == 1000099
+        assert second.status is Status.PASSED
+        assert any("now fails" in warning for warning in summary.warnings)
+
+    def test_q4_it_can_land_after_the_last_test(self) -> None:
+        agent = FakeAgent(_late(_tokens(100), _tokens(999_999)))
+
+        (test,) = _run([_budgeted(self.LIMIT)], agent).tests
+
+        assert test.status is Status.FAILED
+
+    def test_q4_it_holds_for_a_limit_on_the_last_turn(self) -> None:
+        turns = [Turn(trigger="a", expect=Expect(budget=self.LIMIT))]
+        agent = FakeAgent(_late(_tokens(100), _tokens(999_999)))
+
+        (test,) = _run([Case(turns=turns)], agent).tests
+
+        assert test.status is Status.FAILED
+
+    def test_q4_within_the_budget_it_only_adds_to_the_sum(self) -> None:
+        agent = FakeAgent(_late(_tokens(100), _tokens(10)))
+
+        (test,) = _run([_budgeted(self.LIMIT)], agent).tests
+
+        assert test.status is Status.PASSED
+        assert test.totals is not None
+        assert test.totals.input_tokens == 110
+
+    def test_q4_a_late_record_with_nothing_on_the_limit_leaves_it_unverified(self) -> None:
+        agent = FakeAgent(_late(_tokens(100), Usage(cost=1.0, currency="USD")))
+
+        (test,) = _run([_budgeted(self.LIMIT)], agent).tests
+
+        assert test.status is Status.ERROR
+        assert "after the test's window closed" in test.errors[0]
+
+    def test_q4_an_unreadable_late_record_leaves_it_unverified(self) -> None:
+        def script(message: str, test_id: str) -> tuple[Window, Window]:
+            context = {"test": test_id}
+            turn = TurnRecord(ts=1.0, context=context, usage=_tokens(100))
+            unread = TurnRecord(ts=1.0, context=context, usage_unreadable=True)
+            return Window(turns=[turn]), Window(turns=[unread])
+
+        (test,) = _run([_budgeted(self.LIMIT)], FakeAgent(script)).tests
+
+        assert test.status is Status.ERROR
+
+    def test_q4_a_late_turn_without_usage_changes_nothing(self) -> None:
+        agent = FakeAgent(_late(_tokens(100), None))
+
+        (test,) = _run([_budgeted(self.LIMIT)], agent).tests
+
+        assert test.status is Status.PASSED
+
+    def test_q4_it_fails_only_its_own_run(self) -> None:
+        test = _budgeted(self.LIMIT, runs=3, min_pass=2)
+
+        (outcome,) = _run([test], FakeAgent(_late(_tokens(100), _tokens(999_999)))).tests
+
+        assert outcome.status is Status.PASSED
+        assert outcome.counts == Counts(passed=2, failed=1, error=0)
+
+    def test_q4_a_test_that_failed_already_stays_failed(self) -> None:
+        test = Case(trigger="t", expect=Expect(response=FAILS.response, budget=self.LIMIT))
+
+        (outcome,) = _run([test], FakeAgent(_late(_tokens(100), _tokens(999_999)))).tests
+
+        assert outcome.status is Status.FAILED
+        assert not any("window closed" in error for error in outcome.errors)
+
+    def test_q4_the_ceiling_counts_it_in_the_next_test(self) -> None:
+        tests = [Case(trigger=name, expect=SAYS_OK) for name in "abc"]
+        agent = FakeAgent(_late(_usd(0.1), _usd(5.0)))
+
+        summary = _run(tests, agent, max_cost=1)
+
+        assert [message for message, _ in agent.sent] == ["a", "b"]
+        assert summary.stopped is not None
+
+    def test_q4_the_ceiling_counts_it_after_the_last_test(self) -> None:
+        """The run read that record, so one that ended over its ceiling says so (exit 3)."""
+        agent = FakeAgent(_late(_usd(0.1), _usd(5.0)))
+
+        summary = _run([_budgeted(Budget(max_cost=100))], agent, max_cost=1)
+
+        assert summary.stopped is not None
+        assert "5.1 USD" in summary.stopped
 
 
 class TestCeiling:

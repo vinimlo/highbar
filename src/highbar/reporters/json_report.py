@@ -74,7 +74,7 @@ class JsonReport:
                 "totals": _usage_totals(summary.totals),
                 "warnings": list(summary.warnings),
                 "suites": [asdict(suite) for suite in summary.suites],
-                "tests": [asdict(test) for test in summary.tests],
+                "tests": [asdict(test, dict_factory=_shown) for test in summary.tests],
             }
         )
 
@@ -144,6 +144,11 @@ def _totals(summaries: list[RunSummary]) -> dict[str, int]:
 
 def _usage_totals(totals: UsageTotals | None) -> dict[str, Any] | None:
     return asdict(totals) if totals is not None else None
+
+
+def _shown(fields: list[tuple[str, Any]]) -> dict[str, Any]:
+    """A result as the report has it: what a usage is made of is in its sums, not the format."""
+    return {key: value for key, value in fields if key not in ("records", "unattributed")}
 
 
 def _finite(value: Any) -> Any:

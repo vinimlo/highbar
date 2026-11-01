@@ -16,10 +16,12 @@ from highbar.engine.usage import (
     amount,
     check_budget,
     find_price,
+    has_cost,
     merged,
     over_limit,
     priced,
     read_prices,
+    turn_usage,
 )
 
 MINI = {"model": "gpt-4o-mini", "provider": "openai"}
@@ -255,6 +257,109 @@ class TestAddUp:
         assert totals is not None
         assert totals.complete is True
 
+    def test_q3_what_one_record_knows_counts_next_to_one_that_does_not(self) -> None:
+        turn = merged([Usage(input_tokens=999, cost=5.0, currency="USD"), Usage(llm_calls=1)])
+
+        totals = add_up([turn])
+
+        assert totals is not None
+        assert totals.turns == 1
+        assert (totals.input_tokens, totals.llm_calls) == (999, 1)
+        assert totals.cost == {"USD": 5.0}
+        assert totals.complete is False
+        assert "1 of 1 turn with no cost" in totals.warnings
+
+    def test_q3_two_currencies_in_one_message_lose_no_number(self) -> None:
+        euro = Usage(input_tokens=5, output_tokens=5, cost=7.0, currency="EUR")
+
+        totals = add_up([merged([_usd(5.0), euro])])
+
+        assert totals is not None
+        assert totals.input_tokens == 105
+        assert totals.cost == {"USD": 5.0, "EUR": 7.0}
+        assert totals.warnings == ("costs in EUR, USD: added per currency, not together",)
+
+    def test_q3_a_gap_is_counted_once_per_turn(self) -> None:
+        turn = merged([Usage(llm_calls=1), Usage(llm_calls=2), Usage(input_tokens=1)])
+
+        totals = add_up([turn, _usd(0.1)])
+
+        assert totals is not None
+        assert "1 of 2 turns with no input_tokens" in totals.warnings
+
+    def test_q1_usage_with_no_context_is_left_out_and_the_sum_says_so(self) -> None:
+        turn = turn_usage([_usd(0.1)], [_usd(9.0)])
+
+        totals = add_up([turn, _usd(0.1)])
+
+        assert totals is not None
+        assert totals.cost == {"USD": 0.2}
+        assert totals.complete is False
+        assert totals.warnings == (
+            "1 of 2 turns next to usage with no test context, left out of the sum",
+        )
+
+    def test_q1_a_turn_with_only_that_usage_still_makes_a_partial_sum(self) -> None:
+        totals = add_up([turn_usage([], [_usd(9.0)])])
+
+        assert totals is not None
+        assert (totals.input_tokens, totals.cost, totals.complete) == (None, {}, False)
+        assert "1 of 1 turn with no usage" in totals.warnings
+
+
+class TestTurnUsage:
+    def test_no_record_is_no_usage(self) -> None:
+        assert turn_usage([]) is None
+
+    def test_one_record_is_itself(self) -> None:
+        usage = _usd(0.1)
+
+        assert turn_usage([usage]) is usage
+
+    def test_q2_an_unreadable_record_alone_is_no_usage(self) -> None:
+        """A writer with a `usage` of its own owes nothing, as an agent with none does."""
+        assert turn_usage([Usage()]) is None
+        assert add_up([turn_usage([Usage()])]) is None
+
+    def test_q2_an_unreadable_record_leaves_the_turn_unknown(self) -> None:
+        usage = turn_usage([_usd(0.1), Usage()])
+
+        assert usage is not None
+        assert (usage.input_tokens, usage.cost) == (None, None)
+        totals = add_up([usage])
+        assert totals is not None
+        assert totals.input_tokens == 100
+        assert totals.cost == {"USD": 0.1}
+        assert totals.complete is False
+
+    def test_q1_it_carries_what_no_context_ties_to_a_test(self) -> None:
+        stray = _usd(9.0)
+
+        usage = turn_usage([_usd(0.1)], [stray])
+
+        assert usage == _usd(0.1)
+        assert usage is not None
+        assert usage.unattributed == (stray,)
+
+
+class TestHasCost:
+    def test_every_record_has_one(self) -> None:
+        assert has_cost(merged([_usd(0.1), Usage(cost=1.0, currency="EUR")]))
+
+    @pytest.mark.parametrize(
+        "usage",
+        [
+            None,
+            Usage(),
+            Usage(input_tokens=1),
+            Usage(cost=1.0),
+            merged([_usd(0.1), Usage(input_tokens=1)]),
+        ],
+        ids=repr,
+    )
+    def test_a_turn_with_a_gap_has_none(self, usage: Usage | None) -> None:
+        assert not has_cost(usage)
+
 
 class TestMerged:
     def test_one_record_is_itself(self) -> None:
@@ -287,6 +392,16 @@ class TestMerged:
         usage = merged([Usage(input_tokens=10, cost=0.1, currency="USD"), Usage(llm_calls=1)])
 
         assert (usage.input_tokens, usage.cost) == (None, None)
+
+    def test_q3_it_keeps_each_record_for_the_sums(self) -> None:
+        records = [_usd(0.1), Usage(llm_calls=1)]
+
+        assert merged(records).records == tuple(records)
+
+    def test_what_it_keeps_is_not_part_of_its_value(self) -> None:
+        assert merged([_usd(0.1), _usd(0.2)]) == Usage(
+            input_tokens=200, output_tokens=20, cost=0.3, currency="USD"
+        )
 
 
 class TestLimits:
@@ -385,3 +500,77 @@ class TestCheckBudget:
         check = check_budget(budget, [_usd(0.5)], "turn")
 
         assert len(check.exceeded) == 2
+
+    def test_q3_known_tokens_of_a_record_are_enough_to_exceed_it(self) -> None:
+        turn = merged([Usage(input_tokens=999_999), Usage(cost=1.0, currency="USD")])
+
+        check = check_budget(Budget(max_input_tokens=150), [turn], "turn")
+
+        assert check.exceeded == ["the turn used 999999 input tokens, over max_input_tokens 150"]
+        assert check.unverified == []
+
+    def test_q3_a_known_cost_of_a_record_is_enough_to_exceed_it(self) -> None:
+        turn = merged([_usd(5.0), Usage(input_tokens=1)])
+
+        check = check_budget(Budget(max_cost=1), [turn], "turn")
+
+        assert check.exceeded == ["the turn cost 5.0 USD, over max_cost 1"]
+        assert check.unverified == []
+
+    def test_q3_a_known_record_within_the_limit_still_proves_nothing(self) -> None:
+        turn = merged([_usd(0.1), Usage(input_tokens=1)])
+
+        check = check_budget(Budget(max_cost=1), [turn], "turn")
+
+        assert check.exceeded == []
+        assert "cannot check max_cost" in check.unverified[0]
+
+    def test_q3_two_currencies_in_a_turn_are_not_a_missing_cost(self) -> None:
+        turn = merged([_usd(0.1), Usage(cost=0.5, currency="EUR")])
+
+        check = check_budget(Budget(max_cost=1), [turn], "turn")
+
+        assert check.exceeded == []
+        assert "EUR, USD" in check.unverified[0]
+
+    def test_q1_a_budget_that_holds_only_without_untagged_usage_is_unverified(self) -> None:
+        turn = turn_usage([Usage(input_tokens=100)], [Usage(input_tokens=999_999)])
+
+        check = check_budget(Budget(max_input_tokens=150), [turn], "execution")
+
+        assert check.exceeded == []
+        (message,) = check.unverified
+        assert "cannot tell which test" in message
+        assert "the execution keeps to its budget only without it" in message
+
+    def test_q1_a_budget_that_holds_either_way_passes(self) -> None:
+        turn = turn_usage([Usage(input_tokens=100)], [Usage(input_tokens=10)])
+
+        check = check_budget(Budget(max_input_tokens=150), [turn], "turn")
+
+        assert (check.exceeded, check.unverified) == ([], [])
+
+    @pytest.mark.parametrize("stray", [Usage(), Usage(cost=1.0, currency="USD")], ids=repr)
+    def test_q1_untagged_usage_with_nothing_on_the_limit_may_be_over_it(self, stray: Usage) -> None:
+        turn = turn_usage([Usage(input_tokens=100)], [stray])
+
+        check = check_budget(Budget(max_input_tokens=150), [turn], "turn")
+
+        assert check.exceeded == []
+        assert "cannot tell which test" in check.unverified[0]
+
+    def test_q1_a_budget_already_exceeded_stays_exceeded(self) -> None:
+        turn = turn_usage([Usage(input_tokens=200)], [Usage(input_tokens=999_999)])
+
+        check = check_budget(Budget(max_input_tokens=150), [turn], "turn")
+
+        assert check.exceeded == ["the turn used 200 input tokens, over max_input_tokens 150"]
+        assert check.unverified == []
+
+    def test_q1_a_turn_with_only_untagged_usage_cannot_be_checked(self) -> None:
+        turn = turn_usage([], [Usage(input_tokens=999_999)])
+
+        check = check_budget(Budget(max_input_tokens=150), [turn], "turn")
+
+        assert check.exceeded == []
+        assert check.unverified

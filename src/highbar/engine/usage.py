@@ -11,7 +11,7 @@ was exceeded. Known parts under the limit prove nothing, so the check is unverif
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from functools import cache
@@ -25,6 +25,12 @@ NO_USAGE = (
     "the {scope} reported no usage, so its budget cannot be checked; the agent must write "
     "`usage` in its `turn` record before the reply goes out (see the trace contract). If "
     "it does, raise agent.settle_time so the record is read in time"
+)
+
+UNATTRIBUTED_USAGE = (
+    "cannot tell which test spent the usage of a `turn` record with no test context, and "
+    "the {scope} keeps to its budget only without it. A thread the agent starts itself "
+    "needs contextvars.copy_context() to keep the tag"
 )
 
 
@@ -157,7 +163,8 @@ def merged(records: Sequence[Usage]) -> Usage:
 
     One message can have several: the middleware's and one from ``hb.turn()``, or a
     writer that records each step. All of them were spent, so taking one would undercount
-    and a budget could pass on it. A value the records do not agree on becomes unknown.
+    and a budget could pass on it. A value the records do not agree on becomes unknown,
+    and ``records`` keeps what each of them said: the sums and budgets read that.
     """
     if len(records) == 1:
         return records[0]
@@ -174,6 +181,36 @@ def merged(records: Sequence[Usage]) -> Usage:
         cost=float(sum(map(_exact, known), Decimal(0))) if summable else None,
         currency=currency if summable else None,
         llm_calls=_sum(record.llm_calls for record in records),
+        records=tuple(records),
+    )
+
+
+def turn_usage(records: Sequence[Usage], unattributed: Sequence[Usage] = ()) -> Usage | None:
+    """What one message reported. None when no record of it says anything readable.
+
+    A record that could not be read is an empty ``Usage``: alone it is no usage, as for a
+    writer with a `usage` of its own, and next to a readable one it makes the sum unknown.
+    """
+    own = merged(records) if any(record != Usage() for record in records) else None
+    if not unattributed:
+        return own
+    return replace(own or Usage(), unattributed=tuple(unattributed))
+
+
+def _records(usage: Usage | None) -> tuple[Usage, ...]:
+    """What a turn's usage is made of. A sum cannot say what only some of its records knew."""
+    if usage is None:
+        return ()
+    if usage.records:
+        return usage.records
+    return () if usage == Usage() else (usage,)
+
+
+def has_cost(usage: Usage | None) -> bool:
+    """Every record of a turn has a cost and its currency, so all of it can be counted."""
+    records = _records(usage)
+    return bool(records) and all(
+        record.cost is not None and record.currency is not None for record in records
     )
 
 
@@ -195,42 +232,52 @@ def _some(count: int, total: int, what: str) -> str:
     return f"{count} of {total} turn{'' if total == 1 else 's'} {what}"
 
 
+def _lacking(turns: Sequence[Sequence[Usage]], lacks: Callable[[Usage], bool]) -> int:
+    """How many ``turns`` have a record that ``lacks`` something."""
+    return sum(any(lacks(record) for record in records) for records in turns)
+
+
 def add_up(usages: Iterable[Usage | None]) -> UsageTotals | None:
     """What ``usages``, one per turn, add up to. None when no turn reported any.
 
-    An agent that writes no usage owes no warning: nothing says it should, and an old
-    trace has to read as it did. Once one turn reports it, every gap makes the sum partial.
+    Each record of a turn counts on its own: its value may be unknown as a whole, and
+    what its records do know was still spent. An agent that writes no usage owes no
+    warning: nothing says it should, and an old trace has to read as it did. Once one
+    turn reports it, every gap makes the sum partial.
     """
     turns = list(usages)
-    reported = [usage for usage in turns if usage is not None]
-    if not reported:
+    reported = [records for records in map(_records, turns) if records]
+    unattributed = sum(usage is not None and bool(usage.unattributed) for usage in turns)
+    if not reported and not unattributed:
         return None
+    spent = [record for records in reported for record in records]
     costs = add_costs(
         *(
-            {usage.currency: usage.cost}
-            for usage in reported
-            if usage.cost is not None and usage.currency is not None
+            {record.currency: record.cost}
+            for record in spent
+            if record.cost is not None and record.currency is not None
         )
     )
     gaps = (
-        (len(turns) - len(reported), "no usage"),
-        (sum(usage.input_tokens is None for usage in reported), "no input_tokens"),
-        (sum(usage.output_tokens is None for usage in reported), "no output_tokens"),
-        (sum(usage.cost is None for usage in reported), "no cost"),
+        (len(turns) - len(reported), "with no usage"),
+        (_lacking(reported, lambda r: r.input_tokens is None), "with no input_tokens"),
+        (_lacking(reported, lambda r: r.output_tokens is None), "with no output_tokens"),
+        (_lacking(reported, lambda r: r.cost is None), "with no cost"),
         (
-            sum(usage.cost is not None and usage.currency is None for usage in reported),
-            "a cost without a currency, left out of the sum",
+            _lacking(reported, lambda r: r.cost is not None and r.currency is None),
+            "with a cost without a currency, left out of the sum",
         ),
+        (unattributed, "next to usage with no test context, left out of the sum"),
     )
-    warnings = [_some(count, len(turns), f"with {what}") for count, what in gaps if count]
+    warnings = [_some(count, len(turns), what) for count, what in gaps if count]
     if len(costs) > 1:
         warnings.append(f"costs in {', '.join(sorted(costs))}: added per currency, not together")
     return UsageTotals(
         turns=len(turns),
-        input_tokens=_sum(usage.input_tokens for usage in reported),
-        output_tokens=_sum(usage.output_tokens for usage in reported),
-        cached_input_tokens=_sum(usage.cached_input_tokens for usage in reported),
-        llm_calls=_sum(usage.llm_calls for usage in reported),
+        input_tokens=_sum(record.input_tokens for record in spent),
+        output_tokens=_sum(record.output_tokens for record in spent),
+        cached_input_tokens=_sum(record.cached_input_tokens for record in spent),
+        llm_calls=_sum(record.llm_calls for record in spent),
         cost=costs,
         complete=not warnings,
         warnings=tuple(warnings),
@@ -246,7 +293,21 @@ class BudgetCheck:
 
 
 def check_budget(budget: Budget, usages: Sequence[Usage | None], scope: str) -> BudgetCheck:
-    """Hold what ``usages`` add up to against ``budget``. ``scope`` names it in messages."""
+    """Hold what ``usages`` add up to against ``budget``. ``scope`` names it in messages.
+
+    Usage that no context ties to a test counts for none, like a call that has none. A
+    budget that holds only without it is unverified: that usage may be this test's.
+    """
+    check = _held(budget, usages, scope)
+    unattributed = [stray for usage in usages if usage is not None for stray in usage.unattributed]
+    if unattributed and not (check.exceeded or check.unverified):
+        counted = _held(budget, [*usages, *unattributed], scope)
+        if counted.exceeded or counted.unverified:
+            check.unverified.append(UNATTRIBUTED_USAGE.format(scope=scope))
+    return check
+
+
+def _held(budget: Budget, usages: Sequence[Usage | None], scope: str) -> BudgetCheck:
     totals = add_up(usages)
     if totals is None:
         return BudgetCheck(unverified=[NO_USAGE.format(scope=scope)])
@@ -293,7 +354,7 @@ def _check_cost(
         spent = ", ".join(f"{amount(cost)} {currency}" for currency, cost in sorted(over.items()))
         check.exceeded.append(f"the {scope} cost {spent}, over max_cost {amount(limit)}")
         return
-    missing = sum(usage is None or usage.cost is None or usage.currency is None for usage in usages)
+    missing = sum(not has_cost(usage) for usage in usages)
     if missing:
         check.unverified.append(
             f"cannot check max_cost {amount(limit)}: {_some(missing, len(usages), 'without')} "
