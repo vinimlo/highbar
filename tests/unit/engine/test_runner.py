@@ -327,6 +327,7 @@ class TestTestRunner:
         collector.collect.side_effect = [
             TraceFormatError("/tmp/t.jsonl line 2: not valid JSON (Expecting value)"),
             Window(),
+            Window(),  # the read after the last test
         ]
         spec = _make_spec(
             [Test(trigger="one", expect=Expect()), Test(trigger="two", expect=Expect())]

@@ -94,6 +94,8 @@ At least one is required. A value equal to the limit is within it. Where a budge
 
 A test's `budget` replaces `defaults.budget` whole: a limit it leaves out is not taken from the default. A limit on a turn does not take the place of the one on the execution, so a conversation with limits only on its turns still gets `defaults.budget`.
 
+A limit on a turn covers the records read in that turn's window. Records carry no turn id, so a `turn` recorded late lands in the next turn's window and counts against that turn's limit, and one read after the test's last window counts against the last turn's. The limit on the execution counts it either way.
+
 | What happened | Result |
 |---|---|
 | Within every limit. | The budget passes. |

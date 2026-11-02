@@ -91,6 +91,17 @@ def _late(on_time: Usage | None, late: Usage | None) -> Callable[[str, str], Any
     return script
 
 
+def _late_untagged(on_time: Usage, late: Usage) -> Callable[[str, str], Any]:
+    """``_late`` for an agent that tags nothing: no record says which test it belongs to."""
+    sends = itertools.count()
+
+    def script(message: str, test_id: str) -> Window | tuple[Window, Window]:
+        now = Window(turns=[TurnRecord(ts=1.0, usage=on_time)])
+        return (now, Window(turns=[TurnRecord(ts=1.0, usage=late)])) if next(sends) == 0 else now
+
+    return script
+
+
 class _Traced(FileTraceCollector):
     """An agent that writes real JSONL: the whole way from a line to the verdict."""
 
@@ -952,6 +963,49 @@ class TestUntaggedUsage:
         assert summary.tests[0].status is Status.PASSED
         assert summary.warnings == ()
 
+    def test_q8_an_agent_that_tags_nothing_is_told_a_budget_can_miss_a_late_turn(self) -> None:
+        """Its usage goes to the test whose window it falls in, which may not be its own."""
+        tests = [_budgeted(Budget(max_input_tokens=100)), Case(trigger="b", expect=SAYS_OK)]
+        agent = FakeAgent(_late_untagged(_tokens(90), _tokens(90)))
+        reporter = MagicMock()
+
+        summary = _run(tests, agent, reporter=reporter)
+
+        (warning,) = summary.warnings
+        assert "each counts for the test whose window it falls in" in warning
+        assert "out of the budget of the test that spent it" in warning
+        assert "hb.turn(test=" in warning
+        assert reporter.on_warning.call_count == 1
+
+    def test_q8_no_late_turn_is_needed_for_the_warning(self) -> None:
+        def script(message: str, test_id: str) -> Window:
+            return Window(turns=[TurnRecord(ts=1.0, usage=_usd(0.1))])
+
+        (warning,) = _run([PLAIN], FakeAgent(script)).warnings
+
+        assert "each counts for the test whose window it falls in" in warning
+
+    def test_q8_an_unreadable_usage_is_warned_of_too(self, tmp_path: Path) -> None:
+        agent = _Traced(tmp_path / "t.jsonl", _untagged({"input_tokens": "999999"}))
+
+        (warning,) = _run([PLAIN], agent).warnings
+
+        assert "each counts for the test whose window it falls in" in warning
+
+    def test_q8_an_attached_agent_is_not_told_its_usage_counted(self) -> None:
+        """Its usage counts for no test, so that warning would say what did not happen."""
+
+        def script(message: str, test_id: str) -> Window:
+            return Window(turns=[TurnRecord(ts=1.0, usage=_usd(0.1))])
+
+        assert _run([PLAIN], FakeAgent(script), managed=False).warnings == ()
+
+    def test_q8_a_turn_with_no_usage_says_nothing(self) -> None:
+        def script(message: str, test_id: str) -> Window:
+            return Window(turns=[TurnRecord(ts=1.0)])
+
+        assert _run([PLAIN], FakeAgent(script)).warnings == ()
+
 
 class TestUnreadableUsage:
     """Q2: a `usage` highbar cannot read, next to one it can, was spent too."""
@@ -1199,6 +1253,40 @@ class TestLateUsage:
 
         assert summary.stopped is not None
         assert "5.1 USD" in summary.stopped
+
+    def test_q7_the_ceiling_counts_it_when_no_test_observes(self) -> None:
+        """A test that only checks the reply spent it too, and the run still ends over."""
+        agent = FakeAgent(_late(_usd(0.1), _usd(5.0)))
+
+        summary = _run([PLAIN], agent, max_cost=1)
+
+        assert summary.stopped is not None
+        assert "5.1 USD" in summary.stopped
+
+    def test_q7_the_sums_count_it_when_no_test_observes(self) -> None:
+        agent = FakeAgent(_late(_usd(0.1), _usd(5.0)))
+
+        summary = _run([PLAIN], agent)
+
+        assert summary.totals is not None
+        assert summary.totals.cost == {"USD": 5.1}
+
+    def test_q7_the_ceiling_counts_usage_with_no_context_too(self) -> None:
+        def script(message: str, test_id: str) -> tuple[Window, Window]:
+            turn = TurnRecord(ts=1.0, context={"test": test_id}, usage=_usd(0.1))
+            return Window(turns=[turn]), Window(turns=[TurnRecord(ts=1.0, usage=_usd(5.0))])
+
+        summary = _run([PLAIN], FakeAgent(script), max_cost=1)
+
+        assert summary.stopped is not None
+        assert "5.1 USD (5.0 USD of it" in summary.stopped
+
+    def test_q7_a_ceiling_asks_no_hello_of_an_agent_no_test_observes(self) -> None:
+        agent = FakeAgent(_late(_usd(0.1), _usd(5.0)), hello=False)
+
+        summary = _run([PLAIN], agent, max_cost=1)
+
+        assert summary.stopped is not None
 
 
 class TestCeiling:

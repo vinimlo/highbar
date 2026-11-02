@@ -73,6 +73,14 @@ NO_CONTEXT_WARNING = (
     "thread the agent starts itself needs contextvars.copy_context() to keep the tag"
 )
 
+# The same for usage: nothing ties a `turn` to its test, and a budget only sees what fell in.
+NO_CONTEXT_USAGE_WARNING = (
+    "some `turn` records with usage carry {untagged}, so each counts for the test whose window "
+    "it falls in, and one written after the response can land in the next test, out of the "
+    "budget of the test that spent it; {hint}; a thread the agent starts itself needs "
+    "contextvars.copy_context() to keep the tag"
+)
+
 # Next to tagged records, an untagged call counts for no test (PR 14 review I1).
 UNATTRIBUTED_WARNING = (
     "some tool calls carry {untagged}, so they count for no test, and a test whose result "
@@ -464,8 +472,9 @@ class TestRunner:
                         break
                 if self._stopped is not None:
                     break
-            if observes and self._executions:
-                # The last test has no next one whose read would show its late calls.
+            if self._executions:
+                # The last test has no next one whose read would show its late calls, and
+                # one that checks only the reply still spent what a late `turn` reports.
                 time.sleep(self._settle_time)
                 self._read_after_last_test()
                 self._report_late(self._findings)
@@ -1336,6 +1345,8 @@ class TestRunner:
             traces = window.tools
             log.tools = list(traces)
             log.records = self._read_usage(window.turns) if self._managed else []
+            if log.records:
+                self._warn_once(NO_CONTEXT_USAGE_WARNING, execution.correlate)
             errors = self._check(traces, response, expect)
         else:
             self._judge_late(classified.other.tools, current=execution)
