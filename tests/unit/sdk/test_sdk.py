@@ -11,6 +11,7 @@ import logging
 import os
 import threading
 from collections.abc import Iterator
+from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -18,6 +19,7 @@ from typing import Any
 import pytest
 
 from highbar import Highbar
+from highbar.adapters.file_collector import FileTraceCollector
 
 ENV = "HIGHBAR_TRACES_URL"
 
@@ -322,6 +324,41 @@ class TestTurn:
 
         (record,) = _of(traces, "turn")
         assert record["usage"] == usage
+
+    def test_hb31_a_decimal_in_usage_is_written_as_a_number(self, traces: Path) -> None:
+        """Cost is often kept as a Decimal; as text it would read as missing, and the
+        budget on it would end in `error`."""
+        hb = Highbar()
+
+        with hb.turn(test="t1") as turn:
+            turn.usage = {
+                "input_tokens": Decimal("1000"),
+                "cost": Decimal("0.0125"),
+                "currency": "USD",
+            }
+
+        (record,) = _of(traces, "turn")
+        assert record["usage"] == {"input_tokens": 1000, "cost": 0.0125, "currency": "USD"}
+        assert type(record["usage"]["input_tokens"]) is int
+        window = FileTraceCollector(str(traces)).collect(since=0)
+        usage = window.turns[0].usage
+        assert usage is not None
+        assert (usage.input_tokens, usage.cost, usage.currency) == (1000, 0.0125, "USD")
+
+    @pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "sNaN"])
+    def test_hb31_a_decimal_that_is_no_number_does_not_reach_the_agent(
+        self, traces: Path, value: str
+    ) -> None:
+        hb = Highbar()
+
+        with hb.turn(test="t1") as turn:
+            turn.usage = {"cost": Decimal(value), "currency": "USD"}
+
+        (record,) = _of(traces, "turn")
+        window = FileTraceCollector(str(traces)).collect(since=0)
+        assert "cost" in record["usage"]
+        assert window.turns[0].usage is not None
+        assert window.turns[0].usage.cost is None
 
     @pytest.mark.parametrize("usage", [5, "lots", object()], ids=["number", "text", "object"])
     def test_a_usage_that_is_no_mapping_does_not_reach_the_agent(

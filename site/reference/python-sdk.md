@@ -58,7 +58,7 @@ with hb.turn(test=request.headers.get("x-highbar-test"), message=text) as turn:
     turn.usage = {"model": "gpt-4o-mini", "input_tokens": 1000, "output_tokens": 200}
 ```
 
-Marks the handling of one message. Tool calls inside the block carry its context, and a `turn` record is written when the block ends, even if it raises. Set `turn.response` to record the reply, and `turn.usage` to record what the message consumed, with the fields of the [trace contract](/reference/trace-contract#usage-tokens-and-cost). Next to `highbar.asgi.Middleware`, which has no way to know it, `usage` goes in an `hb.turn()` inside the handler, and highbar adds the records of the message up.
+Marks the handling of one message. Tool calls inside the block carry its context, and a `turn` record is written when the block ends, even if it raises. Set `turn.response` to record the reply, and `turn.usage` to record what the message consumed, with the fields of the [trace contract](/reference/trace-contract#usage-tokens-and-cost). A `Decimal` in it is written as a number. Next to `highbar.asgi.Middleware`, which has no way to know it, `usage` goes in an `hb.turn()` inside the handler, and highbar adds the records of the message up.
 
 ## `highbar.asgi.Middleware`
 

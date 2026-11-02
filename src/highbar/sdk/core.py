@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
+from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, TypeVar
 
@@ -35,12 +36,23 @@ def _sdk_version() -> str:
 def _plain(usage: Any) -> Any:
     """``usage`` as a dict: another mapping would be written as its text, and read as nothing.
 
-    This runs in the agent's ``finally``, so a value that is not a mapping goes as it is.
+    A ``Decimal`` is written as a number for the same reason. This runs in the agent's
+    ``finally``, so a value that is not a mapping goes as it is.
     """
     try:
-        return dict(usage)
+        return {key: _number(value) for key, value in dict(usage).items()}
     except Exception:
         return usage
+
+
+def _number(value: Any) -> Any:
+    """A finite ``Decimal`` as an int when whole, a float otherwise; anything else as it is.
+
+    NaN and infinity stay Decimal, written as text and read as missing.
+    """
+    if not isinstance(value, Decimal) or not value.is_finite():
+        return value
+    return int(value) if value == value.to_integral_value() else float(value)
 
 
 class TurnHandle:
