@@ -12,7 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from highbar.adapters.file_collector import FileTraceCollector
+from highbar.adapters.file_collector import FileTraceCollector, TraceFormatError
+from highbar.adapters.http_client import AgentResponseError
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
 from highbar.domain.models import (
@@ -36,6 +37,7 @@ from highbar.domain.models import Test as Case
 from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.placeholders import Values
 from highbar.engine.runner import TestRunner as Runner
+from highbar.engine.session import SessionError
 from tests.unit.engine.fakes import FakeAgent
 
 SAYS_OK = Expect(response=ResponseExpect(matcher={"contains": "ok"}))
@@ -114,6 +116,22 @@ def _untagging(*usages: Usage) -> FakeAgent:
     return FakeAgent(script)
 
 
+class _Failing(FakeAgent):
+    """A ``FakeAgent`` that answers a 500 to the sends in ``failing``, counted from 0."""
+
+    def __init__(self, script: Callable[[str, str], Any], *failing: int) -> None:
+        super().__init__(script)
+        self._sends = itertools.count()
+        self._failing = failing
+        self.failed = False
+
+    def send(self, message: str, *, values: Values) -> str:
+        if next(self._sends) in self._failing:
+            self.failed = True
+            raise AgentResponseError("the agent answered 500: internal error")
+        return super().send(message, values=values)
+
+
 class _Traced(FileTraceCollector):
     """An agent that writes real JSONL: the whole way from a line to the verdict."""
 
@@ -153,6 +171,7 @@ def _runner(
     secrets: Mapping[str, str] | None = None,
     variations: Any = None,
     correlate: Mapping[str, Any] | None = None,
+    session: Any = None,
 ) -> Runner:
     return Runner(
         adapter=MagicMock(),
@@ -168,6 +187,7 @@ def _runner(
         spent_untagged=spent_untagged,
         secrets=secrets,
         correlate=correlate,
+        session=session,
     )
 
 
@@ -1173,6 +1193,222 @@ class TestUntaggedUsage:
             return Window(turns=[TurnRecord(ts=1.0)])
 
         assert _run([PLAIN], FakeAgent(script)).warnings == ()
+
+
+class TestNoWindowRead:
+    """Q9: an execution that read no window did not see what the one before left late, so
+    what comes next is still that one's to answer for."""
+
+    LIMIT = Budget(max_input_tokens=100)
+
+    def _neighbours(self) -> list[Case]:
+        return [_budgeted(self.LIMIT), Case(trigger="b", expect=SAYS_OK)]
+
+    def test_q9_a_failed_send_does_not_hide_late_usage_from_its_budget(self) -> None:
+        agent = _Failing(_late_untagged(_tokens(90), _tokens(90)), 1)
+
+        first, second = _run(self._neighbours(), agent).tests
+
+        assert first.status is Status.ERROR
+        assert "cannot tell which test" in first.errors[0]
+        assert second.status is Status.ERROR
+        assert second.errors == ("the agent answered 500: internal error",)
+
+    def test_q9_min_pass_does_not_turn_it_green(self) -> None:
+        """The run that failed to send is not the run that may be over its budget."""
+        tests = [_budgeted(self.LIMIT, runs=2, min_pass=1)]
+        agent = _Failing(_late_untagged(_tokens(90), _tokens(90)), 1)
+
+        summary = _run(tests, agent)
+
+        (test,) = summary.tests
+        assert test.status is Status.ERROR
+        assert test.counts == Counts(passed=0, failed=0, error=2)
+        assert summary.passed == 0
+
+    def test_q9_late_usage_within_the_limit_changes_nothing(self) -> None:
+        tests = [_budgeted(self.LIMIT, runs=2, min_pass=1)]
+
+        (test,) = _run(tests, _Failing(_late_untagged(_tokens(90), _tokens(5)), 1)).tests
+
+        assert test.status is Status.PASSED
+
+    def test_q9_the_test_after_it_reads_the_late_usage(self) -> None:
+        tests = [*self._neighbours(), Case(trigger="c", expect=SAYS_OK)]
+        agent = _Failing(_late_untagged(_tokens(90), _tokens(90)), 1)
+
+        first, second, third = _run(tests, agent).tests
+
+        assert first.status is Status.ERROR
+        assert "in the next test's window" in first.errors[0]
+        assert second.status is Status.ERROR
+        assert third.status is Status.PASSED
+
+    @pytest.mark.parametrize("readers", [0, 1])
+    def test_q9_more_failed_sends_change_nothing(self, readers: int) -> None:
+        tests = [*self._neighbours(), Case(trigger="c", expect=SAYS_OK)]
+        tests += [Case(trigger="d", expect=SAYS_OK)] * readers
+        agent = _Failing(_late_untagged(_tokens(90), _tokens(90)), 1, 2)
+
+        summary = _run(tests, agent)
+
+        assert summary.tests[0].status is Status.ERROR
+
+    def test_q9_it_holds_next_to_tagged_records(self) -> None:
+        def script(message: str, test_id: str) -> Window:
+            turn = TurnRecord(ts=1.0, context={"test": test_id}, usage=_tokens(90))
+            stray = TurnRecord(ts=1.0, usage=_tokens(90))
+            return Window(turns=[turn, *([stray] if message == "c" else [])])
+
+        tests = [*self._neighbours(), Case(trigger="c", expect=SAYS_OK)]
+
+        first, _, third = _run(tests, _Failing(script, 1)).tests
+
+        assert first.status is Status.ERROR
+        assert third.status is Status.PASSED
+
+    def test_q9_a_session_that_does_not_open_read_nothing(self) -> None:
+        session = MagicMock()
+        session.setup.side_effect = [{}, SessionError("no session")]
+        agent = FakeAgent(_late_untagged(_tokens(90), _tokens(90)))
+
+        first, second = _run(self._neighbours(), agent, session=session).tests
+
+        assert first.status is Status.ERROR
+        assert second.errors == ("no session",)
+
+    def test_q9_a_trigger_that_does_not_resolve_read_nothing(self) -> None:
+        tests = [_budgeted(self.LIMIT), Case(trigger="{{previous.nope}}", expect=SAYS_OK)]
+        agent = FakeAgent(_late_untagged(_tokens(90), _tokens(90)))
+
+        first, second = _run(tests, agent).tests
+
+        assert first.status is Status.ERROR
+        assert second.status is Status.ERROR
+        assert len(agent.sent) == 1
+
+    def test_q9_a_correlation_that_does_not_render_read_nothing(self) -> None:
+        session = MagicMock()
+        session.setup.side_effect = [{"id": "1"}, {}]
+        agent = FakeAgent(_late_untagged(_tokens(90), _tokens(90)))
+        correlate = {"conversation_id": "{{session.id}}"}
+
+        summary = _run(self._neighbours(), agent, session=session, correlate=correlate)
+
+        first, second = summary.tests
+        assert first.status is Status.ERROR
+        assert "agent.correlate" in second.errors[0]
+
+    def test_q9_a_correlation_it_shares_read_nothing(self) -> None:
+        session = MagicMock()
+        session.setup.side_effect = [{"id": "1"}, {"id": "1"}]
+        agent = FakeAgent(_late_untagged(_tokens(90), _tokens(90)))
+        correlate = {"conversation_id": "{{session.id}}"}
+        tests = [_budgeted(self.LIMIT), _budgeted(self.LIMIT)]
+
+        first, second = _run(tests, agent, session=session, correlate=correlate).tests
+
+        assert first.status is Status.ERROR
+        assert "the same as an earlier test's" in second.errors[0]
+
+    def test_q9_the_correlation_of_the_read_is_the_one_that_rendered(self) -> None:
+        """A late `turn` tagged for the first test is its own, not one with no context."""
+        session = MagicMock()
+        session.setup.side_effect = [{"id": "1"}, {}]
+
+        def script(message: str, test_id: str) -> tuple[Window, Window]:
+            turn = TurnRecord(ts=1.0, context={"conversation_id": "1"}, usage=_tokens(90))
+            return Window(turns=[turn]), Window(turns=[turn])
+
+        correlate = {"conversation_id": "{{session.id}}"}
+
+        summary = _run(self._neighbours(), FakeAgent(script), session=session, correlate=correlate)
+
+        first = summary.tests[0]
+        assert first.status is Status.FAILED
+        assert first.totals is not None
+        assert first.totals.input_tokens == 180
+
+    def test_q9_the_sums_say_it_is_missing(self) -> None:
+        def script(message: str, test_id: str) -> tuple[Window, Window]:
+            turn = TurnRecord(ts=1.0, context={"test": test_id}, usage=_tokens(90))
+            return Window(turns=[turn]), Window(turns=[TurnRecord(ts=1.0, usage=_tokens(90))])
+
+        summary = _run(self._neighbours(), _Failing(script, 1))
+
+        first = summary.tests[0]
+        assert first.totals is not None
+        assert first.totals.input_tokens == 90
+        assert first.totals.complete is False
+        assert summary.totals is not None
+        assert summary.totals.complete is False
+
+    def test_q9_a_ceiling_counts_it_once(self) -> None:
+        def script(message: str, test_id: str) -> tuple[Window, Window]:
+            turn = TurnRecord(ts=1.0, context={"test": test_id}, usage=_usd(0.1))
+            return Window(turns=[turn]), Window(turns=[TurnRecord(ts=1.0, usage=_usd(9))])
+
+        tests = [Case(trigger=name, expect=SAYS_OK) for name in "ab"]
+
+        summary = _run(tests, _Failing(script, 1), max_cost=20)
+
+        assert summary.untagged_cost == {"USD": 9.0}
+        assert summary.stopped is None
+        over = _run(tests, _Failing(script, 1), max_cost=9)
+        assert over.stopped is not None
+        assert "the run spent 9.1 USD (9.0 USD of it" in over.stopped
+
+    @pytest.mark.parametrize("readers", [0, 1])
+    def test_q9_it_holds_for_a_late_call(self, readers: int) -> None:
+        """A forbidden call that lost its tag is left for the same test as usage that did."""
+        sends = itertools.count()
+
+        def script(message: str, test_id: str) -> Window | tuple[Window, Window]:
+            turn = TurnRecord(ts=1.0, context={"test": test_id})
+            call = replace(_call("refund", test_id), context={})
+            now = Window(turns=[turn])
+            return (now, Window(tools=[call])) if next(sends) == 0 else now
+
+        guardrail = Case(trigger="a", expect=Expect(forbid=("refund",)))
+        tests = [guardrail, Case(trigger="b", expect=SAYS_OK)]
+        tests += [Case(trigger="c", expect=SAYS_OK)] * readers
+
+        summary = _run(tests, _Failing(script, 1))
+
+        assert summary.tests[0].status is Status.ERROR
+        assert "refund" in summary.tests[0].errors[0]
+
+    def test_q9_a_line_it_cannot_read_after_a_failed_send(self) -> None:
+        """The line may be the late record of the test that read a window, not the failed one."""
+
+        class Broken(_Failing):
+            def collect(self, since: int) -> Window:
+                if self.failed:
+                    raise TraceFormatError("t.jsonl line 3: not valid JSON")
+                return super().collect(since)
+
+        agent = Broken(_late_untagged(_tokens(90), _tokens(90)), 1)
+
+        first, _ = _run(self._neighbours(), agent).tests
+
+        assert first.status is Status.ERROR
+        assert "not valid JSON" in first.errors[0]
+
+    def test_q9_with_nothing_read_at_all_the_run_still_counts_it(self, tmp_path: Path) -> None:
+        """The agent wrote its `turn` and then answered 500: no test can answer for that."""
+
+        class Refusing(_Traced):
+            def send(self, message: str, *, values: Values) -> str:
+                super().send(message, values=values)
+                raise AgentResponseError("the agent answered 500: internal error")
+
+        usage = {"input_tokens": 1, "output_tokens": 1, "cost": 9, "currency": "USD"}
+
+        summary = _run([PLAIN], Refusing(tmp_path / "t.jsonl", _untagged(usage)), max_cost=20)
+
+        assert summary.tests[0].status is Status.ERROR
+        assert summary.untagged_cost == {"USD": 9.0}
+        assert any("no test context" in warning for warning in summary.warnings)
 
 
 class TestUnreadableUsage:

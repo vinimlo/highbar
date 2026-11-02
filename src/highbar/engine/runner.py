@@ -159,6 +159,7 @@ class _Execution:
     errors: list[str] = field(default_factory=list[str])
     turns: list[_TurnLog] = field(default_factory=list[_TurnLog])
     budget: Budget | None = None  # for the sum of its turns
+    read: bool = False  # a window was read for it: a message that failed to send reads none
 
     def close(self, result: TestResult) -> TestResult:
         self.errors, self.duration_ms = list(result.errors), result.duration_ms
@@ -672,8 +673,14 @@ class TestRunner:
                 self._warn(f"{name}: a run now fails{tally}, and the test still passes: {detail}")
         self._findings = []
 
+    def _last_read(self, execution: _Execution | None = None) -> _Execution | None:
+        """The last execution besides ``execution`` whose window was read: what comes next
+        may be its late records. One that read none already ended unverified, and stopping
+        at it would let the test before it pass on records nobody checked it against."""
+        return next((e for e in reversed(self._executions) if e.read and e is not execution), None)
+
     def _read_after_last_test(self) -> None:
-        last = self._executions[-1]
+        last = self._last_read() or self._executions[-1]
         try:
             window = self._collector.collect(since=self._cursor)
         except TraceFormatError as e:
@@ -1356,11 +1363,11 @@ class TestRunner:
             self._cursor = self._collector.checkpoint()
             return unverified(str(e))
         self._cursor = window.end
+        execution.read = True
         self._absorb(window)
 
         classified = classify(window, execution.correlate)
-        earlier = [e for e in self._executions if e is not execution]
-        previous = earlier[-1] if earlier else None
+        previous = self._last_read(execution)
         untagged = classified.unattributed.tools
         if untagged and classified.correlated:
             self._warn_once(UNATTRIBUTED_WARNING, execution.correlate)
