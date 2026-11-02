@@ -64,11 +64,13 @@ When the agent tags some records and not others, typically a call made in a thre
   ! some tool calls carry none of agent.correlate's keys (conversation_id), so they count for no test, and a test whose result they would change is an error; give their context conversation_id (agent.correlate): hb.turn(conversation_id=...) around the handling of each message, or a `context` field from another writer; a thread the agent starts itself needs contextvars.copy_context() to keep the tag
 ```
 
-A `turn` with usage gets the same warning when nothing around it is tagged, and the same fix applies. Its usage counts for the test whose window it falls in, so a `turn` written after the reply can leave the budget of the test that spent it:
+A `turn` with usage gets the same warning when nothing around it is tagged, and the same fix applies. Its usage counts for the test whose window it falls in, but it may have been spent by the test before, so that test is an `error` when its budget holds only without it:
 
 ```text
-  ! some `turn` records with usage carry no test context, so each counts for the test whose window it falls in, and one written after the response can land in the next test, out of the budget of the test that spent it; tag them with the test id: highbar.asgi.Middleware, or hb.turn(test=<the X-Highbar-Test header>); a thread the agent starts itself needs contextvars.copy_context() to keep the tag
+  ! some `turn` records with usage carry no test context, so each counts for the test whose window it falls in, and the test before it, which may have spent it, is an error if its budget holds only without it; tag them with the test id: highbar.asgi.Middleware, or hb.turn(test=<the X-Highbar-Test header>); a thread the agent starts itself needs contextvars.copy_context() to keep the tag
 ```
+
+Nothing has to be late for this: an agent that tags nothing gets that `error` whenever two neighbouring tests, or two runs of a test, together pass the limit. Once its records are tagged, each counts for the test that spent it.
 
 These warnings name the keys of `agent.correlate`. See [connecting your agent](/guides/connecting-your-agent#tag-each-message-with-its-test).
 

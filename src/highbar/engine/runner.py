@@ -73,11 +73,19 @@ NO_CONTEXT_WARNING = (
     "thread the agent starts itself needs contextvars.copy_context() to keep the tag"
 )
 
-# The same for usage: nothing ties a `turn` to its test, and a budget only sees what fell in.
+# The same for usage: nothing ties a `turn` to its test, so the test before answers for it too.
 NO_CONTEXT_USAGE_WARNING = (
     "some `turn` records with usage carry {untagged}, so each counts for the test whose window "
-    "it falls in, and one written after the response can land in the next test, out of the "
-    "budget of the test that spent it; {hint}; a thread the agent starts itself needs "
+    "it falls in, and the test before it, which may have spent it, is an error if its budget "
+    "holds only without it; {hint}; a thread the agent starts itself needs "
+    "contextvars.copy_context() to keep the tag"
+)
+
+# What that test says. Nothing needs to be late: tests that pass a limit together are enough.
+NO_CONTEXT_USAGE_ERROR = (
+    "cannot tell which test spent the usage read in the next test's window: its `turn` records "
+    "carry {untagged}, and this test keeps to its budget only without it; {hint}, and each "
+    "counts for the test that spent it; a thread the agent starts itself needs "
     "contextvars.copy_context() to keep the tag"
 )
 
@@ -115,11 +123,17 @@ class _TurnLog:
     late: list[Trace] = field(default_factory=list[Trace])
     records: list[Usage] = field(default_factory=list[Usage])  # the usage of its `turn` records
     untagged: list[Usage] = field(default_factory=list[Usage])  # read next to it, no context
+    suspected: list[Usage] = field(default_factory=list[Usage])  # counted for the next test
     budget: Budget | None = None
 
     @property
     def usage(self) -> Usage | None:
         return turn_usage(self.records, self.untagged)
+
+    @property
+    def budgeted(self) -> Usage | None:
+        """``usage``, and what its budgets answer for: ``suspected`` is in no sum of this turn."""
+        return turn_usage(self.records, [*self.untagged, *self.suspected])
 
 
 @dataclass
@@ -754,10 +768,10 @@ class TestRunner:
     def _budgets_of(self, execution: _Execution) -> BudgetCheck:
         """The limits of ``execution`` against what is known of its usage now."""
         last = execution.turns[-1]
-        turn = self._budget_check(last.budget, last.usage)
+        turn = self._budget_check(last.budget, last.budgeted)
         if execution.budget is None:
             return turn
-        usages = [log.usage for log in execution.turns]
+        usages = [log.budgeted for log in execution.turns]
         whole = check_budget(execution.budget, usages, "execution")
         return BudgetCheck([*turn.exceeded, *whole.exceeded], [*turn.unverified, *whole.unverified])
 
@@ -798,6 +812,23 @@ class TestRunner:
         if execution.passed and check.unverified:
             execution.passed = False
             self._findings.append(_Finding(execution, Status.ERROR, "; ".join(check.unverified)))
+
+    def _suspect_window(
+        self, execution: _Execution | None, usage: list[Usage], correlate: Mapping[Any, Any]
+    ) -> None:
+        """With nothing tagged, ``usage`` counts where it was read, and may still be the late
+        usage of ``execution``: if a budget of it holds only without that, the test is
+        unverified, as it is when no test follows it. Its sums and the ceiling stay as they
+        are, which already count that usage."""
+        if not usage or execution is None or not execution.passed or not execution.turns:
+            return
+        execution.turns[-1].suspected.extend(usage)
+        if self._budgets_of(execution).unverified:
+            execution.passed = False
+            message = NO_CONTEXT_USAGE_ERROR.format(
+                untagged=_untagged(correlate), hint=_tag_hint(correlate)
+            )
+            self._findings.append(_Finding(execution, Status.ERROR, message))
 
     def _not_observed(self, classified: Classified, correlate: dict[str, Any]) -> str:
         records = [*classified.other.tools, *classified.other.turns]
@@ -1328,6 +1359,8 @@ class TestRunner:
         self._absorb(window)
 
         classified = classify(window, execution.correlate)
+        earlier = [e for e in self._executions if e is not execution]
+        previous = earlier[-1] if earlier else None
         untagged = classified.unattributed.tools
         if untagged and classified.correlated:
             self._warn_once(UNATTRIBUTED_WARNING, execution.correlate)
@@ -1336,6 +1369,8 @@ class TestRunner:
             self._warn_once(NO_CONTEXT_WARNING, execution.correlate)
 
         if not classified.correlated:
+            stray = self._read_usage(window.turns)
+            self._suspect_window(previous, stray, execution.correlate)
             if observes and not self._managed:
                 # Attach mode: the agent may serve other traffic, and there is no
                 # `hello` from a fresh file to rely on.
@@ -1344,15 +1379,13 @@ class TestRunner:
             # agent may be serving others, and their tokens are not this test's.
             traces = window.tools
             log.tools = list(traces)
-            log.records = self._read_usage(window.turns) if self._managed else []
+            log.records = stray if self._managed else []
             if log.records:
                 self._warn_once(NO_CONTEXT_USAGE_WARNING, execution.correlate)
             errors = self._check(traces, response, expect)
         else:
             self._judge_late(classified.other.tools, current=execution)
             self._judge_late_usage(classified.other.turns, current=execution)
-            earlier = [e for e in self._executions if e is not execution]
-            previous = earlier[-1] if earlier else None
             self._suspect(previous, untagged)
             log.untagged = self._read_usage(classified.unattributed.turns)
             self._suspect_usage(previous, log.untagged, execution.correlate)

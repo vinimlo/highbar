@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -102,6 +103,17 @@ def _late_untagged(on_time: Usage, late: Usage) -> Callable[[str, str], Any]:
     return script
 
 
+def _untagging(*usages: Usage) -> FakeAgent:
+    """``_reporting`` for an agent that tags nothing."""
+    sent = itertools.count()
+
+    def script(message: str, test_id: str) -> Window:
+        usage = usages[min(next(sent), len(usages) - 1)]
+        return Window(turns=[TurnRecord(ts=1.0, usage=usage)])
+
+    return FakeAgent(script)
+
+
 class _Traced(FileTraceCollector):
     """An agent that writes real JSONL: the whole way from a line to the verdict."""
 
@@ -140,6 +152,7 @@ def _runner(
     spent_untagged: Mapping[str, float] | None = None,
     secrets: Mapping[str, str] | None = None,
     variations: Any = None,
+    correlate: Mapping[str, Any] | None = None,
 ) -> Runner:
     return Runner(
         adapter=MagicMock(),
@@ -154,6 +167,7 @@ def _runner(
         spent=spent,
         spent_untagged=spent_untagged,
         secrets=secrets,
+        correlate=correlate,
     )
 
 
@@ -963,19 +977,173 @@ class TestUntaggedUsage:
         assert summary.tests[0].status is Status.PASSED
         assert summary.warnings == ()
 
-    def test_q8_an_agent_that_tags_nothing_is_told_a_budget_can_miss_a_late_turn(self) -> None:
+    def test_q8_an_agent_that_tags_nothing_is_told_the_test_before_answers_for_it(self) -> None:
         """Its usage goes to the test whose window it falls in, which may not be its own."""
         tests = [_budgeted(Budget(max_input_tokens=100)), Case(trigger="b", expect=SAYS_OK)]
         agent = FakeAgent(_late_untagged(_tokens(90), _tokens(90)))
-        reporter = MagicMock()
 
-        summary = _run(tests, agent, reporter=reporter)
+        summary = _run(tests, agent)
 
-        (warning,) = summary.warnings
-        assert "each counts for the test whose window it falls in" in warning
-        assert "out of the budget of the test that spent it" in warning
+        (warning,) = [w for w in summary.warnings if "the test whose window it falls in" in w]
+        assert "is an error if its budget holds only without it" in warning
         assert "hb.turn(test=" in warning
-        assert reporter.on_warning.call_count == 1
+
+    @pytest.mark.parametrize("followed", [False, True])
+    def test_q8_a_late_turn_gives_one_result_wherever_the_test_runs(self, followed: bool) -> None:
+        """Last or followed by another, a green on one side would depend on the order."""
+        tests = [_budgeted(Budget(max_input_tokens=100))]
+        tests += [Case(trigger="b", expect=SAYS_OK)] if followed else []
+
+        summary = _run(tests, FakeAgent(_late_untagged(_tokens(90), _tokens(90))))
+
+        assert summary.tests[0].status is Status.ERROR
+
+    def test_q8_neighbours_over_a_limit_together_need_nothing_late(self, tmp_path: Path) -> None:
+        """The accepted cost of tagging nothing, so the message says how to get out of it."""
+        agent = _Traced(tmp_path / "t.jsonl", _untagged({"input_tokens": 60}))
+        tests = [_budgeted(Budget(max_input_tokens=100)), Case(trigger="b", expect=SAYS_OK)]
+
+        first, second = _run(tests, agent).tests
+
+        assert first.status is Status.ERROR
+        (error,) = first.errors
+        assert "cannot tell which test spent the usage read in the next test's window" in error
+        assert "carry no test context" in error
+        assert "hb.turn(test=<the X-Highbar-Test header>), and each counts" in error
+        assert second.status is Status.PASSED
+
+    def test_q8_neighbours_within_the_limit_pass(self) -> None:
+        tests = [_budgeted(Budget(max_input_tokens=100)), Case(trigger="b", expect=SAYS_OK)]
+
+        summary = _run(tests, _untagging(_tokens(50)))
+
+        assert [test.status for test in summary.tests] == [Status.PASSED, Status.PASSED]
+
+    def test_q8_the_message_names_the_keys_of_agent_correlate(self) -> None:
+        tests = [_budgeted(Budget(max_input_tokens=100)), Case(trigger="b", expect=SAYS_OK)]
+        correlate = {"conversation_id": "{{test.id}}"}
+
+        first, _ = _run(tests, _untagging(_tokens(60)), correlate=correlate).tests
+
+        assert first.status is Status.ERROR
+        assert "none of agent.correlate's keys (conversation_id)" in first.errors[0]
+        assert "hb.turn(conversation_id=...)" in first.errors[0]
+
+    def test_q8_the_sums_stay_where_the_usage_was_read(self) -> None:
+        """It counts for the test that read it, and the suspicion adds nothing to the other."""
+        tests = [_budgeted(Budget(max_cost=1)), Case(trigger="b", expect=SAYS_OK)]
+
+        summary = _run(tests, _untagging(_usd(0.6)))
+
+        first, second = summary.tests
+        assert first.status is Status.ERROR
+        assert first.totals is not None
+        assert first.totals.cost == {"USD": 0.6}
+        assert first.totals.complete is True
+        assert second.totals is not None
+        assert second.totals.cost == {"USD": 0.6}
+        assert summary.totals is not None
+        assert summary.totals.cost == {"USD": 1.2}
+        assert summary.totals.complete is True
+        assert summary.untagged_cost == {}
+
+    def test_q8_a_ceiling_counts_that_usage_once(self) -> None:
+        tests = [_budgeted(Budget(max_cost=1)), Case(trigger="b", expect=SAYS_OK)]
+
+        within = _run(tests, _untagging(_usd(0.6)), max_cost=1.3)
+        over = _run(tests, _untagging(_usd(0.6)), max_cost=1.1)
+
+        assert within.stopped is None
+        assert over.stopped is not None
+        assert "the run spent 1.2 USD by the end of" in over.stopped
+
+    def test_q8_a_failure_stays_a_failure(self) -> None:
+        tests = [_budgeted(Budget(max_input_tokens=100)), Case(trigger="b", expect=SAYS_OK)]
+
+        first, _ = _run(tests, _untagging(_tokens(200))).tests
+
+        assert first.status is Status.FAILED
+
+    def test_q8_a_test_with_no_budget_answers_for_nothing(self) -> None:
+        tests = [Case(trigger=name, expect=SAYS_OK) for name in "ab"]
+
+        summary = _run(tests, _untagging(_tokens(999_999)))
+
+        assert [test.status for test in summary.tests] == [Status.PASSED, Status.PASSED]
+
+    def test_q8_it_holds_for_a_limit_on_a_turn(self) -> None:
+        limit = Expect(budget=Budget(max_input_tokens=100))
+        tests = [Case(turns=[Turn(trigger="a", expect=limit)]), Case(trigger="b", expect=SAYS_OK)]
+
+        first, _ = _run(tests, _untagging(_tokens(60))).tests
+
+        assert first.status is Status.ERROR
+
+    def test_q8_a_conversation_after_it_counts_whole(self) -> None:
+        """Neither of its turns is enough alone: together, the two tests are over the limit."""
+        turns = [Turn(trigger=name, expect=SAYS_OK) for name in "bc"]
+        tests = [_budgeted(Budget(max_input_tokens=100)), Case(turns=turns)]
+
+        first, _ = _run(tests, _untagging(_tokens(60), _tokens(30))).tests
+
+        assert first.status is Status.ERROR
+
+    def test_q8_it_adds_to_what_was_read_next_to_tagged_records(self) -> None:
+        """The next test's first window has no tag, and its second has one, next to a stray."""
+        sends = itertools.count()
+
+        def script(message: str, test_id: str) -> Window:
+            sent = next(sends)
+            tagged = TurnRecord(ts=1.0, context={"test": test_id})
+            stray = TurnRecord(ts=1.0, usage=_tokens(30))
+            if sent == 0:
+                return Window(turns=[replace(tagged, usage=_tokens(60))])
+            return Window(turns=[stray] if sent == 1 else [tagged, stray])
+
+        turns = [Turn(trigger=name, expect=SAYS_OK) for name in "bc"]
+        tests = [_budgeted(Budget(max_input_tokens=100)), Case(turns=turns)]
+
+        first, _ = _run(tests, FakeAgent(script)).tests
+
+        assert first.status is Status.ERROR
+
+    def test_q8_the_runs_of_a_test_are_neighbours(self) -> None:
+        tests = [_budgeted(Budget(max_input_tokens=100), runs=2)]
+
+        (test,) = _run(tests, _untagging(_tokens(60))).tests
+
+        assert test.status is Status.ERROR
+        assert "(run 1 of 2)" in test.errors[0]
+
+    def test_q8_min_pass_absorbs_a_run_left_unverified(self) -> None:
+        tests = [_budgeted(Budget(max_input_tokens=100), runs=2, min_pass=1)]
+
+        (test,) = _run(tests, _untagging(_tokens(60))).tests
+
+        assert test.status is Status.PASSED
+
+    @pytest.mark.parametrize(
+        ("second", "status"),
+        [
+            (Case(trigger="b", expect=SAYS_OK), Status.PASSED),
+            (_budgeted(Budget(max_input_tokens=100)), Status.ERROR),
+        ],
+    )
+    def test_q8_an_attached_agent_answers_for_it_too(self, second: Case, status: Status) -> None:
+        """Its window counts for no test, and a late `turn` that lost its tag can sit there."""
+        sends = itertools.count()
+
+        def script(message: str, test_id: str) -> Window:
+            context = {} if next(sends) else {"test": test_id}
+            return Window(turns=[TurnRecord(ts=1.0, context=context, usage=_tokens(60))])
+
+        tests = [_budgeted(Budget(max_input_tokens=100)), second]
+
+        first, other = _run(tests, FakeAgent(script), managed=False).tests
+
+        assert first.status is Status.ERROR
+        assert "hb.turn(test=" in first.errors[0]
+        assert other.status is status
 
     def test_q8_no_late_turn_is_needed_for_the_warning(self) -> None:
         def script(message: str, test_id: str) -> Window:
