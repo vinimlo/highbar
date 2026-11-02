@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import signal
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
@@ -24,6 +25,7 @@ from highbar.engine.run_spec import load_session_hooks, run_spec
 from highbar.engine.runs import check_runs
 from highbar.engine.schema import SpecError
 from highbar.engine.session import SessionError, SessionHooks
+from highbar.engine.usage import add_costs, add_up
 from highbar.reporters.json_report import JsonReport, ReportError
 from highbar.reporters.terminal import format_summary
 from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
@@ -34,6 +36,7 @@ from highbar.variations.generator import VariationError, VariationGenerator
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_UNRUNNABLE = 2
+EXIT_BUDGET_EXCEEDED = 3  # --max-cost stopped the run: the tests left say nothing either way
 EXIT_INTERRUPTED = 130  # the shell's code for a run stopped by Ctrl-C (128 + SIGINT)
 EXIT_SIGNALED = 128  # plus the signal's number
 
@@ -79,6 +82,7 @@ def _total(summaries: list[RunSummary]) -> RunSummary:
         errored=sum(s.errored for s in summaries),
         duration_ms=sum(s.duration_ms for s in summaries),
         variations=sum(s.variations for s in summaries),
+        totals=add_up(usage for s in summaries for test in s.tests for usage in test.usages),
     )
 
 
@@ -121,12 +125,23 @@ def run(
             "message, and written on every way out of the run."
         ),
     ),
+    max_cost: float | None = typer.Option(
+        None,
+        "--max-cost",
+        metavar="AMOUNT",
+        help=(
+            "Stop the run at the end of the test in progress once its costs add up to more "
+            f"than AMOUNT, in the currency they came in. Exits with {EXIT_BUDGET_EXCEEDED}."
+        ),
+    ),
 ) -> None:
     """Run behavior tests against your agent."""
     paths = _discover_specs(spec_path)
     report = _open_report(report_to, paths)
     try:
-        code = _run_all(paths, report, runs=runs, frozen=frozen, keep_traces=keep_traces)
+        code = _run_all(
+            paths, report, runs=runs, frozen=frozen, keep_traces=keep_traces, max_cost=max_cost
+        )
     except KeyboardInterrupt:
         # Anywhere in the run, parsing and hooks included. If an agent was up, the
         # runner's finally has already stopped its process group.
@@ -208,6 +223,7 @@ def _run_all(
     runs: int | None,
     frozen: bool,
     keep_traces: bool,
+    max_cost: float | None = None,
 ) -> int:
     """Run every spec and return the exit code.
 
@@ -218,6 +234,11 @@ def _run_all(
     if runs is not None and runs < 1:
         console.print("[red]--runs must be at least 1.[/red]")
         return _stopped(report, "usage_error", "--runs must be at least 1.", EXIT_UNRUNNABLE)
+
+    if max_cost is not None and not 0 <= max_cost < math.inf:
+        message = "--max-cost must be a number of at least 0."
+        console.print(f"[red]{message}[/red]")
+        return _stopped(report, "usage_error", message, EXIT_UNRUNNABLE)
 
     if not paths:
         console.print("[red]No spec files found.[/red]")
@@ -258,8 +279,14 @@ def _run_all(
                         session=hooks[current],
                         default_runs=runs,
                         on_end=partial(report.add, current, spec) if report else None,
+                        max_cost=max_cost,
+                        spent=_spent(summaries),
+                        spent_untagged=_spent_untagged(summaries),
                     )
                 )
+                # The ceiling is the whole run's, so the specs left do not start either.
+                if summaries[-1].stopped is not None:
+                    break
     except AgentStartError as e:
         # The next specs are not run: an agent that cannot start is not a test result,
         # and a second agent on the same machine usually fails the same way.
@@ -278,8 +305,25 @@ def _run_all(
     if len(summaries) > 1:
         console.print(f"  Total: {format_summary(total, styled=True)}\n")
 
+    # Before the tests' verdict: a run that was cut short is not a verdict on the agent.
+    stopped = summaries[-1].stopped if summaries else None
+    if stopped is not None:
+        console.print(f"  [red]✗[/red] {escape(stopped)}", soft_wrap=True)
+        return _stopped(report, "budget_exceeded", stopped, EXIT_BUDGET_EXCEEDED)
+
     # An error is not a pass: a run where a test could not be checked is not green.
     return EXIT_FAILED if total.failed or total.errored else EXIT_OK
+
+
+def _spent(summaries: list[RunSummary]) -> dict[str, float]:
+    """What the specs that finished spent, per currency, as --max-cost counts it."""
+    totals = _total(summaries).totals
+    return add_costs(totals.cost if totals is not None else {}, _spent_untagged(summaries))
+
+
+def _spent_untagged(summaries: list[RunSummary]) -> dict[str, float]:
+    """The part of that with no test context, which no total shows."""
+    return add_costs(*(summary.untagged_cost for summary in summaries))
 
 
 @app.command()

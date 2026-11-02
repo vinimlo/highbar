@@ -7,7 +7,7 @@ The trace file is how an agent tells highbar what it did. The Python SDK writes 
 - One JSON object per line (JSON Lines), UTF-8, each line ending in a newline.
 - The agent appends; highbar reads from where it stopped last time. At the start of a run it also scans the file once, for the tools declared since the last `hello`. A line not yet ended by a newline is left for the next read, so a writer may be in the middle of one.
 - A file that becomes smaller than where highbar stopped was recreated (a restarted agent, a rotated log), and is read from the start.
-- A line that is not valid JSON, a `tool` record without `fn`, or `args` or `context` that are not objects, is an error for the test that read it, naming the line. It is never skipped: it may be the call the test is about. A timestamp that is not a number falls back to `ts`.
+- A line that is not valid JSON, a `tool` record without `fn`, or `args` or `context` that are not objects, is an error for the test that read it, naming the line. It is never skipped: it may be the call the test is about. It may also be the late usage of the test before, so that test is an error too if it passed and has a budget; read after the last test, it makes that test an error if it passed, budget or not. The other lines read with it still count: their usage is in the sums, in `--max-cost` and in budgets, and their late or untagged records count as they would in any read. A timestamp that is not a number falls back to `ts`.
 
 ## Common fields
 
@@ -46,12 +46,48 @@ A call that failed has its `error`, even when the tool returned the failure as d
 |---|---|---|
 | `message` | string | Optional: the message the agent received. |
 | `response` | string | Optional: what it answered. |
+| `usage` | object | Optional: what handling the message consumed. See below. |
 
 A `turn` record is the proof that the agent handled a message. Against an attached agent, a test that checks tool calls needs a record of its own, `turn` or `tool`: without one, "no tool was called" could just mean "the agent never saw this message". Write it at the end of the handling, before the reply goes out, and write it even when the handling fails.
 
 ```json
 {"v": 1, "type": "turn", "ts": 1792983750.216, "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
 ```
+
+### `usage`: tokens and cost
+
+`usage` is what the report adds up, and what a [`budget`](/reference/spec-format#budget) checks. It is optional, and so is every field in it: a writer without it works as before, and older versions of highbar ignore it. The contract stays at v1.
+
+| Field | Type | |
+|---|---|---|
+| `model` | string | The model that answered, such as `gpt-4o-mini`. Looked up in the price table when `cost` is missing. |
+| `provider` | string | Who served it, such as `openai`. Tells apart a model name that several providers use. |
+| `input_tokens` | integer | The whole input, **cached tokens included**. |
+| `output_tokens` | integer | |
+| `cached_input_tokens` | integer | How many of `input_tokens` came from a cache. |
+| `cost` | number | What the message cost. |
+| `currency` | string | The currency of `cost`, such as `USD`. Compared without regard to case. |
+| `llm_calls` | integer | How many model calls the message took. |
+
+```json
+{"v": 1, "type": "turn", "ts": 1792983750.216, "context": {"test": "9784235d06704e5da37c3230a9e99b34"}, "usage": {"model": "gpt-4o-mini", "provider": "openai", "input_tokens": 1000, "output_tokens": 200, "cached_input_tokens": 800, "cost": 0.00021, "currency": "USD", "llm_calls": 2}}
+```
+
+::: warning The input includes the cached tokens
+Not every provider counts them that way. OpenAI's `prompt_tokens` already includes `cached_tokens`, but Anthropic's `input_tokens` leaves out `cache_read_input_tokens` and `cache_creation_input_tokens`: add them up before writing the field, or `max_input_tokens` will pass on a context bigger than it allows.
+:::
+
+A value that cannot be read counts as missing, and the line is still read: a `usage` that is not an object, a negative count, text where a number goes, `NaN`. So does `input_tokens` below `cached_input_tokens`, which contradicts the table above: highbar warns and works out no cost from that record. A budget on a missing value is an `error`, never a pass.
+
+When several `turn` records of one message have `usage`, such as `highbar.asgi.Middleware` next to `hb.turn()`, they are added up, because all of it was spent. A value they disagree on, like the model, is unknown in the turn's `usage` in the report; the sums and budgets read each record, so a value one of them knows is never lost. A `usage` that cannot be read at all, next to one that can, counts as a record with nothing known. A `turn` without `usage`, or with an empty one like `null` or `{}`, counts for nothing.
+
+A `turn` with `usage` but no test context, next to records that have one, counts for no test, as an untagged tool call does. It is left out of the sums, which say `complete: false`, and a test whose budget holds only without it is an `error`. The one thing that counts it is `--max-cost`, and only for an agent highbar started, as the [CLI reference](/reference/cli#max-cost) explains. A `hb.turn()` in a thread the agent starts itself needs `contextvars.copy_context()` to keep the tag.
+
+When no record of a window has a test context, an agent highbar started gets its `turn` counted for the test whose window it falls in, and highbar warns once. That usage may have been spent by the test before, so a test whose budget holds only without the usage of the next test's windows is an `error`, whether or not anything was late, and with an attached agent too. A test that had no window read, because its message failed to send or its session did not open, is passed over: the test before it answers instead. The sums and `--max-cost` count that usage once, where it was read. Tagging the records removes the doubt.
+
+A `cost` from the writer always stands. Without one, highbar works it out from `src/highbar/engine/prices.json`, a table of list prices in USD per token, in the format of [OpenRouter's model list](https://openrouter.ai/api/v1/models). The price of cached tokens applies to `cached_input_tokens`. It needs `model`, `input_tokens` and `output_tokens`; it uses the table's currency, whatever `currency` says; and it finds the model by its exact name, ignoring case and with `.` the same as `-`, so a dated snapshot like `gpt-4o-2024-05-13` is not its alias. A model without a price leaves the cost missing, with a warning. `provider` is required when two providers in the table use the name. An agent on prices of its own, or on a model outside the table, writes `cost` and `currency`.
+
+Write `turn` before the reply goes out. A `turn` with `usage` recorded after its test's window closed still counts for that test, like a late tool call: it goes in the sums, and the test's budget is checked again, so a run within it can now fail. Raise `agent.settle_time` if that happens.
 
 ## `hello`: the writer started
 
@@ -125,12 +161,12 @@ def tool(fn, args, *, result=None, error=None, started_at, test=None) -> None:
     _write({"type": "tool", **record, "started_at": started_at, "ended_at": time.time()}, test)
 
 
-def turn(test: str | None) -> None:
+def turn(test: str | None, usage: dict | None = None) -> None:
     """One message handled: before the reply goes out, also when the handling failed."""
-    _write({"type": "turn"}, test)
+    _write({"type": "turn", "usage": usage}, test)
 ```
 
-The agent calls `hello(TOOLS)` before it listens, with the tools it records, `tool()` for each call, and `turn()` for each message, with the `X-Highbar-Test` header it received.
+The agent calls `hello(TOOLS)` before it listens, with the tools it records, `tool()` for each call, and `turn()` for each message, with the `X-Highbar-Test` header it received and the message's `usage`.
 
 ## Version 0
 

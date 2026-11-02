@@ -12,6 +12,7 @@ import os
 import threading
 from collections.abc import Iterator
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -283,6 +284,55 @@ class TestTurn:
 
         (tool,) = _of(traces, "tool")
         assert tool["context"] == {"test": "t1", "conversation_id": 9}
+
+    def test_ac2_a_turn_carries_the_usage_set_on_it(self, traces: Path) -> None:
+        hb = Highbar()
+        usage = {"model": "gpt-4o-mini", "input_tokens": 1000, "output_tokens": 200}
+
+        with hb.turn(test="t1") as turn:
+            turn.usage = usage
+
+        (record,) = _of(traces, "turn")
+        assert record["usage"] == usage
+
+    def test_ac1_a_turn_without_usage_has_no_such_field(self, traces: Path) -> None:
+        hb = Highbar()
+
+        with hb.turn(test="t1"):
+            pass
+
+        (record,) = _of(traces, "turn")
+        assert "usage" not in record
+
+    def test_a_usage_that_cannot_be_written_does_not_reach_the_agent(self, traces: Path) -> None:
+        hb = Highbar()
+
+        with hb.turn(test="t1") as turn:
+            turn.usage = {"cost": object()}
+
+        (record,) = _of(traces, "turn")
+        assert "object" in record["usage"]["cost"]
+
+    def test_a_mapping_that_is_not_a_dict_is_written_as_an_object(self, traces: Path) -> None:
+        hb = Highbar()
+        usage = {"input_tokens": 5, "output_tokens": 1}
+
+        with hb.turn(test="t1") as turn:
+            turn.usage = MappingProxyType(usage)
+
+        (record,) = _of(traces, "turn")
+        assert record["usage"] == usage
+
+    @pytest.mark.parametrize("usage", [5, "lots", object()], ids=["number", "text", "object"])
+    def test_a_usage_that_is_no_mapping_does_not_reach_the_agent(
+        self, traces: Path, usage: Any
+    ) -> None:
+        hb = Highbar()
+
+        with hb.turn(test="t1") as turn:
+            turn.usage = usage
+
+        assert "usage" in _of(traces, "turn")[0]
 
     def test_turn_is_written_even_when_the_handler_raises(self, traces: Path) -> None:
         hb = Highbar()

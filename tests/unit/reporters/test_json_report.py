@@ -16,6 +16,7 @@ import pytest
 
 from highbar.domain.models import (
     AgentConfig,
+    Budget,
     Counts,
     ExecutionOutcome,
     PhrasingOutcome,
@@ -23,11 +24,14 @@ from highbar.domain.models import (
     Spec,
     Status,
     Suite,
+    SuiteOutcome,
     ToolOutcome,
     TurnOutcome,
+    Usage,
 )
 from highbar.domain.models import Test as Case
 from highbar.domain.models import TestOutcome as Outcome
+from highbar.engine.usage import add_up, merged, turn_usage
 from highbar.reporters.json_report import JsonReport, ReportError
 
 STARTED = "2026-10-30T11:49:00.120Z"
@@ -356,6 +360,182 @@ class TestBody:
         report.finish(1)
 
         assert _read(workdir / "report.json")["stopped"]["message"] == "ValueError: bad ${TOKEN}"
+
+
+USAGE = Usage(
+    model="gpt-4o-mini",
+    provider="openai",
+    input_tokens=1000,
+    output_tokens=200,
+    cached_input_tokens=800,
+    cost=0.00021,
+    currency="USD",
+    llm_calls=2,
+)
+
+
+def _spending(*usages: Usage | None) -> RunSummary:
+    """One test of one execution with a turn per usage, summed at every level."""
+    totals = add_up(usages)
+    turns = tuple(
+        TurnOutcome("olá", "oi", 5.5, {"test": "abc"}, usage=usage, budget=Budget(max_cost=0.5))
+        for usage in usages
+    )
+    execution = ExecutionOutcome("abc", 1, STARTED, Status.PASSED, 6.0, (), turns, totals)
+    phrasing = PhrasingOutcome("conversation", None, Status.PASSED, Counts(1), (execution,))
+    test = Outcome(
+        id="S/olá",
+        suite="S",
+        name="olá",
+        definition_sha256="ab" * 32,
+        status=Status.PASSED,
+        runs=1,
+        min_pass=1,
+        counts=Counts(1),
+        duration_ms=7.0,
+        phrasings=(phrasing,),
+        budget=Budget(max_input_tokens=2000),
+        totals=totals,
+    )
+    return RunSummary(
+        total=1,
+        passed=1,
+        failed=0,
+        errored=0,
+        duration_ms=7.0,
+        tests=(test,),
+        totals=totals,
+        suites=(SuiteOutcome("S", totals),),
+    )
+
+
+class TestUsage:
+    def test_ac2_each_turn_shows_every_field_and_the_closed_schema_names_them(
+        self, workdir: Path
+    ) -> None:
+        data = _finished(workdir / "r.json", _spec_file(workdir), _spending(USAGE))
+
+        jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+        (turn,) = data["specs"][0]["tests"][0]["phrasings"][0]["executions"][0]["turns"]
+        assert turn["usage"] == {
+            "model": "gpt-4o-mini",
+            "provider": "openai",
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "cached_input_tokens": 800,
+            "cost": 0.00021,
+            "currency": "USD",
+            "llm_calls": 2,
+        }
+        assert turn["budget"] == {"max_input_tokens": None, "max_cost": 0.5}
+
+    def test_ac4_every_level_has_its_sum(self, workdir: Path) -> None:
+        data = _finished(workdir / "r.json", _spec_file(workdir), _spending(USAGE, USAGE))
+
+        expected = {
+            "turns": 2,
+            "input_tokens": 2000,
+            "output_tokens": 400,
+            "cached_input_tokens": 1600,
+            "llm_calls": 4,
+            "cost": {"USD": 0.00042},
+            "complete": True,
+            "warnings": [],
+        }
+        (spec,) = data["specs"]
+        (test,) = spec["tests"]
+        assert data["totals"] == expected
+        assert spec["totals"] == expected
+        assert spec["suites"] == [{"name": "S", "totals": expected}]
+        assert test["totals"] == expected
+        assert test["phrasings"][0]["executions"][0]["totals"] == expected
+        assert test["budget"] == {"max_input_tokens": 2000, "max_cost": None}
+
+    def test_ac4_the_run_adds_up_its_specs(self, workdir: Path) -> None:
+        first, second = _spec_file(workdir, "a.highbar.yaml"), _spec_file(workdir, "b.highbar.yaml")
+        report = JsonReport(workdir / "r.json", version="1.2.3")
+        report.start()
+        report.add(first, SPEC, _spending(USAGE), True)
+        report.add(second, SPEC, _spending(USAGE), True)
+        report.finish(0)
+
+        data = _read(workdir / "r.json")
+
+        assert data["totals"]["input_tokens"] == 2000
+        assert data["totals"]["cost"] == {"USD": 0.00042}
+        assert [spec["totals"]["input_tokens"] for spec in data["specs"]] == [1000, 1000]
+
+    def test_ac5_a_partial_sum_is_marked_in_the_file(self, workdir: Path) -> None:
+        euro = Usage(input_tokens=1, output_tokens=1, cost=1.5, currency="EUR")
+
+        data = _finished(workdir / "r.json", _spec_file(workdir), _spending(USAGE, euro, None))
+
+        jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+        totals = data["totals"]
+        assert totals["cost"] == {"USD": 0.00021, "EUR": 1.5}
+        assert totals["complete"] is False
+        assert "1 of 3 turns with no usage" in totals["warnings"]
+
+    def test_q3_a_turn_of_several_records_fits_the_closed_schema(self, workdir: Path) -> None:
+        euro = Usage(cost=1.5, currency="EUR")
+        turn = turn_usage([USAGE, euro], [USAGE])
+
+        data = _finished(workdir / "r.json", _spec_file(workdir), _spending(turn))
+
+        jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+        (shown,) = data["specs"][0]["tests"][0]["phrasings"][0]["executions"][0]["turns"]
+        assert (shown["usage"]["cost"], shown["usage"]["currency"]) == (None, None)
+        assert data["totals"]["cost"] == {"USD": 0.00021, "EUR": 1.5}
+        assert "1 of 1 turn next to usage with no test context" in " ".join(
+            data["totals"]["warnings"]
+        )
+
+    def test_a_tools_own_records_key_stays_in_the_file(self, workdir: Path) -> None:
+        """What leaves the file is a field of a usage, not a key of what the agent sent."""
+        test = _test(args={"records": [1], "unattributed": 2})
+
+        data = _finished(workdir / "r.json", _spec_file(workdir), _summary(test))
+
+        execution = data["specs"][0]["tests"][0]["phrasings"][0]["executions"][0]
+        assert execution["turns"][0]["tools"][0]["args"] == {"records": [1], "unattributed": 2}
+
+    def test_merged_is_the_sum_the_file_shows(self, workdir: Path) -> None:
+        turn = merged([USAGE, USAGE])
+
+        data = _finished(workdir / "r.json", _spec_file(workdir), _spending(turn))
+
+        assert data["totals"]["input_tokens"] == 2000
+        (shown,) = data["specs"][0]["tests"][0]["phrasings"][0]["executions"][0]["turns"]
+        assert shown["usage"]["input_tokens"] == 2000
+
+    def test_ac1_a_report_without_usage_has_null_totals(self, workdir: Path) -> None:
+        data = _finished(workdir / "r.json", _spec_file(workdir), _summary(_test()))
+
+        jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+        assert data["totals"] is None
+        assert data["specs"][0]["totals"] is None
+
+    def test_an_unfinished_report_has_no_totals_yet(self, workdir: Path) -> None:
+        path = workdir / "r.json"
+        JsonReport(path, version="1.2.3").start()
+
+        assert _read(path)["totals"] is None
+
+    def test_ac12_budget_exceeded_is_a_reason_the_schema_knows(self, workdir: Path) -> None:
+        spec_path = _spec_file(workdir)
+        report = JsonReport(workdir / "r.json", version="1.2.3")
+        report.start()
+        report.plan([(spec_path, SPEC)])
+        report.add(spec_path, SPEC, _spending(USAGE), False)
+        report.stop("budget_exceeded", "--max-cost 0.0001: the run spent 0.00021 USD")
+        report.finish(3)
+
+        data = _read(workdir / "r.json")
+
+        jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+        assert data["stopped"]["reason"] == "budget_exceeded"
+        assert (data["exit_code"], data["complete"]) == (3, False)
+        assert data["totals"]["cost"] == {"USD": 0.00021}
 
 
 class TestGit:

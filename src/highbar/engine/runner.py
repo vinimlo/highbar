@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -14,6 +14,7 @@ from highbar.adapters.http_client import AgentResponseError, HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
 from highbar.assertions.response import truncate
 from highbar.domain.models import (
+    Budget,
     Counts,
     ExecutionOutcome,
     Expect,
@@ -22,6 +23,7 @@ from highbar.domain.models import (
     Spec,
     Status,
     Suite,
+    SuiteOutcome,
     Test,
     TestOutcome,
     TestResult,
@@ -29,6 +31,8 @@ from highbar.domain.models import (
     Trace,
     Turn,
     TurnOutcome,
+    TurnRecord,
+    Usage,
     Window,
     combine,
     iso_utc,
@@ -50,6 +54,17 @@ from highbar.engine.runs import phrasing_status, resolve_runs
 from highbar.engine.secrets import redact, redact_value
 from highbar.engine.session import SessionContext, SessionError, SessionHooks
 from highbar.engine.templates import TemplateError, resolve_template
+from highbar.engine.usage import (
+    BudgetCheck,
+    add_costs,
+    add_up,
+    amount,
+    check_budget,
+    has_cost,
+    over_limit,
+    priced,
+    turn_usage,
+)
 
 # A window with no tagged record: its untagged calls are all there is, and count.
 NO_CONTEXT_WARNING = (
@@ -58,11 +73,40 @@ NO_CONTEXT_WARNING = (
     "thread the agent starts itself needs contextvars.copy_context() to keep the tag"
 )
 
+# The same for usage: nothing ties a `turn` to its test, so the test before answers for it too.
+NO_CONTEXT_USAGE_WARNING = (
+    "some `turn` records with usage carry {untagged}, so each counts for the test whose window "
+    "it falls in, and the test before it, which may have spent it, is an error if its budget "
+    "holds only without it; {hint}; a thread the agent starts itself needs "
+    "contextvars.copy_context() to keep the tag"
+)
+
+# What that test says. Nothing needs to be late: tests that pass a limit together are enough.
+NO_CONTEXT_USAGE_ERROR = (
+    "cannot tell which test spent the usage read in the next test's window: its `turn` records "
+    "carry {untagged}, and this test keeps to its budget only without it; {hint}, and each "
+    "counts for the test that spent it; a thread the agent starts itself needs "
+    "contextvars.copy_context() to keep the tag"
+)
+
+# A line read after a test's window that cannot be read may be that test's late usage.
+UNREADABLE_USAGE_ERROR = (
+    "{error}; written after this test's window, that line may be this test's usage, so its "
+    "budget cannot be verified"
+)
+
 # Next to tagged records, an untagged call counts for no test (PR 14 review I1).
 UNATTRIBUTED_WARNING = (
     "some tool calls carry {untagged}, so they count for no test, and a test whose result "
     "they would change is an error; {hint}; a thread the agent starts itself needs "
     "contextvars.copy_context() to keep the tag"
+)
+
+# The same for usage: a `turn` that lost its context is in no sum, and no budget passes on it.
+UNATTRIBUTED_USAGE_WARNING = (
+    "some `turn` records with usage carry {untagged}, so they count for no test and the sums "
+    "are incomplete, and a test whose budget they would change is an error; {hint}; a thread "
+    "the agent starts itself needs contextvars.copy_context() to keep the tag"
 )
 
 UNDECLARED_WARNING = (
@@ -83,6 +127,19 @@ class _TurnLog:
     response_ms: float | None = None
     tools: list[Trace] = field(default_factory=list[Trace])
     late: list[Trace] = field(default_factory=list[Trace])
+    records: list[Usage] = field(default_factory=list[Usage])  # the usage of its `turn` records
+    untagged: list[Usage] = field(default_factory=list[Usage])  # read next to it, no context
+    suspected: list[Usage] = field(default_factory=list[Usage])  # counted for the next test
+    budget: Budget | None = None
+
+    @property
+    def usage(self) -> Usage | None:
+        return turn_usage(self.records, self.untagged)
+
+    @property
+    def budgeted(self) -> Usage | None:
+        """``usage``, and what its budgets answer for: ``suspected`` is in no sum of this turn."""
+        return turn_usage(self.records, [*self.untagged, *self.suspected])
 
 
 @dataclass
@@ -107,6 +164,8 @@ class _Execution:
     duration_ms: float = 0.0
     errors: list[str] = field(default_factory=list[str])
     turns: list[_TurnLog] = field(default_factory=list[_TurnLog])
+    budget: Budget | None = None  # for the sum of its turns
+    read: bool = False  # a window was read for it: a message that failed to send reads none
 
     def close(self, result: TestResult) -> TestResult:
         self.errors, self.duration_ms = list(result.errors), result.duration_ms
@@ -154,6 +213,15 @@ class _Masking:
             error=redact_value(trace.error, self._secrets),
             context=redact_value(trace.context, self._secrets),
         )
+
+
+def _cost_of(usages: Iterable[Usage | None]) -> dict[str, float]:
+    totals = add_up(usages)
+    return totals.cost if totals is not None else {}
+
+
+def _amounts(costs: Mapping[str, float]) -> str:
+    return ", ".join(f"{amount(cost)} {name}" for name, cost in sorted(costs.items()))
 
 
 def _same_correlation(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
@@ -259,6 +327,15 @@ def _counts(statuses: list[Status]) -> Counts:
     )
 
 
+def _suites(tests: tuple[TestOutcome, ...]) -> tuple[SuiteOutcome, ...]:
+    """The sums of each suite that ran. A test's key starts with its suite's name, so two
+    suites with one name are one suite in a report."""
+    usages: dict[str, list[Usage | None]] = {}
+    for test in tests:
+        usages.setdefault(test.suite, []).extend(test.usages)
+    return tuple(SuiteOutcome(name, add_up(turns)) for name, turns in usages.items())
+
+
 def _test_name(test: Test, variations_run: int | None = None) -> str:
     """Display name. ``variations_run`` is how many paraphrases were actually executed.
 
@@ -309,6 +386,9 @@ class TestRunner:
         correlate: Mapping[str, Any] | None = None,
         secrets: Mapping[str, str] | None = None,
         default_runs: int = 1,
+        max_cost: float | None = None,
+        spent: Mapping[str, float] | None = None,
+        spent_untagged: Mapping[str, float] | None = None,
     ) -> None:
         self._adapter = adapter
         self._client = client
@@ -327,6 +407,16 @@ class TestRunner:
         self._default_runs = default_runs
         # The spec's defaults.min_pass, set by run(): the value check_runs checked.
         self._default_min_pass: int | float | None = None
+        self._default_budget: Budget | None = None
+        # The run's ceiling (--max-cost), what earlier specs of the run already spent, the
+        # part of that with no test context, and why this one stopped because of it.
+        self._max_cost = max_cost
+        self._spent: Mapping[str, float] = spent or {}
+        self._spent_untagged: Mapping[str, float] = spent_untagged or {}
+        self._stopped: str | None = None
+        # What a managed agent spent with no test context, each record once: the turns have
+        # it twice, on the one it was read in and on the one it may be the late usage of.
+        self._strays: list[Usage] = []
         self._last_variation_count: int | None = None
         self._warned: set[str] = set()
         # The tools the agent declared it records (None until it declares any), and the
@@ -349,11 +439,16 @@ class TestRunner:
     def run(self, spec: Spec) -> RunSummary:
         """Run all suites in the spec."""
         self._default_min_pass = spec.default_min_pass
+        self._default_budget = spec.default_budget
+        self._stopped = None
+        self._strays = []
         self._warned = set()
         self._inventory, self._seen, self._undeclared = None, set(), {}
         self._executions, self._findings, self._test_index = [], [], 0
         self._gates, self._reported, self._warnings = {}, {}, []
-        observes = any(test.requires_observation for suite in spec.suites for test in suite.tests)
+        observes = spec.default_budget is not None or any(
+            test.requires_observation for suite in spec.suites for test in suite.tests
+        )
         self._run_start = time.time()
 
         self._adapter.start()
@@ -393,12 +488,22 @@ class TestRunner:
                     self._reporter.on_test_result(name, result)
                     self._report_late(self._findings)
                     self._test_index += 1
-            if observes and self._executions:
-                # The last test has no next one whose read would show its late calls.
+                    self._check_ceiling(name)
+                    if self._stopped is not None:
+                        break
+                if self._stopped is not None:
+                    break
+            if self._executions:
+                # The last test has no next one whose read would show its late calls, and
+                # one that checks only the reply still spent what a late `turn` reports.
                 time.sleep(self._settle_time)
                 self._read_after_last_test()
                 self._report_late(self._findings)
+                # That read can add to what the run spent: it may have ended over its ceiling.
+                if self._stopped is None:
+                    self._check_ceiling(self._reported[self._test_index - 1].name)
             self._warn_undeclared()
+            self._warn_unmetered()
         finally:
             self._adapter.stop()
             self._settle()
@@ -425,7 +530,26 @@ class TestRunner:
             variations=sum(p.kind == "variation" for test in tests for p in test.phrasings),
             tests=tests,
             warnings=tuple(redact(message, self._secrets) for message in self._warnings),
+            totals=add_up(usage for test in tests for usage in test.usages),
+            suites=_suites(tests),
+            stopped=self._mask(self._stopped),
+            untagged_cost=_cost_of(self._masked_parts(stray) for stray in self._strays),
         )
+
+    def _budget_of(self, test: Test) -> Budget | None:
+        """What one execution of ``test`` may spend: its own budget replaces the default."""
+        own = test.expect.budget if test.expect is not None else None
+        return own if own is not None else self._default_budget
+
+    def _measured(self, test: Test) -> Test:
+        """``test`` as it was checked: a budget from defaults.budget counts as written in it.
+
+        It changes what counts as right, so it belongs in ``definition_sha256``.
+        """
+        budget = self._budget_of(test)
+        if budget is None:
+            return test
+        return replace(test, expect=replace(test.expect or Expect(), budget=budget))
 
     def _outcome(self, index: int, reported: _Reported) -> TestOutcome:
         test, gate = reported.test, self._gates.get(index)
@@ -450,11 +574,11 @@ class TestRunner:
                     executions=tuple(executions),
                 )
             )
-        return TestOutcome(
+        outcome = TestOutcome(
             id=self._mask(stable_key(reported.suite, test)),
             suite=self._mask(reported.suite),
             name=self._mask(test.plain_name),
-            definition_sha256=test.definition_sha256,
+            definition_sha256=self._measured(test).definition_sha256,
             status=gate.status if gate else reported.status,
             runs=runs,
             min_pass=min_pass,
@@ -462,9 +586,26 @@ class TestRunner:
             duration_ms=reported.duration_ms,
             errors=self._mask(tuple(reported.errors)),
             phrasings=tuple(phrasings),
+            budget=self._budget_of(test),
         )
+        return replace(outcome, totals=add_up(outcome.usages))
 
     def _execution_outcome(self, execution: _Execution, status: Status) -> ExecutionOutcome:
+        turns = tuple(
+            TurnOutcome(
+                trigger=self._mask(turn.trigger),
+                response=self._mask(turn.response),
+                response_ms=turn.response_ms,
+                correlate=self._mask(turn.correlate),
+                tools=(
+                    *(self._tool_outcome(tool, late=False) for tool in turn.tools),
+                    *(self._tool_outcome(tool, late=True) for tool in turn.late),
+                ),
+                usage=self._masked_usage(turn.usage),
+                budget=turn.budget,
+            )
+            for turn in execution.turns
+        )
         return ExecutionOutcome(
             execution_id=execution.execution_id,
             run=execution.run + 1,
@@ -472,19 +613,8 @@ class TestRunner:
             status=status,
             duration_ms=execution.duration_ms,
             errors=self._mask(tuple(execution.errors)),
-            turns=tuple(
-                TurnOutcome(
-                    trigger=self._mask(turn.trigger),
-                    response=self._mask(turn.response),
-                    response_ms=turn.response_ms,
-                    correlate=self._mask(turn.correlate),
-                    tools=(
-                        *(self._tool_outcome(tool, late=False) for tool in turn.tools),
-                        *(self._tool_outcome(tool, late=True) for tool in turn.late),
-                    ),
-                )
-                for turn in execution.turns
-            ),
+            turns=turns,
+            totals=add_up(turn.usage for turn in turns),
         )
 
     def _tool_outcome(self, tool: Trace, *, late: bool) -> ToolOutcome:
@@ -494,6 +624,20 @@ class TestRunner:
             error=self._mask(tool.error),
             duration_ms=tool.duration_ms,
             late=late,
+        )
+
+    def _masked_usage(self, usage: Usage | None) -> Usage | None:
+        return None if usage is None else self._masked_parts(usage)
+
+    def _masked_parts(self, usage: Usage) -> Usage:
+        """The agent's text masked. The counts stay numbers: they are what a reader adds."""
+        return replace(
+            usage,
+            model=self._mask(usage.model),
+            provider=self._mask(usage.provider),
+            currency=self._mask(usage.currency),
+            records=tuple(self._masked_parts(record) for record in usage.records),
+            unattributed=tuple(self._masked_parts(stray) for stray in usage.unattributed),
         )
 
     def _mask(self, value: Any) -> Any:
@@ -535,19 +679,45 @@ class TestRunner:
                 self._warn(f"{name}: a run now fails{tally}, and the test still passes: {detail}")
         self._findings = []
 
-    def _read_after_last_test(self) -> None:
-        last = self._executions[-1]
+    def _last_read(self, execution: _Execution | None = None) -> _Execution | None:
+        """The last execution besides ``execution`` whose window was read: what comes next
+        may be its late records. One that read none already ended unverified, and stopping
+        at it would let the test before it pass on records nobody checked it against."""
+        return next((e for e in reversed(self._executions) if e.read and e is not execution), None)
+
+    def _read(self) -> tuple[Window, str | None]:
+        """The records written since the cursor, and why a line among them cannot be read.
+
+        The readable ones count as any others do. A collector that read none of them
+        leaves the next read to start after the line, or every read from here would stop
+        on it.
+        """
         try:
-            window = self._collector.collect(since=self._cursor)
+            return self._collector.collect(since=self._cursor), None
         except TraceFormatError as e:
-            if last.passed:
-                self._findings.append(_Finding(last, Status.ERROR, str(e)))
-            return
+            if e.window is not None:
+                return e.window, str(e)
+            return Window(end=self._collector.checkpoint()), str(e)
+
+    def _read_after_last_test(self) -> None:
+        last = self._last_read() or self._executions[-1]
+        window, unreadable = self._read()
         self._cursor = window.end
         self._absorb(window)
         untagged = self._untagged(window.tools, last)
         self._judge_late([t for t in window.tools if t not in untagged], current=None)
         self._suspect(last, untagged)
+        stray = [
+            turn
+            for turn in window.turns
+            if attribute(turn.context, last.correlate) is Attribution.UNATTRIBUTED
+        ]
+        self._judge_late_usage([t for t in window.turns if t not in stray], current=None)
+        self._suspect_usage(last, self._read_usage(stray), last.correlate)
+        if unreadable is not None and last.passed:
+            # No test comes after the last one: the line may be its late call or usage.
+            last.passed = False
+            self._findings.append(_Finding(last, Status.ERROR, unreadable))
 
     def _untagged(self, tools: list[Trace], execution: _Execution) -> list[Trace]:
         return [
@@ -556,16 +726,22 @@ class TestRunner:
             if attribute(t.context, execution.correlate) is Attribution.UNATTRIBUTED
         ]
 
+    def _owner(self, context: Mapping[str, Any], current: _Execution | None) -> _Execution | None:
+        """The earlier execution a late record's context names, if any."""
+        for execution in reversed(self._executions):
+            if execution is current:
+                continue
+            if attribute(context, execution.correlate) is Attribution.MINE:
+                return execution
+        return None
+
     def _judge_late(self, tools: list[Trace], current: _Execution | None) -> None:
         """Calls tagged with an earlier execution count for it, though its window closed."""
         late: dict[int, tuple[_Execution, list[Trace]]] = {}
         for tool in tools:
-            for execution in reversed(self._executions):
-                if execution is current:
-                    continue
-                if attribute(tool.context, execution.correlate) is Attribution.MINE:
-                    late.setdefault(id(execution), (execution, []))[1].append(tool)
-                    break
+            owner = self._owner(tool.context, current)
+            if owner is not None:
+                late.setdefault(id(owner), (owner, []))[1].append(tool)
         for execution, calls in late.values():
             was_passing = execution.passed and execution.expect is not None
             execution.tools = [*execution.tools, *calls]
@@ -586,6 +762,45 @@ class TestRunner:
                     )
                 )
 
+    def _judge_late_usage(self, turns: list[TurnRecord], current: _Execution | None) -> None:
+        """Usage tagged with an earlier execution counts for it too, and its budgets hold again."""
+        changed: dict[int, _Execution] = {}
+        for turn in turns:
+            owner = self._owner(turn.context, current)
+            if owner is None or not owner.turns:
+                # Tagged for no test of the run: a managed agent's spend is still this run's.
+                if self._managed:
+                    self._strays.extend(self._read_usage([turn]))
+                continue
+            records = self._read_usage([turn])
+            if records:
+                owner.turns[-1].records.extend(records)
+                changed[id(owner)] = owner
+        for execution in changed.values():
+            check = self._budgets_of(execution)
+            problems = [*check.exceeded, *check.unverified]
+            if execution.passed and problems:
+                execution.passed = False
+                self._findings.append(
+                    _Finding(
+                        execution,
+                        Status.FAILED if check.exceeded else Status.ERROR,
+                        "a `turn` with usage was recorded after the test's window closed "
+                        f"(settle_time {self._settle_time * 1000:.0f} ms): "
+                        f"{'; '.join(problems)}. Raise agent.settle_time to read it in time",
+                    )
+                )
+
+    def _budgets_of(self, execution: _Execution) -> BudgetCheck:
+        """The limits of ``execution`` against what is known of its usage now."""
+        last = execution.turns[-1]
+        turn = self._budget_check(last.budget, last.budgeted)
+        if execution.budget is None:
+            return turn
+        usages = [log.budgeted for log in execution.turns]
+        whole = check_budget(execution.budget, usages, "execution")
+        return BudgetCheck([*turn.exceeded, *whole.exceeded], [*turn.unverified, *whole.unverified])
+
     def _suspect(self, execution: _Execution | None, untagged: list[Trace]) -> None:
         """An untagged call may be the late call of ``execution``: if it would fail it,
         that test is unverified."""
@@ -604,6 +819,54 @@ class TestRunner:
                     "contextvars.copy_context() to keep the tag",
                 )
             )
+
+    def _suspect_usage(
+        self, execution: _Execution | None, stray: list[Usage], correlate: Mapping[Any, Any]
+    ) -> None:
+        """Untagged usage may be the late usage of ``execution``: if a budget of it holds
+        only without that, the test is unverified."""
+        if not stray:
+            return
+        # An attached agent may be serving others, so its cost stays out of the ceiling.
+        if self._managed:
+            self._strays.extend(stray)
+        self._warn_once(UNATTRIBUTED_USAGE_WARNING, correlate)
+        if execution is None or not execution.turns:
+            return
+        execution.turns[-1].untagged.extend(stray)
+        check = self._budgets_of(execution)
+        if execution.passed and check.unverified:
+            execution.passed = False
+            self._findings.append(_Finding(execution, Status.ERROR, "; ".join(check.unverified)))
+
+    def _suspect_window(
+        self, execution: _Execution | None, usage: list[Usage], correlate: Mapping[Any, Any]
+    ) -> None:
+        """With nothing tagged, ``usage`` counts where it was read, and may still be the late
+        usage of ``execution``: if a budget of it holds only without that, the test is
+        unverified, as it is when no test follows it. Its sums and the ceiling stay as they
+        are, which already count that usage."""
+        if not usage or execution is None or not execution.passed or not execution.turns:
+            return
+        execution.turns[-1].suspected.extend(usage)
+        if self._budgets_of(execution).unverified:
+            execution.passed = False
+            message = NO_CONTEXT_USAGE_ERROR.format(
+                untagged=_untagged(correlate), hint=_tag_hint(correlate)
+            )
+            self._findings.append(_Finding(execution, Status.ERROR, message))
+
+    def _suspect_unreadable(self, execution: _Execution | None, error: str) -> None:
+        """A line that cannot be read, after the window of ``execution``, may be its late
+        usage: if it passed and has a budget, that budget is unverified. A test with no
+        budget is left alone, so the line errs the test before only where usage can."""
+        if execution is None or not execution.passed or not execution.turns:
+            return
+        if execution.budget is None and execution.turns[-1].budget is None:
+            return
+        execution.passed = False
+        message = UNREADABLE_USAGE_ERROR.format(error=error)
+        self._findings.append(_Finding(execution, Status.ERROR, message))
 
     def _not_observed(self, classified: Classified, correlate: dict[str, Any]) -> str:
         records = [*classified.other.tools, *classified.other.turns]
@@ -736,6 +999,81 @@ class TestRunner:
         self._warned.add(template)
         self._warn(template.format(untagged=_untagged(correlate), hint=_tag_hint(correlate)))
 
+    def _costs(self) -> dict[str, float]:
+        """What --max-cost counts, per currency: earlier specs included, and what a managed
+        agent spent with no test context, which is in no total."""
+        return add_costs(self._spent, _cost_of(self._usages()), _cost_of(self._strays))
+
+    def _usages(self) -> list[Usage | None]:
+        return [turn.usage for execution in self._executions for turn in execution.turns]
+
+    def _check_ceiling(self, last_test: str) -> None:
+        """At the end of a test: over --max-cost, the run stops here.
+
+        A currency's sum is held against the ceiling on its own, as a budget's is: a run
+        that spends in two currencies must still have one.
+        """
+        if self._max_cost is None:
+            return
+        over = over_limit(self._costs(), self._max_cost)
+        if over:
+            self._stopped = (
+                f"--max-cost {amount(self._max_cost)}: the run spent {_amounts(over)}"
+                f"{self._untagged_share(over)} by the end of '{last_test}', so it stopped "
+                "there; raise the ceiling to run the rest"
+            )
+
+    def _untagged_share(self, over: Mapping[str, float]) -> str:
+        """How much of ``over`` had no test context: why the totals show less than that."""
+        costs = add_costs(self._spent_untagged, _cost_of(self._strays))
+        shares = {name: cost for name, cost in costs.items() if name in over and cost}
+        return f" ({_amounts(shares)} of it with no test context, in no total)" if shares else ""
+
+    def _unmetered(self, usage: Usage | None) -> bool:
+        """--max-cost could not count all of a turn: its own cost, or usage next to it."""
+        if usage is None or not has_cost(usage):
+            return True
+        strays = usage.unattributed
+        return any(not has_cost(stray) for stray in strays) if self._managed else bool(strays)
+
+    def _warn_unmetered(self) -> None:
+        """A ceiling that cannot see a cost could be passed in silence."""
+        if self._max_cost is None:
+            return
+        usages = self._usages()
+        missing = sum(self._unmetered(usage) for usage in usages)
+        if missing:
+            context = "no test context and no cost" if self._managed else "no test context"
+            self._warn(
+                f"--max-cost {amount(self._max_cost)} counted only the costs it knows: "
+                f"{missing} of {len(usages)} turns are missing a cost and currency, or have "
+                f"usage next to them with {context}, so the run may have spent more"
+            )
+        elif any(not has_cost(stray) for stray in self._strays):
+            self._warn(
+                f"--max-cost {amount(self._max_cost)} counted only the costs it knows: usage "
+                "tagged for no test of the run has no cost, so the run may have spent more"
+            )
+
+    def _priced(self, usage: Usage) -> Usage:
+        result, warning = priced(usage)
+        if warning is not None and warning not in self._warned:
+            self._warned.add(warning)
+            self._warn(warning)
+        return result
+
+    def _read_usage(self, turns: list[TurnRecord]) -> list[Usage]:
+        """The usage of each of ``turns`` that has any, priced. Unreadable, nothing is known."""
+        return [
+            Usage() if turn.usage is None else self._priced(turn.usage)
+            for turn in turns
+            if turn.usage is not None or turn.usage_unreadable
+        ]
+
+    def _budget_check(self, budget: Budget | None, usage: Usage | None) -> BudgetCheck:
+        """The turn's own limit, against the turn's own usage."""
+        return BudgetCheck() if budget is None else check_budget(budget, [usage], "turn")
+
     def _missing_file(self) -> str:
         """An attached agent's trace file is not there: no test could see a call (FR3).
 
@@ -780,6 +1118,7 @@ class TestRunner:
         start = time.time()
         name = test.plain_name
         runs, min_pass = resolve_runs(test, self._default_runs, self._default_min_pass)
+        budget = self._budget_of(test)
 
         kinds: list[tuple[str, str | None]] = [("conversation", None)]
         if test.turns:
@@ -787,6 +1126,8 @@ class TestRunner:
         else:
             if test.trigger is None or test.expect is None:
                 raise ValueError("Single-turn test must have both 'trigger' and 'expect'")
+            # The test's budget is its execution's, checked once, on the sum of its turns.
+            expect = replace(test.expect, budget=None)
             triggers = [test.trigger]
             if test.variations:
                 paraphrases = self._paraphrases(test.trigger, test.variations)
@@ -809,7 +1150,7 @@ class TestRunner:
                     f'[{"trigger" if index == 0 else "variation"}: "{phrasing}"] '
                     if test.variations
                     else "",
-                    [Turn(trigger=phrasing, expect=test.expect)],
+                    [Turn(trigger=phrasing, expect=expect)],
                 )
                 for index, phrasing in enumerate(triggers)
             ]
@@ -833,6 +1174,7 @@ class TestRunner:
                     label=label,
                     phrasing=index,
                     run=run,
+                    budget=budget,
                 )
                 for run in range(runs)
             ]
@@ -886,6 +1228,7 @@ class TestRunner:
         label: str = "",
         phrasing: int = 0,
         run: int = 0,
+        budget: Budget | None = None,
     ) -> TestResult:
         """One execution of a test: one test id and one session, shared by all its turns.
 
@@ -904,6 +1247,7 @@ class TestRunner:
             run=run,
             started_at=start,
             execution_id=context.test_id,
+            budget=budget,
         )
         self._executions.append(execution)
         session: dict[str, Any] = {}
@@ -961,6 +1305,19 @@ class TestRunner:
             if not result.passed:
                 break
 
+        if execution.budget is not None:
+            usages = [turn.usage for turn in execution.turns]
+            check = check_budget(execution.budget, usages, "execution")
+            all_errors.extend(check.exceeded)
+            if check.exceeded:
+                statuses.append(Status.FAILED)
+            elif check.unverified and all(status is Status.PASSED for status in statuses):
+                # Next to a turn that ended otherwise, it would only repeat the cause: a
+                # conversation that stopped early has no usage for the turns it skipped.
+                all_errors.extend(check.unverified)
+                statuses.append(Status.ERROR)
+            execution.passed = execution.passed and not (check.exceeded or check.unverified)
+
         duration = (time.time() - start) * 1000
         return TestResult(
             status=combine(statuses),
@@ -980,8 +1337,10 @@ class TestRunner:
     ) -> TestResult:
         """Send one message, read what the agent recorded for it, and check it."""
         execution.passed = False
-        log = _TurnLog(trigger=trigger)
+        log = _TurnLog(trigger=trigger, budget=expect.budget)
         execution.turns.append(log)
+        # A budget on the whole execution reads the usage of each turn, whatever it expects.
+        observes = expect.requires_observation or execution.budget is not None
 
         def unverified(error: str) -> TestResult:
             duration = (time.time() - start) * 1000
@@ -1002,7 +1361,7 @@ class TestRunner:
         except PlaceholderError as e:
             return unverified(f"agent.correlate: {e}")
         log.correlate = dict(execution.correlate)
-        if expect.requires_observation and any(
+        if observes and any(
             other is not execution and _same_correlation(other.correlate, execution.correlate)
             for other in self._executions
         ):
@@ -1027,42 +1386,74 @@ class TestRunner:
         log.response, log.response_ms = response, (time.time() - sent_at) * 1000
 
         time.sleep(self._settle_time)
-        try:
-            window = self._collector.collect(since=self._cursor)
-        except TraceFormatError as e:
-            # A line that cannot be read may be the call this test is about. The next
-            # test starts after it, or every test from here on would stop on it.
-            self._cursor = self._collector.checkpoint()
-            return unverified(str(e))
+        window, unreadable = self._read()
         self._cursor = window.end
+        execution.read = True
         self._absorb(window)
+        previous = self._last_read(execution)
+        result = self._verdict(
+            window, response, expect, execution, log, previous, start, observes=observes
+        )
+        if unreadable is None:
+            return result
+        # What could be read counted as it does in any window. The line itself may be
+        # the call this test is about, or the late usage of the test before it.
+        execution.passed = False
+        self._suspect_unreadable(previous, unreadable)
+        return replace(result, status=Status.ERROR, errors=[unreadable])
+
+    def _verdict(
+        self,
+        window: Window,
+        response: str,
+        expect: Expect,
+        execution: _Execution,
+        log: _TurnLog,
+        previous: _Execution | None,
+        start: float,
+        *,
+        observes: bool,
+    ) -> TestResult:
+        """What ``window`` says of this turn: its records counted, and it checked against them."""
+
+        def unverified(error: str) -> TestResult:
+            duration = (time.time() - start) * 1000
+            return TestResult(status=Status.ERROR, errors=[error], duration_ms=duration)
 
         classified = classify(window, execution.correlate)
         untagged = classified.unattributed.tools
         if untagged and classified.correlated:
             self._warn_once(UNATTRIBUTED_WARNING, execution.correlate)
-        elif untagged and (self._managed or not expect.requires_observation):
+        elif untagged and (self._managed or not observes):
             # An attached test that checks tool calls errors instead, and says why (FR2).
             self._warn_once(NO_CONTEXT_WARNING, execution.correlate)
 
         if not classified.correlated:
-            if expect.requires_observation and not self._managed:
+            stray = self._read_usage(window.turns)
+            self._suspect_window(previous, stray, execution.correlate)
+            if observes and not self._managed:
                 # Attach mode: the agent may serve other traffic, and there is no
                 # `hello` from a fresh file to rely on.
                 return unverified(self._not_observed_attached(window, execution.correlate))
-            # Nothing in the window is tagged: it is all there is to go by.
+            # Nothing in the window is tagged: it is all there is to go by. An attached
+            # agent may be serving others, and their tokens are not this test's.
             traces = window.tools
             log.tools = list(traces)
+            log.records = stray if self._managed else []
+            if log.records:
+                self._warn_once(NO_CONTEXT_USAGE_WARNING, execution.correlate)
             errors = self._check(traces, response, expect)
         else:
             self._judge_late(classified.other.tools, current=execution)
-            if untagged:
-                earlier = [e for e in self._executions if e is not execution]
-                self._suspect(earlier[-1] if earlier else None, untagged)
-            if expect.requires_observation and not (classified.mine.tools or classified.mine.turns):
+            self._judge_late_usage(classified.other.turns, current=execution)
+            self._suspect(previous, untagged)
+            log.untagged = self._read_usage(classified.unattributed.turns)
+            self._suspect_usage(previous, log.untagged, execution.correlate)
+            if observes and not (classified.mine.tools or classified.mine.turns):
                 return unverified(self._not_observed(classified, execution.correlate))
             traces = classified.mine.tools
             log.tools = list(traces)
+            log.records = self._read_usage(classified.mine.turns)
             errors = self._check(traces, response, expect)
             if untagged:
                 with_them = self._check([*traces, *untagged], response, expect)
@@ -1076,14 +1467,24 @@ class TestRunner:
                         "tag; hb.record() can also be given it"
                     )
 
+        budget = self._budget_check(expect.budget, log.usage)
         if (unseen := self._unobservable(expect)) is not None:
             # A name highbar cannot see leaves the test unverified, unless the part of
             # the spec it can see fails on its own: a failure is a failure (combine()).
             message, observable = unseen
-            real = self._check(traces, response, observable)
+            real = [*self._check(traces, response, observable), *budget.exceeded]
             if not real:
                 return unverified(message)
             errors = [*real, message]
+        else:
+            errors = [*errors, *budget.exceeded]
+
+        # The same for a budget: without usage nothing is known about it, and that only
+        # leaves the test unverified when nothing else already failed it.
+        if budget.unverified:
+            if not errors:
+                return unverified("; ".join(budget.unverified))
+            errors = [*errors, *budget.unverified]
 
         execution.expect, execution.response = expect, response
         execution.tools, execution.passed = list(traces), not errors

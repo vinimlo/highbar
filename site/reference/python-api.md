@@ -30,6 +30,7 @@ An agent highbar started is stopped before `run` returns or raises.
 | `variations` | Paraphrases that ran, each counted once. |
 | `tests` | Each test in its final state: the fields of the [report](/reference/report#each-test), as dataclasses. Values from `${VAR}` are masked. |
 | `warnings` | The warnings of the run. |
+| `totals`, `suites` | [Tokens and cost](/reference/report#tokens-and-cost) of the run and of each suite. `totals` is `None` when no turn reported usage. |
 
 ### Errors
 

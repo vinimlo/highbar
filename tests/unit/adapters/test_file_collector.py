@@ -179,6 +179,30 @@ class TestBrokenLines:
         with pytest.raises(TraceFormatError, match=str(path)):
             collector.collect(since=0)
 
+    def test_q10_the_lines_it_can_read_come_with_the_error(self, tmp_path: Path) -> None:
+        """A late `turn` next to the bad line is usage that was spent, and still counts."""
+        turn = {"v": 1, "type": "turn", "ts": 2.0, "context": {"test": "t1"}}
+        lines = [_line(_tool()), "not json\n", _line(turn), "{oops\n"]
+        collector = _write(tmp_path / "t.jsonl", *lines)
+
+        with pytest.raises(TraceFormatError, match="line 2: not valid JSON") as caught:
+            collector.collect(since=0)
+
+        window = caught.value.window
+        assert window is not None
+        assert [tool.fn for tool in window.tools] == ["get_order"]
+        assert window.turns == [TurnRecord(ts=2.0, context={"test": "t1"})]
+        assert window.end == len("".join(lines).encode())
+
+    def test_q10_a_line_counts_whole_or_not_at_all(self, tmp_path: Path) -> None:
+        hello = {"v": 1, "type": "hello", "ts": 1.0, "sdk": "s", "tools": "lookup"}
+        collector = _write(tmp_path / "t.jsonl", _line(hello))
+
+        with pytest.raises(TraceFormatError, match="'tools' must be a list") as caught:
+            collector.collect(since=0)
+
+        assert caught.value.window == Window(end=len(_line(hello).encode()))
+
 
 class TestOffsets:
     def test_missing_file_is_an_empty_window_and_checkpoint_0(self, tmp_path: Path) -> None:

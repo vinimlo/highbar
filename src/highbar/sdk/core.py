@@ -32,12 +32,28 @@ def _sdk_version() -> str:
         return "dev"
 
 
+def _plain(usage: Any) -> Any:
+    """``usage`` as a dict: another mapping would be written as its text, and read as nothing.
+
+    This runs in the agent's ``finally``, so a value that is not a mapping goes as it is.
+    """
+    try:
+        return dict(usage)
+    except Exception:
+        return usage
+
+
 class TurnHandle:
-    """Handed out by ``Highbar.turn``; set ``response`` to record what the agent said."""
+    """Handed out by ``Highbar.turn``; set ``response`` to record what the agent said.
+
+    Set ``usage`` to record what the message consumed, with the fields of the contract:
+    ``{"model": ..., "input_tokens": ..., "output_tokens": ..., "cost": ...}``.
+    """
 
     def __init__(self, message: str | None) -> None:
         self.message = message
         self.response: str | None = None
+        self.usage: Mapping[str, Any] | None = None
 
 
 class Highbar:
@@ -141,7 +157,12 @@ class Highbar:
             try:
                 yield handle
             finally:
-                self._write_turn(current, message=handle.message, response=handle.response)
+                self._write_turn(
+                    current,
+                    message=handle.message,
+                    response=handle.response,
+                    usage=handle.usage,
+                )
 
     # Internals shared with the decorator and highbar.asgi.
 
@@ -187,6 +208,7 @@ class Highbar:
         *,
         message: str | None = None,
         response: str | None = None,
+        usage: Mapping[str, Any] | None = None,
     ) -> None:
         record: dict[str, Any] = {"type": "turn", "ts": time.time()}
         if turn_context:
@@ -195,6 +217,8 @@ class Highbar:
             record["message"] = message
         if response is not None:
             record["response"] = response
+        if usage is not None:
+            record["usage"] = _plain(usage)
         self._write(record)
 
     def _write(self, record: dict[str, Any]) -> None:

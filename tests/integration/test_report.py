@@ -17,9 +17,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import jsonschema
 import pytest
 
 from highbar.adapters.ports import accepts_connections
+from tests.unit.reporters.test_json_report import _closed, _schema
 
 SERVER = Path(__file__).resolve().parents[1] / "fixtures" / "server.py"
 PASSES = 'response: {contains: "ok"}'
@@ -129,6 +131,205 @@ def test_a_full_run_is_complete_and_agrees_with_the_terminal(project: _Project) 
     (turn,) = execution["turns"]
     assert (turn["trigger"], turn["response"]) == ("message 1", "ok")
     assert "absent" in execution["errors"][0]
+
+
+@pytest.mark.timeout(30)
+def test_ac14_a_run_without_usage_has_no_totals_and_no_warning(project: _Project) -> None:
+    project.run(project.spec(PASSES))
+
+    data = project.data()
+    assert data["totals"] is None
+    (spec,) = data["specs"]
+    assert (spec["totals"], spec["warnings"]) == (None, [])
+    assert spec["suites"] == [{"name": "S", "totals": None}]
+    assert spec["tests"][0]["budget"] is None
+    (turn,) = spec["tests"][0]["phrasings"][0]["executions"][0]["turns"]
+    assert (turn["usage"], turn["budget"]) == (None, None)
+
+
+@pytest.mark.timeout(30)
+def test_ac4_two_suites_add_up_at_every_level_and_in_the_terminal(project: _Project) -> None:
+    (project.root / "two.highbar.yaml").write_text(
+        project.agent(_free_port(), "--cost", "0.01")
+        + "suites:\n  - name: A\n    tests:\n"
+        + f'      - {{trigger: "one", expect: {{{PASSES}}}}}\n'
+        + f'      - {{trigger: "two", expect: {{{PASSES}}}}}\n'
+        + "  - name: B\n    tests:\n"
+        + f'      - {{trigger: "three", expect: {{{PASSES}}}}}\n',
+        encoding="utf-8",
+    )
+
+    result = project.run("two.highbar.yaml")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "300 input tokens | 30 output tokens | 0.03 USD" in result.stdout
+    data = project.data()
+    jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+    assert data["totals"]["input_tokens"] == 300
+    assert data["totals"]["cost"] == {"USD": 0.03}
+    assert data["totals"]["complete"] is True
+    (spec,) = data["specs"]
+    assert spec["totals"] == data["totals"]
+    first, second = spec["suites"]
+    assert (first["name"], first["totals"]["cost"]) == ("A", {"USD": 0.02})
+    assert (second["name"], second["totals"]["cost"]) == ("B", {"USD": 0.01})
+    one = spec["tests"][0]
+    assert one["totals"]["output_tokens"] == 10
+    (execution,) = one["phrasings"][0]["executions"]
+    assert execution["totals"]["turns"] == 1
+    assert execution["turns"][0]["usage"] == {
+        "model": None,
+        "provider": None,
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "cached_input_tokens": None,
+        "cost": 0.01,
+        "currency": "USD",
+        "llm_calls": None,
+    }
+
+
+@pytest.mark.timeout(40)
+def test_ac12_max_cost_stops_at_the_end_of_the_test_in_progress(project: _Project) -> None:
+    spec = project.spec(PASSES, PASSES, PASSES, args=("--cost", "0.01"))
+
+    result = project.run(spec, "--max-cost", "0.015")
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "--max-cost 0.015" in result.stdout
+    data = project.data()
+    jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+    assert data["exit_code"] == 3
+    assert data["complete"] is False
+    assert data["stopped"]["reason"] == "budget_exceeded"
+    assert "0.02 USD" in data["stopped"]["message"]
+    (stopped,) = data["specs"]
+    assert stopped["complete"] is False
+    assert [test["id"] for test in stopped["tests"]] == ["S/message 0", "S/message 1"]
+    assert [test["status"] for test in stopped["tests"]] == ["passed", "passed"]
+    assert data["summary"]["total"] == 2
+    assert data["totals"]["cost"] == {"USD": 0.02}
+
+
+@pytest.mark.timeout(40)
+def test_ac12_the_ceiling_is_the_whole_runs_across_specs(project: _Project) -> None:
+    project.spec(PASSES, PASSES, name="specs/a.highbar.yaml", args=("--cost", "0.01"))
+    project.spec(PASSES, name="specs/b.highbar.yaml", args=("--cost", "0.01"))
+    project.spec(PASSES, name="specs/c.highbar.yaml", args=("--cost", "0.01"))
+
+    result = project.run("specs", "--max-cost", "0.025")
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    data = project.data()
+    assert [spec["path"] for spec in data["specs"]] == [
+        "specs/a.highbar.yaml",
+        "specs/b.highbar.yaml",
+    ]
+    assert [spec["complete"] for spec in data["specs"]] == [True, False]
+    assert data["totals"]["cost"] == {"USD": 0.03}
+
+
+@pytest.mark.timeout(30)
+def test_ac12_under_the_ceiling_the_exit_code_is_the_tests(project: _Project) -> None:
+    result = project.run(project.spec(PASSES, args=("--cost", "0.01")), "--max-cost", "1")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert project.data()["stopped"] is None
+
+
+@pytest.mark.timeout(30)
+def test_ac12_a_failed_test_does_not_hide_the_reason_the_run_stopped(project: _Project) -> None:
+    spec = project.spec(FAILS, PASSES, args=("--cost", "0.01"))
+
+    result = project.run(spec, "--max-cost", "0.005")
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    data = project.data()
+    assert data["stopped"]["reason"] == "budget_exceeded"
+    assert data["specs"][0]["tests"][0]["status"] == "failed"
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("value", ["-1", "nan", "inf"])
+def test_ac12_a_ceiling_that_is_not_one_stops_before_any_message(
+    project: _Project, value: str
+) -> None:
+    spec = project.spec(PASSES, start="touch agent-started")
+
+    result = project.run(spec, f"--max-cost={value}")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "--max-cost" in result.stdout
+    assert project.data()["stopped"]["reason"] == "usage_error"
+    assert not (project.root / "agent-started").exists()
+
+
+@pytest.mark.timeout(30)
+def test_ac5_a_cost_nobody_reported_is_incomplete_in_the_file_and_the_terminal(
+    project: _Project,
+) -> None:
+    """Two specs, so the run adds a turn with a cost to a turn without usage."""
+    project.spec(PASSES, name="specs/a.highbar.yaml", args=("--cost", "0.01"))
+    project.spec(PASSES, name="specs/b.highbar.yaml")
+
+    result = project.run("specs")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "incomplete" in result.stdout
+    totals = project.data()["totals"]
+    assert totals["cost"] == {"USD": 0.01}
+    assert totals["complete"] is False
+    assert totals["warnings"] == ["1 of 2 turns with no usage"]
+
+
+@pytest.mark.timeout(30)
+def test_ac9_a_budget_without_usage_is_an_error_in_the_file(project: _Project) -> None:
+    result = project.run(project.spec("budget: {max_cost: 1}"))
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    (test,) = project.data()["specs"][0]["tests"]
+    assert test["status"] == "error"
+    assert test["budget"] == {"max_input_tokens": None, "max_cost": 1}
+    assert "no usage" in test["errors"][0]
+
+
+@pytest.mark.timeout(30)
+def test_q1_usage_with_no_test_context_cannot_pass_a_budget(project: _Project) -> None:
+    spec = project.spec("budget: {max_cost: 1}", args=("--cost", "0.1", "--stray-cost", "9"))
+
+    result = project.run(spec)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    data = project.data()
+    jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+    (test,) = data["specs"][0]["tests"]
+    assert test["status"] == "error"
+    assert "cannot tell which test" in test["errors"][0]
+    assert data["totals"]["cost"] == {"USD": 0.1}
+    assert data["totals"]["complete"] is False
+    assert "no test context" in result.stdout
+
+
+@pytest.mark.timeout(40)
+def test_q1_the_ceiling_counts_cost_with_no_test_context_across_specs(project: _Project) -> None:
+    """Spec a's stray is in no total, and spec b still has to stop on it."""
+    stray = ("--cost", "0.01", "--stray-cost", "0.01")
+    project.spec(PASSES, name="specs/a.highbar.yaml", args=stray)
+    project.spec(PASSES, name="specs/b.highbar.yaml", args=("--cost", "0.01"))
+    project.spec(PASSES, name="specs/c.highbar.yaml", args=("--cost", "0.01"))
+
+    result = project.run("specs", "--max-cost", "0.025")
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    data = project.data()
+    jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+    assert [spec["path"] for spec in data["specs"]] == [
+        "specs/a.highbar.yaml",
+        "specs/b.highbar.yaml",
+    ]
+    assert "0.03 USD (0.01 USD of it with no test context" in data["stopped"]["message"]
+    assert data["totals"]["cost"] == {"USD": 0.02}
+    assert data["totals"]["complete"] is False
 
 
 @pytest.mark.timeout(30)

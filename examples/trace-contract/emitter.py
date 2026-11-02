@@ -34,6 +34,6 @@ def tool(fn, args, *, result=None, error=None, started_at, test=None) -> None:
     _write({"type": "tool", **record, "started_at": started_at, "ended_at": time.time()}, test)
 
 
-def turn(test: str | None) -> None:
+def turn(test: str | None, usage: dict | None = None) -> None:
     """One message handled: before the reply goes out, also when the handling failed."""
-    _write({"type": "turn"}, test)
+    _write({"type": "turn", "usage": usage}, test)
