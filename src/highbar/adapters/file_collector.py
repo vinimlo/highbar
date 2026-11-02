@@ -8,7 +8,9 @@ Rules of the contract (v1) that live here:
 
 - Unknown fields and record types are ignored, so emitters can add to the format.
 - A line that is not valid JSON is an error that names its line. Skipping it would
-  hide a tool call, and the test that needed it would pass or fail for nothing.
+  hide a tool call, and the test that needed it would pass or fail for nothing. The
+  other lines of the read are still read, and come with the error: the usage in them
+  was spent, and the late records of earlier tests still count for them.
 - A line without ``v`` is v0, the format Gauntlet and early emitters wrote: a tool
   call whose extra top-level fields are its context.
 - Only lines that end in a newline are read. A writer may be in the middle of one.
@@ -40,7 +42,15 @@ _BACKWARD_CHUNK = 64 * 1024
 
 
 class TraceFormatError(ValueError):
-    """A trace line that cannot be read. The message is ``<file> line <n>: <problem>``."""
+    """A trace line that cannot be read. The message is ``<file> line <n>: <problem>``.
+
+    ``window`` holds the records of every line of the read that could be read, or is
+    None when the collector read none of them.
+    """
+
+    def __init__(self, message: str, window: Window | None = None) -> None:
+        super().__init__(message)
+        self.window = window
 
 
 class _BadLine(Exception):
@@ -73,7 +83,8 @@ class FileTraceCollector:
         """The records in the complete lines written after byte ``since``.
 
         A file smaller than ``since`` was recreated (a restarted agent, a rotated
-        file), so it is read from the start. Raises ``TraceFormatError``.
+        file), so it is read from the start. Raises ``TraceFormatError`` for the first
+        line that cannot be read, with the records of all the others.
         """
         try:
             with open(self._path, "rb") as f:
@@ -87,12 +98,16 @@ class FileTraceCollector:
         complete = data[: data.rfind(b"\n") + 1]
         window = Window(end=start + len(complete))
         offset = start
+        problem: str | None = None
         for raw in complete.splitlines(keepends=True):
             try:
                 _add(window, raw)
             except _BadLine as e:
-                raise TraceFormatError(f"{self._path} line {self._line_at(offset)}: {e}") from None
+                if problem is None:
+                    problem = f"{self._path} line {self._line_at(offset)}: {e}"
             offset += len(raw)
+        if problem is not None:
+            raise TraceFormatError(problem, window)
         return window
 
     def declared(self) -> frozenset[str] | None:
@@ -168,6 +183,7 @@ def _end_of_last_line(f: Any) -> int:
 
 
 def _add(window: Window, raw: bytes) -> None:
+    """The record of one line, added whole or, if the line cannot be read, not at all."""
     if not raw.strip():
         return
     try:
@@ -210,6 +226,7 @@ def _add(window: Window, raw: bytes) -> None:
         )
     elif kind == "hello":
         pid = record.get("pid")
+        names = _names(record, "tools") if "tools" in record else None
         window.hellos.append(
             Hello(
                 ts=_number(record, "ts", 0.0),
@@ -217,8 +234,8 @@ def _add(window: Window, raw: bytes) -> None:
                 pid=pid if isinstance(pid, int) and not isinstance(pid, bool) else None,
             )
         )
-        if "tools" in record:
-            window.declarations.append(_names(record, "tools"))
+        if names is not None:
+            window.declarations.append(names)
     elif kind == "tools":
         window.declarations.append(_names(record, "names"))
     # Any other type is from a newer emitter: ignored, as the contract says.

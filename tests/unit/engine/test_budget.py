@@ -161,7 +161,7 @@ def _untagged(usage: object) -> dict[str, Any]:
 
 
 def _runner(
-    agent: FakeAgent | _Traced,
+    agent: FakeAgent | _Traced | _Writing,
     *,
     reporter: MagicMock | None = None,
     managed: bool = True,
@@ -192,7 +192,11 @@ def _runner(
 
 
 def _run(
-    tests: list[Case], agent: FakeAgent | _Traced, *, default: Budget | None = None, **options: Any
+    tests: list[Case],
+    agent: FakeAgent | _Traced | _Writing,
+    *,
+    default: Budget | None = None,
+    **options: Any,
 ) -> RunSummary:
     spec = Spec(
         agent=AgentConfig(start="agent", endpoint="http://127.0.0.1:1/chat"),
@@ -1409,6 +1413,194 @@ class TestNoWindowRead:
         assert summary.tests[0].status is Status.ERROR
         assert summary.untagged_cost == {"USD": 9.0}
         assert any("no test context" in warning for warning in summary.warnings)
+
+
+BAD_LINE = "{not json\n"
+
+# The lines of one message, and the lines written late, after its read.
+Lines = tuple[list[str], list[str]]
+
+
+def _turn_line(test_id: str, **usage: Any) -> str:
+    record = {"v": 1, "ts": 1.0, "type": "turn", "context": {"test": test_id}, "usage": usage}
+    return json.dumps(record) + "\n"
+
+
+def _tool_line(fn: str, test_id: str) -> str:
+    record = {"v": 1, "ts": 1.0, "type": "tool", "fn": fn, "context": {"test": test_id}}
+    return json.dumps(record) + "\n"
+
+
+class _Writing(FileTraceCollector):
+    """An agent that writes real JSONL, a line that cannot be read included.
+
+    ``script(ids)`` gives the lines of a message, ``ids`` being the test ids sent so far,
+    its own last. The late ones are written after that message's read: at the next
+    message, or before the read after the last test.
+    """
+
+    def __init__(self, path: Path, script: Callable[[list[str]], Lines]) -> None:
+        super().__init__(path)
+        self._script = script
+        self._ids: list[str] = []
+        self._late: list[str] = []
+        self._sent = False
+        self._append([json.dumps({"v": 1, "ts": 1.0, "type": "hello", "sdk": "t"}) + "\n"])
+
+    def _append(self, lines: list[str]) -> None:
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write("".join(lines))
+
+    def send(self, message: str, *, values: Values) -> str:
+        self._append(self._late)
+        self._ids.append(values.test_id)
+        now, self._late = self._script(list(self._ids))
+        self._append(now)
+        self._sent = True
+        return "ok"
+
+    def collect(self, since: int) -> Window:
+        if not self._sent:
+            self._append(self._late)
+            self._late = []
+        self._sent = False
+        return super().collect(since)
+
+
+class TestUnreadableLine:
+    """Q10: a line that cannot be read keeps the rest of its read. The test that read it
+    is an error, and the one before it too if it passed and has a budget."""
+
+    LIMIT = Budget(max_input_tokens=100)
+
+    @staticmethod
+    def _second_reads(late: Callable[[str], list[str]]) -> Callable[[list[str]], Lines]:
+        """The first message spends 90 tokens and writes ``late(its id)`` after its read;
+        the next ones spend 10."""
+
+        def script(ids: list[str]) -> Lines:
+            if len(ids) == 1:
+                return [_turn_line(ids[0], input_tokens=90)], late(ids[0])
+            return [_turn_line(ids[-1], input_tokens=10)], []
+
+        return script
+
+    def _bad_line(self) -> Callable[[list[str]], Lines]:
+        return self._second_reads(lambda _: [BAD_LINE])
+
+    def test_q10_late_usage_next_to_the_line_still_fails_its_run(self, tmp_path: Path) -> None:
+        """180 tokens against 100, read in the next run's window with a line it cannot read."""
+        script = self._second_reads(lambda first: [_turn_line(first, input_tokens=90), BAD_LINE])
+        tests = [_budgeted(self.LIMIT, runs=2, min_pass=1)]
+
+        summary = _run(tests, _Writing(tmp_path / "t.jsonl", script))
+
+        (test,) = summary.tests
+        first, second = test.phrasings[0].executions
+        assert first.status is Status.FAILED
+        assert "180 input tokens" in first.errors[0]
+        assert second.status is Status.ERROR
+        assert "not valid JSON" in second.errors[0]
+        assert test.status is Status.ERROR
+        assert summary.passed == 0
+        assert test.totals is not None
+        assert test.totals.input_tokens == 190
+
+    def test_q10_the_line_may_be_the_usage_of_the_run_before(self, tmp_path: Path) -> None:
+        tests = [_budgeted(self.LIMIT, runs=2, min_pass=1)]
+
+        summary = _run(tests, _Writing(tmp_path / "t.jsonl", self._bad_line()))
+
+        (test,) = summary.tests
+        first, second = test.phrasings[0].executions
+        assert first.status is Status.ERROR
+        assert "may be this test's usage" in first.errors[0]
+        assert "line 3: not valid JSON" in first.errors[0]
+        assert second.status is Status.ERROR
+        assert test.status is Status.ERROR
+        assert summary.passed == 0
+
+    def test_q10_a_limit_on_the_last_turn_counts_as_a_budget(self, tmp_path: Path) -> None:
+        turns = [Turn(trigger="a", expect=Expect(budget=self.LIMIT))]
+        tests = [Case(turns=turns), Case(trigger="b", expect=SAYS_OK)]
+
+        summary = _run(tests, _Writing(tmp_path / "t.jsonl", self._bad_line()))
+
+        first, second = summary.tests
+        assert first.status is Status.ERROR
+        assert "may be this test's usage" in first.errors[0]
+        assert second.status is Status.ERROR
+
+    def test_q10_a_test_with_no_budget_is_left_alone(self, tmp_path: Path) -> None:
+        tests = [PLAIN, Case(trigger="b", expect=SAYS_OK)]
+
+        summary = _run(tests, _Writing(tmp_path / "t.jsonl", self._bad_line()))
+
+        first, second = summary.tests
+        assert first.status is Status.PASSED
+        assert second.status is Status.ERROR
+        assert "not valid JSON" in second.errors[0]
+
+    def test_q10_a_test_that_failed_already_stays_failed(self, tmp_path: Path) -> None:
+        tests = [_budgeted(Budget(max_input_tokens=50)), Case(trigger="b", expect=SAYS_OK)]
+
+        summary = _run(tests, _Writing(tmp_path / "t.jsonl", self._bad_line()))
+
+        first, _ = summary.tests
+        assert first.status is Status.FAILED
+        assert not any("may be this test's usage" in error for error in first.errors)
+
+    def test_q10_a_late_call_next_to_the_line_still_fails_its_test(self, tmp_path: Path) -> None:
+        def script(ids: list[str]) -> Lines:
+            if len(ids) == 1:
+                return [_turn_line(ids[0])], [_tool_line("refund", ids[0]), BAD_LINE]
+            return [_turn_line(ids[-1])], []
+
+        tests = [Case(trigger="a", expect=Expect(forbid=("refund",))), PLAIN]
+
+        summary = _run(tests, _Writing(tmp_path / "t.jsonl", script))
+
+        first, second = summary.tests
+        assert first.status is Status.FAILED
+        assert "refund" in first.errors[0]
+        assert second.status is Status.ERROR
+
+    def test_q10_the_usage_read_with_it_counts_in_the_sums_and_the_ceiling(
+        self, tmp_path: Path
+    ) -> None:
+        def script(ids: list[str]) -> Lines:
+            second = len(ids) == 2
+            spent = _turn_line(ids[-1], input_tokens=1, cost=5 if second else 0.1, currency="USD")
+            return [spent, *([BAD_LINE] if second else [])], []
+
+        tests = [Case(trigger=name, expect=SAYS_OK) for name in "abc"]
+
+        summary = _run(tests, _Writing(tmp_path / "t.jsonl", script), max_cost=1)
+
+        assert [test.name for test in summary.tests] == ["a", "b"]
+        second = summary.tests[1]
+        assert second.status is Status.ERROR
+        assert second.totals is not None
+        assert second.totals.cost == {"USD": 5.0}
+        assert summary.stopped is not None
+        assert "5.1 USD" in summary.stopped
+
+    def test_q10_the_read_after_the_last_test_keeps_what_it_can_read(self, tmp_path: Path) -> None:
+        script = self._second_reads(lambda first: [_turn_line(first, input_tokens=90), BAD_LINE])
+
+        (test,) = _run([_budgeted(self.LIMIT)], _Writing(tmp_path / "t.jsonl", script)).tests
+
+        assert test.status is Status.FAILED
+        assert "180 input tokens" in test.errors[0]
+
+    def test_q10_after_the_last_test_the_line_errs_it_with_no_budget(self, tmp_path: Path) -> None:
+        def script(ids: list[str]) -> Lines:
+            return [_turn_line(ids[0])], [BAD_LINE]
+
+        (test,) = _run([PLAIN], _Writing(tmp_path / "t.jsonl", script)).tests
+
+        assert test.status is Status.ERROR
+        assert "not valid JSON" in test.errors[0]
 
 
 class TestUnreadableUsage:

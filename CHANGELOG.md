@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- A trace line that cannot be read no longer throws away the lines read with it. The test that read it is still an `error`. The other records count as in any read: a late call or a late `turn` among them still fails the test it belongs to, and their usage is in the sums, in `--max-cost` and in budgets. The line may be the late usage of the test before, so that test is an `error` too if it passed and has a budget.
 - A value from `${VAR}` is masked in every spec of a run, not only in the spec that uses it, and when a message is cut in the middle of it. Two or fewer of its first characters can still show at a cut: telling a shorter start from an ordinary word is not possible.
 
 ### Upgrading from 0.1.0

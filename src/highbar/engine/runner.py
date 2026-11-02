@@ -89,6 +89,12 @@ NO_CONTEXT_USAGE_ERROR = (
     "contextvars.copy_context() to keep the tag"
 )
 
+# A line read after a test's window that cannot be read may be that test's late usage.
+UNREADABLE_USAGE_ERROR = (
+    "{error}; written after this test's window, that line may be this test's usage, so its "
+    "budget cannot be verified"
+)
+
 # Next to tagged records, an untagged call counts for no test (PR 14 review I1).
 UNATTRIBUTED_WARNING = (
     "some tool calls carry {untagged}, so they count for no test, and a test whose result "
@@ -679,14 +685,23 @@ class TestRunner:
         at it would let the test before it pass on records nobody checked it against."""
         return next((e for e in reversed(self._executions) if e.read and e is not execution), None)
 
+    def _read(self) -> tuple[Window, str | None]:
+        """The records written since the cursor, and why a line among them cannot be read.
+
+        The readable ones count as any others do. A collector that read none of them
+        leaves the next read to start after the line, or every read from here would stop
+        on it.
+        """
+        try:
+            return self._collector.collect(since=self._cursor), None
+        except TraceFormatError as e:
+            if e.window is not None:
+                return e.window, str(e)
+            return Window(end=self._collector.checkpoint()), str(e)
+
     def _read_after_last_test(self) -> None:
         last = self._last_read() or self._executions[-1]
-        try:
-            window = self._collector.collect(since=self._cursor)
-        except TraceFormatError as e:
-            if last.passed:
-                self._findings.append(_Finding(last, Status.ERROR, str(e)))
-            return
+        window, unreadable = self._read()
         self._cursor = window.end
         self._absorb(window)
         untagged = self._untagged(window.tools, last)
@@ -699,6 +714,10 @@ class TestRunner:
         ]
         self._judge_late_usage([t for t in window.turns if t not in stray], current=None)
         self._suspect_usage(last, self._read_usage(stray), last.correlate)
+        if unreadable is not None and last.passed:
+            # No test comes after the last one: the line may be its late call or usage.
+            last.passed = False
+            self._findings.append(_Finding(last, Status.ERROR, unreadable))
 
     def _untagged(self, tools: list[Trace], execution: _Execution) -> list[Trace]:
         return [
@@ -836,6 +855,18 @@ class TestRunner:
                 untagged=_untagged(correlate), hint=_tag_hint(correlate)
             )
             self._findings.append(_Finding(execution, Status.ERROR, message))
+
+    def _suspect_unreadable(self, execution: _Execution | None, error: str) -> None:
+        """A line that cannot be read, after the window of ``execution``, may be its late
+        usage: if it passed and has a budget, that budget is unverified. A test with no
+        budget is left alone, so the line errs the test before only where usage can."""
+        if execution is None or not execution.passed or not execution.turns:
+            return
+        if execution.budget is None and execution.turns[-1].budget is None:
+            return
+        execution.passed = False
+        message = UNREADABLE_USAGE_ERROR.format(error=error)
+        self._findings.append(_Finding(execution, Status.ERROR, message))
 
     def _not_observed(self, classified: Classified, correlate: dict[str, Any]) -> str:
         records = [*classified.other.tools, *classified.other.turns]
@@ -1355,19 +1386,41 @@ class TestRunner:
         log.response, log.response_ms = response, (time.time() - sent_at) * 1000
 
         time.sleep(self._settle_time)
-        try:
-            window = self._collector.collect(since=self._cursor)
-        except TraceFormatError as e:
-            # A line that cannot be read may be the call this test is about. The next
-            # test starts after it, or every test from here on would stop on it.
-            self._cursor = self._collector.checkpoint()
-            return unverified(str(e))
+        window, unreadable = self._read()
         self._cursor = window.end
         execution.read = True
         self._absorb(window)
+        previous = self._last_read(execution)
+        result = self._verdict(
+            window, response, expect, execution, log, previous, start, observes=observes
+        )
+        if unreadable is None:
+            return result
+        # What could be read counted as it does in any window. The line itself may be
+        # the call this test is about, or the late usage of the test before it.
+        execution.passed = False
+        self._suspect_unreadable(previous, unreadable)
+        return replace(result, status=Status.ERROR, errors=[unreadable])
+
+    def _verdict(
+        self,
+        window: Window,
+        response: str,
+        expect: Expect,
+        execution: _Execution,
+        log: _TurnLog,
+        previous: _Execution | None,
+        start: float,
+        *,
+        observes: bool,
+    ) -> TestResult:
+        """What ``window`` says of this turn: its records counted, and it checked against them."""
+
+        def unverified(error: str) -> TestResult:
+            duration = (time.time() - start) * 1000
+            return TestResult(status=Status.ERROR, errors=[error], duration_ms=duration)
 
         classified = classify(window, execution.correlate)
-        previous = self._last_read(execution)
         untagged = classified.unattributed.tools
         if untagged and classified.correlated:
             self._warn_once(UNATTRIBUTED_WARNING, execution.correlate)

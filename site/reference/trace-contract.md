@@ -7,7 +7,7 @@ The trace file is how an agent tells highbar what it did. The Python SDK writes 
 - One JSON object per line (JSON Lines), UTF-8, each line ending in a newline.
 - The agent appends; highbar reads from where it stopped last time. At the start of a run it also scans the file once, for the tools declared since the last `hello`. A line not yet ended by a newline is left for the next read, so a writer may be in the middle of one.
 - A file that becomes smaller than where highbar stopped was recreated (a restarted agent, a rotated log), and is read from the start.
-- A line that is not valid JSON, a `tool` record without `fn`, or `args` or `context` that are not objects, is an error for the test that read it, naming the line. It is never skipped: it may be the call the test is about. A timestamp that is not a number falls back to `ts`.
+- A line that is not valid JSON, a `tool` record without `fn`, or `args` or `context` that are not objects, is an error for the test that read it, naming the line. It is never skipped: it may be the call the test is about. It may also be the late usage of the test before, so that test is an error too if it passed and has a budget; read after the last test, it makes that test an error if it passed, budget or not. The other lines read with it still count: their usage is in the sums, in `--max-cost` and in budgets, and their late or untagged records count as they would in any read. A timestamp that is not a number falls back to `ts`.
 
 ## Common fields
 
