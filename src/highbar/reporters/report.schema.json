@@ -26,7 +26,7 @@
       "type": ["integer", "null"]
     },
     "complete": {
-      "description": "Every spec ran to its end.",
+      "description": "Every test of every spec ran. A run that --max-cost stopped after its last test is complete: stopped says the ceiling was passed.",
       "type": "boolean"
     },
     "stopped": {
@@ -194,7 +194,7 @@
           "description": "Of the file, read before the first test.",
           "type": ["string", "null"]
         },
-        "complete": { "type": "boolean" },
+        "complete": { "description": "Every test of this spec ran.", "type": "boolean" },
         "summary": { "$ref": "#/$defs/summary" },
         "totals": { "$ref": "#/$defs/totals" },
         "warnings": { "type": "array", "items": { "type": "string" } },

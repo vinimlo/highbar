@@ -36,6 +36,7 @@ from highbar.domain.models import (
 from highbar.domain.models import Test as Case
 from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.placeholders import Values
+from highbar.engine.run_spec import _run as run_to_the_end
 from highbar.engine.runner import TestRunner as Runner
 from highbar.engine.session import SessionError
 from tests.unit.engine.fakes import FakeAgent
@@ -1995,3 +1996,47 @@ class TestCeiling:
 
     def test_a_ceiling_that_sees_every_cost_says_nothing(self) -> None:
         assert _run(self._tests(2), _reporting(_usd(0.01)), max_cost=5).warnings == ()
+
+
+class TestComplete:
+    """HB-32: a spec is complete when every one of its tests ran. A ceiling passed at the
+    last test, or by what the read after it found, left nothing out: ``stopped`` says the
+    ceiling was passed, and the run still exits with 3."""
+
+    @staticmethod
+    def _ended(count: int, agent: FakeAgent, max_cost: float) -> tuple[RunSummary, bool]:
+        spec = Spec(
+            agent=AgentConfig(start="agent", endpoint="http://127.0.0.1:1/chat"),
+            suites=[Suite(name="S", tests=TestCeiling._tests(count))],
+        )
+        ends: list[bool] = []
+        runner = _runner(agent, max_cost=max_cost)
+        summary = run_to_the_end(runner, spec, lambda _, complete: ends.append(complete))
+        return summary, ends[-1]
+
+    def test_hb32_a_ceiling_passed_by_the_read_after_the_last_test(self) -> None:
+        summary, complete = self._ended(1, FakeAgent(_late(_usd(0.1), _usd(5.0))), max_cost=1)
+
+        assert summary.stopped is not None
+        assert "5.1 USD" in summary.stopped
+        assert complete is True
+
+    def test_hb32_a_ceiling_passed_at_the_last_test(self) -> None:
+        summary, complete = self._ended(2, _reporting(_usd(0.01)), max_cost=0.015)
+
+        assert summary.stopped is not None
+        assert summary.total == 2
+        assert complete is True
+
+    def test_hb32_a_ceiling_passed_before_the_last_test_leaves_tests_out(self) -> None:
+        summary, complete = self._ended(3, _reporting(_usd(0.01)), max_cost=0.015)
+
+        assert summary.stopped is not None
+        assert summary.total == 2
+        assert complete is False
+
+    def test_hb32_under_the_ceiling_every_test_ran(self) -> None:
+        summary, complete = self._ended(2, _reporting(_usd(0.01)), max_cost=1)
+
+        assert summary.stopped is None
+        assert complete is True
