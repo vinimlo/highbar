@@ -24,7 +24,7 @@ Responses and tool arguments go in whole, so treat it like a trace file from `--
 | `highbar_version` | |
 | `started_at`, `duration_ms` | UTC with milliseconds; wall time of the run. |
 | `exit_code` | The code the process returned. `null` means the run did not finish: it is still going, or it was killed. |
-| `complete` | Every spec ran to its end. |
+| `complete` | Every test of every spec ran. A run that `--max-cost` stopped after its last test is complete: `stopped` says the ceiling was passed. |
 | `stopped` | Why the run ended early, or `null`: `{"reason": ..., "message": ...}`. |
 | `git_sha` | `HEAD` where highbar ran, which is not always the agent's version. `null` outside a repository. |
 | `summary` | `total`, `passed`, `failed`, `errored` and `variations` of the whole run. |
@@ -38,7 +38,7 @@ The file is written before the first message and again on every way out of the r
 - A path that cannot be written stops the run with exit code 2 before anything is sent.
 - A run that was killed leaves `exit_code: null`.
 - An interrupted run keeps the tests that finished, and the test in progress is left out.
-- A run stopped by `--max-cost` keeps every test that ran, with `stopped.reason: "budget_exceeded"`. The test in progress had time to finish, and the ones after it are not in the file. `stopped.message` says how much of the spend had no test context: that part of an agent highbar started counts for the ceiling and is in no `totals`.
+- A run stopped by `--max-cost` keeps every test that ran, with `stopped.reason: "budget_exceeded"`. The test in progress had time to finish, and the ones after it are not in the file. When the ceiling is passed only at the last test, or by what was read after it, no test was left out, and `complete` is `true`. `stopped.message` says how much of the spend had no test context: that part of an agent highbar started counts for the ceiling and is in no `totals`.
 - A run that cannot write the final file exits with 2, whatever its tests did.
 
 The one exception is a command line that highbar cannot read: an unknown option, `--runs abc` or a `--report` value without a known format. It exits with 2 before the file is opened, so an older file stays in place. A script that keeps reports should check the exit code first.

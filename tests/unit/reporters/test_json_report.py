@@ -537,6 +537,30 @@ class TestUsage:
         assert (data["exit_code"], data["complete"]) == (3, False)
         assert data["totals"]["cost"] == {"USD": 0.00021}
 
+    @staticmethod
+    def _stopped_after_every_spec(workdir: Path, reason: str, code: int) -> dict[str, Any]:
+        spec_path = _spec_file(workdir)
+        report = JsonReport(workdir / "r.json", version="1.2.3")
+        report.start()
+        report.plan([(spec_path, SPEC)])
+        report.add(spec_path, SPEC, _spending(USAGE), True)
+        report.stop(reason, "the reason")
+        report.finish(code)
+        return _read(workdir / "r.json")
+
+    def test_hb32_a_ceiling_passed_once_every_test_ran_leaves_the_run_complete(
+        self, workdir: Path
+    ) -> None:
+        data = self._stopped_after_every_spec(workdir, "budget_exceeded", 3)
+
+        jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+        assert data["stopped"]["reason"] == "budget_exceeded"
+        assert (data["exit_code"], data["complete"]) == (3, True)
+
+    def test_hb32_any_other_stop_leaves_the_run_incomplete(self, workdir: Path) -> None:
+        """Only the ceiling is checked after the last test; the rest stop a run halfway."""
+        assert self._stopped_after_every_spec(workdir, "interrupted", 130)["complete"] is False
+
 
 class TestGit:
     @staticmethod

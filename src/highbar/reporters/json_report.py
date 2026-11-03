@@ -85,8 +85,11 @@ class JsonReport:
     def finish(self, exit_code: int) -> None:
         """Write the final report. Raises ``ReportError``."""
         ran = {spec["path"] for spec in self._specs}
+        # A ceiling passed once every test ran left nothing out, and `stopped` says it was
+        # passed (HB-32). Any other reason ended the run halfway.
+        halfway = self._stopped is not None and self._stopped["reason"] != "budget_exceeded"
         complete = (
-            self._stopped is None
+            not halfway
             and ran >= set(self._planned)
             and all(spec["complete"] for spec in self._specs)
         )

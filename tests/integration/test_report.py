@@ -225,8 +225,28 @@ def test_ac12_the_ceiling_is_the_whole_runs_across_specs(project: _Project) -> N
         "specs/a.highbar.yaml",
         "specs/b.highbar.yaml",
     ]
-    assert [spec["complete"] for spec in data["specs"]] == [True, False]
+    # b ran its one test and crossed the ceiling there (HB-32); c never started.
+    assert [spec["complete"] for spec in data["specs"]] == [True, True]
+    assert data["complete"] is False
     assert data["totals"]["cost"] == {"USD": 0.03}
+
+
+@pytest.mark.timeout(30)
+def test_hb32_a_ceiling_crossed_at_the_last_test_leaves_the_report_complete(
+    project: _Project,
+) -> None:
+    spec = project.spec(PASSES, PASSES, args=("--cost", "0.01"))
+
+    result = project.run(spec, "--max-cost", "0.015")
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    data = project.data()
+    jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+    assert data["stopped"]["reason"] == "budget_exceeded"
+    assert (data["exit_code"], data["complete"]) == (3, True)
+    (spec_result,) = data["specs"]
+    assert spec_result["complete"] is True
+    assert data["summary"]["total"] == 2
 
 
 @pytest.mark.timeout(30)

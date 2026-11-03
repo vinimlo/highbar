@@ -179,11 +179,15 @@ def _runner(
 
 
 def _run(runner: TestRunner, spec: Spec, on_end: OnEnd | None) -> RunSummary:
-    """Run the spec; an error that stops the run is masked like every other message."""
+    """Run the spec; an error that stops the run is masked like every other message.
+
+    ``complete`` is whether every test ran. A ceiling passed at the last test, or by what
+    the read after it found, left none out: ``stopped`` says it was passed (HB-32).
+    """
     complete = False
     try:
         summary = runner.run(spec)
-        complete = summary.stopped is None
+        complete = summary.total == sum(len(suite.tests) for suite in spec.suites)
         return summary
     except (AgentStartError, AgentNotObservedError) as e:
         if not spec.agent.secrets:
