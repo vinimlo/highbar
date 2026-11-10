@@ -22,6 +22,7 @@ from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.runner import TestRunner
 from highbar.engine.secrets import redact
 from highbar.engine.session import SessionHooks
+from highbar.engine.streak import ErrorStreak
 from highbar.reporters.terminal import TerminalReporter
 from highbar.variations.generator import VariationGenerator
 
@@ -52,6 +53,8 @@ def run_spec(
     max_cost: float | None = None,
     spent: Mapping[str, float] | None = None,
     spent_untagged: Mapping[str, float] | None = None,
+    max_errors: int | None = None,
+    streak: ErrorStreak | None = None,
 ) -> RunSummary:
     """Run one spec against its agent.
 
@@ -64,7 +67,9 @@ def run_spec(
     the result on every way out, including a run that stopped halfway. ``max_cost`` is the
     ceiling of a whole run, of which earlier specs already ``spent`` that much per
     currency, ``spent_untagged`` of it with no test context: over it, the spec stops at
-    the end of a test, and ``stopped`` says so.
+    the end of a test, and ``stopped`` says so. ``max_errors`` executions in a row that
+    failed for one cause of the infrastructure stop it after the last of them, counted in
+    ``streak``, which earlier specs of the run may have started (None or 0: no stop).
     """
     console.print(f"  Running {escape(path)}")
     agent = spec.agent
@@ -96,6 +101,8 @@ def run_spec(
             max_cost=max_cost,
             spent=spent,
             spent_untagged=spent_untagged,
+            max_errors=max_errors,
+            streak=streak,
         )
         return _run(runner, spec, on_end)
 
@@ -126,6 +133,8 @@ def run_spec(
         max_cost=max_cost,
         spent=spent,
         spent_untagged=spent_untagged,
+        max_errors=max_errors,
+        streak=streak,
     )
 
     try:
@@ -157,6 +166,8 @@ def _runner(
     max_cost: float | None,
     spent: Mapping[str, float] | None,
     spent_untagged: Mapping[str, float] | None,
+    max_errors: int | None,
+    streak: ErrorStreak | None,
 ) -> TestRunner:
     return TestRunner(
         adapter=adapter,  # type: ignore[arg-type]
@@ -175,19 +186,24 @@ def _runner(
         max_cost=max_cost,
         spent=spent,
         spent_untagged=spent_untagged,
+        max_errors=max_errors,
+        streak=streak,
     )
 
 
 def _run(runner: TestRunner, spec: Spec, on_end: OnEnd | None) -> RunSummary:
     """Run the spec; an error that stops the run is masked like every other message.
 
-    ``complete`` is whether every test ran. A ceiling passed at the last test, or by what
-    the read after it found, left none out: ``stopped`` says it was passed (HB-32).
+    ``complete`` is whether every test ran all of its executions. A ceiling passed at the
+    last test, or by what the read after it found, left none out: ``stopped`` says it was
+    passed (HB-32). So did repeated errors whose last was the last execution of the last
+    test; a test they stopped halfway is in the result, and is not complete (HB-34).
     """
     complete = False
     try:
         summary = runner.run(spec)
-        complete = summary.total == sum(len(suite.tests) for suite in spec.suites)
+        every_test = summary.total == sum(len(suite.tests) for suite in spec.suites)
+        complete = every_test and not runner.interrupted
         return summary
     except (AgentStartError, AgentNotObservedError) as e:
         if not spec.agent.secrets:

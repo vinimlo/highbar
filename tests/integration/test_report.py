@@ -47,14 +47,17 @@ class _Project:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.report = root / "report.json"
+        self.variables: dict[str, str] = {}  # more of the environment, for ${VAR}
 
     @staticmethod
-    def agent(port: int, *server_args: str, start: str | None = None) -> str:
+    def agent(
+        port: int, *server_args: str, start: str | None = None, query: str = "", extra: str = ""
+    ) -> str:
         start = start or " ".join([sys.executable, str(SERVER), "--port", str(port), *server_args])
         return (
-            f'agent:\n  start: "{start}"\n  endpoint: "http://127.0.0.1:{port}/chat"\n'
+            f'agent:\n  start: "{start}"\n  endpoint: "http://127.0.0.1:{port}/chat{query}"\n'
             f'  health: "http://127.0.0.1:{port}/health"\n'
-            "  startup_timeout: 5000\n  settle_time: 50\n"
+            f"  startup_timeout: 5000\n  settle_time: 50\n{extra}"
         )
 
     @staticmethod
@@ -78,7 +81,7 @@ class _Project:
 
     @property
     def env(self) -> dict[str, str]:
-        return {**os.environ, "COLUMNS": "200"}
+        return {**os.environ, "COLUMNS": "200", **self.variables}
 
     def run(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -733,3 +736,205 @@ def test_i4_a_value_from_one_spec_stays_masked_in_the_next(project: _Project) ->
     assert token not in result.stdout + result.stderr
     (turn,) = project.data()["specs"][1]["tests"][0]["phrasings"][0]["executions"][0]["turns"]
     assert turn["response"] == "token=${HB_TEST_TOKEN}"
+
+
+# HB-34: an agent whose infrastructure is down stops the run, with 4.
+DOWN = ("--statuses", "500")
+
+
+def _executions(test: dict[str, Any]) -> list[dict[str, Any]]:
+    return [execution for phrasing in test["phrasings"] for execution in phrasing["executions"]]
+
+
+def _stop_line(output: str) -> str:
+    (line,) = [line for line in output.splitlines() if "executions in a row" in line]
+    return line.rstrip()
+
+
+@pytest.mark.timeout(40)
+def test_hb34_ac1_five_errors_in_a_row_stop_the_run_and_exit_4(project: _Project) -> None:
+    spec = project.spec(PASSES, PASSES, args=DOWN)
+
+    result = project.run(spec, "--runs", "10")
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    line = _stop_line(result.stdout)
+    assert "✗ 5 executions in a row failed with HTTP 500 from http://127.0.0.1:" in line
+    assert line.endswith(
+        "/chat (last: 'message 0'); the infrastructure failed, not the agent, so the run "
+        "stopped. Exits with 4."
+    )
+    (test,) = project.data()["specs"][0]["tests"]
+    assert len(_executions(test)) == 5
+
+
+@pytest.mark.timeout(40)
+def test_hb34_ac2_the_count_is_the_options(project: _Project) -> None:
+    spec = project.spec(PASSES, args=DOWN)
+
+    result = project.run(spec, "--runs", "10", "--max-errors", "3")
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "3 executions in a row failed with HTTP 500" in _stop_line(result.stdout)
+    (test,) = project.data()["specs"][0]["tests"]
+    assert len(_executions(test)) == 3
+
+
+@pytest.mark.timeout(40)
+def test_hb34_ac3_zero_runs_every_execution_as_before(project: _Project) -> None:
+    spec = project.spec(PASSES, args=DOWN)
+
+    result = project.run(spec, "--runs", "10", "--max-errors", "0")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "executions in a row" not in result.stdout
+    data = project.data()
+    assert data["stopped"] is None
+    (test,) = data["specs"][0]["tests"]
+    assert [execution["status"] for execution in _executions(test)] == ["error"] * 10
+
+
+@pytest.mark.timeout(40)
+def test_hb34_ac4_bodies_that_differ_are_one_cause(project: _Project) -> None:
+    """The stand-in's 500 carries a new request id each time."""
+    spec = project.spec(PASSES, args=DOWN)
+
+    result = project.run(spec, "--runs", "10")
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    (test,) = project.data()["specs"][0]["tests"]
+    errors = [execution["errors"][0] for execution in _executions(test)]
+    assert len(errors) == 5
+    assert len(set(errors)) == 5
+    assert all("upstream exploded" in error for error in errors)
+
+
+@pytest.mark.timeout(40)
+def test_hb34_ac4_a_timeout_between_errors_starts_the_count_over(project: _Project) -> None:
+    statuses = ("--statuses", "500,500,hang,500,500", "--hang", "3")
+    spec = project.spec(PASSES, args=statuses, extra="  timeout: 500\n")
+
+    result = project.run(spec, "--runs", "5")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    data = project.data()
+    assert data["stopped"] is None
+    (test,) = data["specs"][0]["tests"]
+    executions = _executions(test)
+    assert len(executions) == 5
+    assert "no response in 0.5s" in executions[2]["errors"][0]
+
+
+@pytest.mark.timeout(40)
+def test_hb34_ac7_the_report_of_a_run_stopped_in_the_middle_of_a_test(project: _Project) -> None:
+    spec = project.spec(PASSES, PASSES, args=DOWN)
+
+    result = project.run(spec, "--runs", "10")
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    data = project.data()
+    jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+    assert (data["exit_code"], data["complete"]) == (4, False)
+    assert data["stopped"]["reason"] == "repeated_errors"
+    assert data["stopped"]["message"] == _stop_line(result.stdout).split("✗ ", 1)[1]
+    assert data["summary"]["total"] == 1
+    assert data["summary"]["errored"] == 1
+    (spec_result,) = data["specs"]
+    assert spec_result["complete"] is False
+    # The test it stopped in, with the executions it had; the next one is not there.
+    (test,) = spec_result["tests"]
+    assert test["id"] == "S/message 0"
+    assert (test["status"], test["runs"]) == ("error", 10)
+    assert test["counts"] == {"passed": 0, "failed": 0, "error": 5}
+    assert test["phrasings"][0]["status"] == "error"
+    assert [execution["status"] for execution in _executions(test)] == ["error"] * 5
+    assert test["errors"][-1] == "the run stopped before this test ended: 5 of 10 executions ran"
+    # The terminal says the same of it.
+    assert "! message 0 0/5 (min 10)" in result.stdout
+    assert "→ the run stopped before this test ended: 5 of 10 executions ran" in result.stdout
+    assert "message 1" not in result.stdout
+
+
+@pytest.mark.timeout(40)
+def test_hb34_ac8_a_stop_at_the_last_execution_leaves_the_run_complete(project: _Project) -> None:
+    spec = project.spec(PASSES, args=DOWN)
+
+    result = project.run(spec, "--runs", "5")
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    data = project.data()
+    jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+    assert data["stopped"]["reason"] == "repeated_errors"
+    assert (data["exit_code"], data["complete"]) == (4, True)
+    assert data["specs"][0]["complete"] is True
+
+
+@pytest.mark.timeout(40)
+def test_hb34_ac9_neither_a_var_value_nor_the_body_reach_the_message(project: _Project) -> None:
+    secret = "s3cr3t-key-value-0123"
+    project.variables["HB34_KEY"] = secret
+    spec = project.spec(PASSES, args=DOWN, query="?key=${HB34_KEY}")
+
+    result = project.run(spec, "--runs", "5")
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert secret not in result.stdout + result.stderr
+    assert secret not in project.report.read_text(encoding="utf-8")
+    line = _stop_line(result.stdout)
+    message = project.data()["stopped"]["message"]
+    for text in (line, message):
+        assert "/chat?key=${HB34_KEY} (last: 'message 0')" in text
+        assert "upstream exploded" not in text
+
+
+@pytest.mark.timeout(60)
+def test_hb34_ac6_ac10_the_count_goes_on_into_the_next_spec_and_the_rest_do_not_run(
+    project: _Project,
+) -> None:
+    """One agent behind three specs: 2 passes and 3 errors, then 2 more errors."""
+    port = _free_port()
+    server = subprocess.Popen(
+        [sys.executable, str(SERVER), "--port", str(port), "--no-traces"]
+        + ["--statuses", "200,200,500,500,500,500,500"]
+    )
+    attached = f'agent:\n  endpoint: "http://127.0.0.1:{port}/chat"\n  settle_time: 50\n'
+    for name in ("a", "b", "c"):
+        path = project.root / "specs" / f"{name}.highbar.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(attached + project.suites(PASSES), encoding="utf-8")
+    try:
+        assert _wait_until(lambda: accepts_connections("127.0.0.1", port), 10)
+        result = project.run("specs", "--runs", "5")
+    finally:
+        server.kill()
+        server.wait()
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    data = project.data()
+    assert [spec["path"] for spec in data["specs"]] == [
+        "specs/a.highbar.yaml",
+        "specs/b.highbar.yaml",
+    ]
+    first, second = data["specs"]
+    assert (first["complete"], second["complete"], data["complete"]) == (True, False, False)
+    assert first["tests"][0]["counts"] == {"passed": 2, "failed": 0, "error": 3}
+    (stopped_in,) = second["tests"]
+    assert stopped_in["status"] == "error"
+    assert len(_executions(stopped_in)) == 2
+    assert data["stopped"]["reason"] == "repeated_errors"
+    assert data["stopped"]["message"].startswith("5 executions in a row failed with HTTP 500")
+    assert "specs/c.highbar.yaml" not in result.stdout
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("value", ["-1", "abc"])
+def test_hb34_ac11_a_count_that_is_not_one_exits_2_before_any_message(
+    project: _Project, value: str
+) -> None:
+    spec = project.spec(PASSES, start="touch agent-started")
+
+    result = project.run(spec, "--max-errors", value)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "--max-errors" in result.stdout + result.stderr
+    assert not (project.root / "agent-started").exists()

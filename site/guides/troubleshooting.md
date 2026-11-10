@@ -50,6 +50,14 @@ The agent must create `highbar.Highbar()` after `HIGHBAR_TRACES_URL` is in its e
 - **`HTTP 307 … redirected to …`**, **`no response in 60s (agent.timeout)`**, **an empty reply**: the request did not get an answer to check. Fix the endpoint, or raise `agent.timeout`.
 - **`session.setup …`**: the session hook failed, and the message is the hook's own.
 
+## The run stops after errors in a row (exit code 4)
+
+```console
+  ✗ 5 executions in a row failed with HTTP 500 from http://localhost:8000/chat (last: 'refund policy'); the infrastructure failed, not the agent, so the run stopped. Exits with 4.
+```
+
+Every one of the last executions got no reply to check, for the same cause, from the same endpoint: the agent, or what it depends on, is down. The tests above the line show each error in full, the body of the reply included, which usually says why. Check the agent's log (`.highbar/logs/` when highbar started it), fix what is down, and run again. To run every execution anyway, pass [`--max-errors 0`](/reference/cli#max-errors).
+
 ## A warning about calls without a test context
 
 ```text

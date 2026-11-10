@@ -81,6 +81,8 @@ So a spec can keep `runs: 1` for a fast local loop, and CI can run everything th
 
 A run that ended in `error` (the agent timed out, the message was not observed) counts as not passed. It is not evidence that the agent did wrong, either. When the runs that passed plus the runs that errored could have reached `min_pass`, the test is an `error`, not a `failed`: 3 passed and 2 timed out with `min_pass: 4` is unverified. Both are red, and both exit with 1.
 
+Errors that come now and then are what `min_pass` is for. Errors that never stop are not: when 5 executions in a row get no reply for the same cause (the same HTTP status, a refused connection, a timeout or an empty body, from the same endpoint), the infrastructure is down, and the run stops there with exit code 4, even in the middle of a test's runs. The test it stopped in is an `error`, whatever its runs so far. Any other ending starts the count over. [`--max-errors`](/reference/cli#max-errors) changes the 5, and `--max-errors 0` turns the stop off.
+
 A tool call that arrives after its run was judged (a background task that finished late) fails that run, and the test is judged again against `min_pass`. When the test was already reported, highbar prints a warning, and counts it again if its result changed.
 
 ## A CI gate
@@ -105,4 +107,4 @@ jobs:
 
 - `--runs 3` is a reasonable floor for a gate; raise it for the tests that decide a release.
 - `--frozen` makes the run use only the committed [variations](/guides/variations), so it never calls an LLM to paraphrase.
-- The exit code is the gate: 0 when every test passed, 1 when any failed or errored, 2 when nothing could run, 3 when `--max-cost` stopped the run.
+- The exit code is the gate: 0 when every test passed, 1 when any failed or errored, 2 when nothing could run, 3 when `--max-cost` stopped the run, 4 when `--max-errors` stopped it because the agent's infrastructure kept failing.

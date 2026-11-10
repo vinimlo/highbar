@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import pytest
 
-from highbar.adapters.http_client import AgentResponseError, HTTPClient
+from highbar.adapters.http_client import AgentResponseError, HTTPClient, InfraCause
 from highbar.adapters.ports import accepts_connections
 from highbar.domain.models import RequestConfig
 from highbar.engine.placeholders import Values
@@ -316,3 +316,147 @@ class TestReviewFindings:
 
         assert "s3cr3t" not in str(info.value)
         assert "header" in str(info.value)
+
+
+def _failure(client: HTTPClient) -> AgentResponseError:
+    with pytest.raises(AgentResponseError) as raised:
+        client.send("hi", values=_values())
+    return raised.value
+
+
+def _raising(error: Exception) -> Callable[[httpx.Request], httpx.Response]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise error
+
+    return handler
+
+
+JSON = {"Content-Type": "application/json"}
+
+
+class TestInfraCause:
+    """HB-34: what --max-errors counts is a failure of the transport or of HTTP, with the
+    endpoint it came from, and never the body."""
+
+    def test_hb34_an_http_status_is_its_cause_and_the_body_is_not(self) -> None:
+        agent = _Agent(httpx.Response(500, text="upstream exploded, request 1"))
+
+        error = _failure(agent.client())
+
+        assert error.cause == InfraCause("http_status", ENDPOINT, status=500)
+        assert error.cause is not None
+        assert error.cause.phrase() == f"with HTTP 500 from {ENDPOINT}"
+        # The test's own error still says what came back.
+        assert "upstream exploded" in str(error)
+
+    def test_hb34_two_bodies_of_one_status_are_one_cause(self) -> None:
+        bodies = iter(["request 1", "request 2"])
+        agent = _Agent(lambda request: httpx.Response(500, text=next(bodies)))
+
+        first, second = _failure(agent.client()), _failure(agent.client())
+
+        assert str(first) != str(second)
+        assert first.cause == second.cause
+
+    @pytest.mark.parametrize("status", [101, 302, 404, 503])
+    def test_hb34_each_status_outside_2xx_is_a_cause_of_its_own(self, status: int) -> None:
+        response = httpx.Response(status, headers={"Location": "http://agent.test/chat/"})
+
+        error = _failure(_Agent(response).client())
+
+        assert error.cause == InfraCause("http_status", ENDPOINT, status=status)
+        assert error.cause != InfraCause("http_status", ENDPOINT, status=500)
+
+    def test_hb34_another_endpoint_is_another_cause(self) -> None:
+        other = InfraCause("http_status", "http://other.test/chat", status=500)
+
+        assert InfraCause("http_status", ENDPOINT, status=500) != other
+
+    def test_hb34_a_connection_that_cannot_be_made(self) -> None:
+        error = _failure(_Agent(_raising(httpx.ConnectError("refused"))).client())
+
+        assert error.cause == InfraCause("connect", ENDPOINT)
+        assert error.cause is not None
+        assert error.cause.phrase() == f"to connect to {ENDPOINT}"
+
+    def test_hb34_a_timeout_is_one_cause_however_long_the_wait(self) -> None:
+        agent = _Agent(_raising(httpx.ReadTimeout("timed out")))
+
+        error = _failure(agent.client(timeout_ms=500))
+
+        assert error.cause == InfraCause("timeout", ENDPOINT)
+        assert error.cause is not None
+        assert error.cause.seconds == 0.5
+        expected = f"with no response from {ENDPOINT} within agent.timeout (0.5s)"
+        assert error.cause.phrase() == expected
+        one, other = (InfraCause("timeout", ENDPOINT, seconds=s) for s in (1, 2))
+        assert one == other
+
+    def test_hb34_a_reply_that_keeps_trickling_past_the_deadline_is_a_timeout(self) -> None:
+        agent = _Agent(httpx.Response(200, stream=_Trickle()))
+
+        error = _failure(agent.client(timeout_ms=500))
+
+        assert error.cause == InfraCause("timeout", ENDPOINT)
+
+    def test_hb34_another_error_of_the_transport(self) -> None:
+        agent = _Agent(_raising(httpx.RemoteProtocolError("Server disconnected")))
+
+        error = _failure(agent.client())
+
+        assert error.cause == InfraCause("transport", ENDPOINT)
+
+    @pytest.mark.parametrize("status", [200, 204])
+    def test_hb34_an_empty_body_names_the_endpoint(self, status: int) -> None:
+        error = _failure(_Agent(httpx.Response(status)).client())
+
+        assert error.cause == InfraCause("empty_body", ENDPOINT)
+        assert error.cause is not None
+        assert error.cause.phrase() == f"with an empty body from {ENDPOINT}"
+
+    @pytest.mark.parametrize(
+        ("response", "path"),
+        [
+            # A JSON null body; _json(None) would send an empty body, which is a cause.
+            (httpx.Response(200, content=b"null", headers=JSON), None),
+            (_json({"response": None}), None),
+            (_json({"data": {"text": "x"}}), None),
+            (_json({"data": {"text": "x"}}), "data.reply"),
+            (_json({"data": {"reply": None}}), "data.reply"),
+            (httpx.Response(200, text="<html>", headers={"Content-Type": "text/plain"}), "data"),
+            (httpx.Response(200, text='{"response": ', headers=JSON), None),
+        ],
+    )
+    def test_hb34_a_reply_that_came_and_cannot_be_read_has_no_cause(
+        self, response: httpx.Response, path: str | None
+    ) -> None:
+        """The agent is up and answered: that is not its infrastructure failing."""
+        assert _failure(_Agent(response).client(response_path=path)).cause is None
+
+    def test_hb34_a_json_null_body_is_a_reply_and_starts_the_count_over(self) -> None:
+        """A body of ``null`` came: it is read as JSON null, not as an empty body."""
+        error = _failure(_Agent(httpx.Response(200, content=b"null", headers=JSON)).client())
+
+        assert "JSON null" in str(error)
+        assert error.cause is None
+
+    def test_hb34_a_reply_too_large_has_no_cause(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("highbar.adapters.http_client.MAX_REPLY_BYTES", 1000)
+
+        assert _failure(_Agent(httpx.Response(200, text="x" * 5000)).client()).cause is None
+
+    def test_hb34_a_header_the_library_refuses_has_no_cause(self) -> None:
+        """Nothing was sent: it says nothing about the agent's infrastructure."""
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        client = HTTPClient(f"http://127.0.0.1:{port}/chat", timeout_ms=2000)
+        session = {"headers": {"Authorization": "Bearer s3cr3t-token\n"}}
+        try:
+            with pytest.raises(AgentResponseError) as info:
+                client.send("hi", values=_values(session))
+        finally:
+            listener.close()
+
+        assert info.value.cause is None
