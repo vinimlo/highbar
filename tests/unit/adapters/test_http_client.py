@@ -417,7 +417,8 @@ class TestInfraCause:
     @pytest.mark.parametrize(
         ("response", "path"),
         [
-            (_json(None), None),
+            # A JSON null body; _json(None) would send an empty body, which is a cause.
+            (httpx.Response(200, content=b"null", headers=JSON), None),
             (_json({"response": None}), None),
             (_json({"data": {"text": "x"}}), None),
             (_json({"data": {"text": "x"}}), "data.reply"),
@@ -431,6 +432,13 @@ class TestInfraCause:
     ) -> None:
         """The agent is up and answered: that is not its infrastructure failing."""
         assert _failure(_Agent(response).client(response_path=path)).cause is None
+
+    def test_hb34_a_json_null_body_is_a_reply_and_starts_the_count_over(self) -> None:
+        """A body of ``null`` came: it is read as JSON null, not as an empty body."""
+        error = _failure(_Agent(httpx.Response(200, content=b"null", headers=JSON)).client())
+
+        assert "JSON null" in str(error)
+        assert error.cause is None
 
     def test_hb34_a_reply_too_large_has_no_cause(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("highbar.adapters.http_client.MAX_REPLY_BYTES", 1000)
