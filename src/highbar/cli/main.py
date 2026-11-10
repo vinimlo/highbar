@@ -18,13 +18,14 @@ from rich.markup import escape
 
 from highbar.adapters.subprocess_adapter import AgentStartError
 from highbar.cli.scaffold import quickstart_files
-from highbar.domain.models import RunSummary, Spec
+from highbar.domain.models import BUDGET_EXCEEDED, REPEATED_ERRORS, RunSummary, Spec
 from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.parser import parse_spec
 from highbar.engine.run_spec import load_session_hooks, run_spec
 from highbar.engine.runs import check_runs
 from highbar.engine.schema import SpecError
 from highbar.engine.session import SessionError, SessionHooks
+from highbar.engine.streak import DEFAULT_MAX_ERRORS, ErrorStreak
 from highbar.engine.usage import add_costs, add_up
 from highbar.reporters.json_report import JsonReport, ReportError
 from highbar.reporters.terminal import format_summary
@@ -37,6 +38,9 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_UNRUNNABLE = 2
 EXIT_BUDGET_EXCEEDED = 3  # --max-cost stopped the run: the tests left say nothing either way
+# --max-errors stopped the run: the agent's infrastructure failed, and nothing was measured.
+# The message that stops the run states it (highbar.engine.streak.EXIT_CODE).
+EXIT_REPEATED_ERRORS = 4
 EXIT_INTERRUPTED = 130  # the shell's code for a run stopped by Ctrl-C (128 + SIGINT)
 EXIT_SIGNALED = 128  # plus the signal's number
 
@@ -134,13 +138,30 @@ def run(
             f"than AMOUNT, in the currency they came in. Exits with {EXIT_BUDGET_EXCEEDED}."
         ),
     ),
+    max_errors: int = typer.Option(
+        DEFAULT_MAX_ERRORS,
+        "--max-errors",
+        metavar="N",
+        help=(
+            "Stop the run once N executions in a row fail for the same cause of the "
+            "agent's infrastructure: the same HTTP status, a refused connection, a timeout "
+            "or an empty body, from the same endpoint. 0 never stops. Exits with "
+            f"{EXIT_REPEATED_ERRORS}."
+        ),
+    ),
 ) -> None:
     """Run behavior tests against your agent."""
     paths = _discover_specs(spec_path)
     report = _open_report(report_to, paths)
     try:
         code = _run_all(
-            paths, report, runs=runs, frozen=frozen, keep_traces=keep_traces, max_cost=max_cost
+            paths,
+            report,
+            runs=runs,
+            frozen=frozen,
+            keep_traces=keep_traces,
+            max_cost=max_cost,
+            max_errors=max_errors,
         )
     except KeyboardInterrupt:
         # Anywhere in the run, parsing and hooks included. If an agent was up, the
@@ -224,6 +245,7 @@ def _run_all(
     frozen: bool,
     keep_traces: bool,
     max_cost: float | None = None,
+    max_errors: int = DEFAULT_MAX_ERRORS,
 ) -> int:
     """Run every spec and return the exit code.
 
@@ -237,6 +259,11 @@ def _run_all(
 
     if max_cost is not None and not 0 <= max_cost < math.inf:
         message = "--max-cost must be a number of at least 0."
+        console.print(f"[red]{message}[/red]")
+        return _stopped(report, "usage_error", message, EXIT_UNRUNNABLE)
+
+    if max_errors < 0:
+        message = "--max-errors must be a whole number of at least 0 (0 never stops)."
         console.print(f"[red]{message}[/red]")
         return _stopped(report, "usage_error", message, EXIT_UNRUNNABLE)
 
@@ -265,6 +292,8 @@ def _run_all(
     generator = VariationGenerator(VariationCache(find_cache_path()), frozen=frozen)
 
     summaries: list[RunSummary] = []
+    # The errors in a row so far: like the ceiling, the count is the whole run's.
+    streak = ErrorStreak()
     current = ""
     try:
         with _terminate_as_exit():
@@ -282,9 +311,11 @@ def _run_all(
                         max_cost=max_cost,
                         spent=_spent(summaries),
                         spent_untagged=_spent_untagged(summaries),
+                        max_errors=max_errors or None,
+                        streak=streak,
                     )
                 )
-                # The ceiling is the whole run's, so the specs left do not start either.
+                # Either stop is the whole run's, so the specs left do not start either.
                 if summaries[-1].stopped is not None:
                     break
     except AgentStartError as e:
@@ -306,10 +337,13 @@ def _run_all(
         console.print(f"  Total: {format_summary(total, styled=True)}\n")
 
     # Before the tests' verdict: a run that was cut short is not a verdict on the agent.
-    stopped = summaries[-1].stopped if summaries else None
-    if stopped is not None:
-        console.print(f"  [red]✗[/red] {escape(stopped)}", soft_wrap=True)
-        return _stopped(report, "budget_exceeded", stopped, EXIT_BUDGET_EXCEEDED)
+    # The message is the runner's, with every value from ${VAR} already masked.
+    last = summaries[-1] if summaries else None
+    if last is not None and last.stopped is not None:
+        console.print(f"  [red]✗[/red] {escape(last.stopped)}", soft_wrap=True)
+        if last.stop_reason == REPEATED_ERRORS:
+            return _stopped(report, REPEATED_ERRORS, last.stopped, EXIT_REPEATED_ERRORS)
+        return _stopped(report, BUDGET_EXCEEDED, last.stopped, EXIT_BUDGET_EXCEEDED)
 
     # An error is not a pass: a run where a test could not be checked is not green.
     return EXIT_FAILED if total.failed or total.errored else EXIT_OK

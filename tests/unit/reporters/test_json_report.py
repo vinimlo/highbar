@@ -558,8 +558,67 @@ class TestUsage:
         assert (data["exit_code"], data["complete"]) == (3, True)
 
     def test_hb32_any_other_stop_leaves_the_run_incomplete(self, workdir: Path) -> None:
-        """Only the ceiling is checked after the last test; the rest stop a run halfway."""
+        """Only the ceiling and repeated errors can come at the end; the rest stop a run
+        halfway."""
         assert self._stopped_after_every_spec(workdir, "interrupted", 130)["complete"] is False
+
+    def test_hb34_ac12_repeated_errors_is_a_reason_the_schema_knows(self, workdir: Path) -> None:
+        enum = _schema()["properties"]["stopped"]["oneOf"][1]["properties"]["reason"]["enum"]
+
+        assert {"budget_exceeded", "repeated_errors"} <= set(enum)
+
+    def test_hb34_ac8_repeated_errors_at_the_last_execution_leave_the_run_complete(
+        self, workdir: Path
+    ) -> None:
+        data = self._stopped_after_every_spec(workdir, "repeated_errors", 4)
+
+        jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+        assert data["stopped"]["reason"] == "repeated_errors"
+        assert (data["exit_code"], data["complete"]) == (4, True)
+
+    def test_hb34_ac7_repeated_errors_in_the_middle_of_a_spec_leave_it_incomplete(
+        self, workdir: Path
+    ) -> None:
+        spec_path = _spec_file(workdir)
+        report = JsonReport(workdir / "r.json", version="1.2.3")
+        report.start()
+        report.plan([(spec_path, SPEC)])
+        report.add(spec_path, SPEC, _summary(_test()), False)
+        report.stop("repeated_errors", "5 executions in a row failed with HTTP 500 from x")
+        report.finish(4)
+
+        data = _read(workdir / "r.json")
+
+        jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+        assert (data["exit_code"], data["complete"]) == (4, False)
+        assert data["specs"][0]["complete"] is False
+        assert data["stopped"] == {
+            "reason": "repeated_errors",
+            "message": "5 executions in a row failed with HTTP 500 from x",
+        }
+
+    def test_hb34_ac9_the_message_is_masked_in_the_file(self, workdir: Path) -> None:
+        agent = AgentConfig(endpoint="http://x/chat", secrets={"s3cr3t-value": "KEY"})
+        spec = Spec(agent=agent, suites=[])
+        spec_path = _spec_file(workdir)
+        report = JsonReport(workdir / "r.json", version="1.2.3")
+        report.start()
+        report.plan([(spec_path, spec)])
+        report.stop("repeated_errors", "failed with HTTP 500 from http://x/chat?key=s3cr3t-value")
+        report.finish(4)
+
+        message = _read(workdir / "r.json")["stopped"]["message"]
+
+        assert message == "failed with HTTP 500 from http://x/chat?key=${KEY}"
+
+    def test_hb34_ac12_a_report_from_before_repeated_errors_is_still_valid(
+        self, workdir: Path
+    ) -> None:
+        """The reason was added to the enum: the reports it already took still pass."""
+        data = self._stopped_after_every_spec(workdir, "budget_exceeded", 3)
+
+        jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+        assert data["stopped"]["reason"] == "budget_exceeded"
 
 
 class TestGit:

@@ -3,14 +3,16 @@
 The request (method, headers, body) and where the reply text lives come from the
 spec's ``agent`` block (D5). Every failure is an ``AgentResponseError`` whose
 message says what came back, never the request's headers: they carry tokens, and
-this output ends up in CI logs.
+this output ends up in CI logs. A failure of the transport or of HTTP also carries its
+``InfraCause``, which is what --max-errors counts (HB-34).
 """
 
 from __future__ import annotations
 
 import json
 import time
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 import httpx
 
@@ -29,8 +31,49 @@ REPLY_KEYS = ("response", "message", "content", "text", "reply")
 TEST_HEADER = "X-Highbar-Test"
 
 
+CauseKind = Literal["http_status", "connect", "timeout", "transport", "empty_body"]
+
+
+@dataclass(frozen=True)
+class InfraCause:
+    """Why a message got no reply to check, when the transport or HTTP is why (HB-34).
+
+    Two failures have the same cause when they have the same ``kind``, ``status`` and
+    ``endpoint``. The body is never part of it: a request id in it changes each time,
+    and it is the agent's text, which a message about the run does not show.
+    ``seconds`` (of a timeout) only says how long the wait was.
+    """
+
+    kind: CauseKind
+    endpoint: str
+    status: int | None = None  # the HTTP status, for "http_status" only
+    seconds: float | None = field(default=None, compare=False)
+
+    def phrase(self) -> str:
+        """What follows "failed" in a sentence: "with HTTP 500 from <endpoint>"."""
+        if self.kind == "http_status":
+            return f"with HTTP {self.status} from {self.endpoint}"
+        if self.kind == "connect":
+            return f"to connect to {self.endpoint}"
+        if self.kind == "timeout":
+            wait = f" ({self.seconds:g}s)" if self.seconds is not None else ""
+            return f"with no response from {self.endpoint} within agent.timeout{wait}"
+        if self.kind == "empty_body":
+            return f"with an empty body from {self.endpoint}"
+        return f"with a transport error from {self.endpoint}"
+
+
 class AgentResponseError(RuntimeError):
-    """The agent could not be reached, failed, or replied with no text to check."""
+    """The agent could not be reached, failed, or replied with no text to check.
+
+    ``cause`` is set when the transport or HTTP failed: no connection, a timeout, a
+    status outside 2xx, an empty body. A reply that came but cannot be read (invalid
+    JSON, agent.response missing or null) has none: the agent is up, and answered that.
+    """
+
+    def __init__(self, message: str, cause: InfraCause | None = None) -> None:
+        super().__init__(message)
+        self.cause = cause
 
 
 class HTTPClient:
@@ -66,6 +109,7 @@ class HTTPClient:
             content["json"] = body
 
         seconds = self._timeout_ms / 1000
+        timeout = InfraCause("timeout", self._endpoint, seconds=seconds)
         # httpx's timeout bounds each read, not the whole reply: a reply that keeps
         # trickling bytes would never end. The deadline bounds it.
         deadline = time.monotonic() + seconds
@@ -76,35 +120,49 @@ class HTTPClient:
                     self._request.method, self._endpoint, headers=headers, **content
                 ) as reply,
             ):
-                raw = _read(reply, deadline, seconds)
+                raw = _read(reply, deadline, seconds, timeout)
         except httpx.TimeoutException:
-            raise AgentResponseError(f"no response in {seconds:g}s (agent.timeout)") from None
+            raise AgentResponseError(
+                f"no response in {seconds:g}s (agent.timeout)", timeout
+            ) from None
         except httpx.ConnectError as e:
-            raise AgentResponseError(f"cannot reach {self._endpoint}: {e}") from None
+            raise AgentResponseError(
+                f"cannot reach {self._endpoint}: {e}", InfraCause("connect", self._endpoint)
+            ) from None
         except httpx.LocalProtocolError:
             # The library quotes the offending header value whole, and it is usually a
             # token read with its trailing newline: say which kind of problem, never it.
+            # Nothing was sent, so it says nothing about the agent's infrastructure.
             raise AgentResponseError(
                 f"the request to {self._endpoint} could not be sent: a header value has a "
                 "control character or leading or trailing whitespace (agent.request.headers "
                 "or the session's headers); the value is not shown"
             ) from None
         except httpx.HTTPError as e:
-            raise AgentResponseError(f"request to {self._endpoint} failed: {e}") from None
+            transport = isinstance(e, httpx.TransportError)
+            cause = InfraCause("transport", self._endpoint) if transport else None
+            raise AgentResponseError(f"request to {self._endpoint} failed: {e}", cause) from None
 
         text = raw.decode(reply.charset_encoding or "utf-8", errors="replace")
         status = reply.status_code
+        failed = InfraCause("http_status", self._endpoint, status=status)
         if 300 <= status < 400:
             where = reply.headers.get("Location", "an unnamed location")
             raise AgentResponseError(
                 f"HTTP {status} from {self._endpoint}: redirected to {where}; "
-                "set agent.endpoint to that URL"
+                "set agent.endpoint to that URL",
+                failed,
             )
         if not reply.is_success:
-            raise AgentResponseError(f"HTTP {status} from {self._endpoint}: {truncate(text)}")
+            raise AgentResponseError(
+                f"HTTP {status} from {self._endpoint}: {truncate(text)}", failed
+            )
         if not raw.strip():
             # Checked as "", it would pass every not_contains and every guardrail on text.
-            raise AgentResponseError(f"the agent replied with an empty body (HTTP {status})")
+            raise AgentResponseError(
+                f"the agent replied with an empty body (HTTP {status})",
+                InfraCause("empty_body", self._endpoint),
+            )
         content_type = reply.headers.get("Content-Type", "").split(";")[0].strip().lower()
         return self._reply_text(text, declared_json=_is_json(content_type))
 
@@ -180,17 +238,18 @@ class HTTPClient:
         return raw
 
 
-def _read(reply: httpx.Response, deadline: float, seconds: float) -> bytes:
+def _read(reply: httpx.Response, deadline: float, seconds: float, timeout: InfraCause) -> bytes:
     body = bytearray()
     for chunk in reply.iter_bytes():
         body += chunk
         if len(body) > MAX_REPLY_BYTES:
+            # The agent answered, at length: that is not its infrastructure failing.
             raise AgentResponseError(
                 f"the reply is larger than {MAX_REPLY_BYTES // 1_000_000} MB; "
                 "highbar stops reading there"
             )
         if time.monotonic() > deadline:
-            raise AgentResponseError(f"no response in {seconds:g}s (agent.timeout)")
+            raise AgentResponseError(f"no response in {seconds:g}s (agent.timeout)", timeout)
     return bytes(body)
 
 

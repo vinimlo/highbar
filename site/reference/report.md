@@ -24,14 +24,14 @@ Responses and tool arguments go in whole, so treat it like a trace file from `--
 | `highbar_version` | |
 | `started_at`, `duration_ms` | UTC with milliseconds; wall time of the run. |
 | `exit_code` | The code the process returned. `null` means the run did not finish: it is still going, or it was killed. |
-| `complete` | Every test of every spec ran. A run that `--max-cost` stopped after its last test is complete: `stopped` says the ceiling was passed. |
+| `complete` | Every test of every spec ran all of its executions. A run that `--max-cost` stopped after its last test is complete: `stopped` says the ceiling was passed. So is a run that `--max-errors` stopped at the last execution of its last test. |
 | `stopped` | Why the run ended early, or `null`: `{"reason": ..., "message": ...}`. |
 | `git_sha` | `HEAD` where highbar ran, which is not always the agent's version. `null` outside a repository. |
 | `summary` | `total`, `passed`, `failed`, `errored` and `variations` of the whole run. |
 | `totals` | [Tokens and cost](#tokens-and-cost) of the whole run. |
 | `specs` | One entry per spec that started. |
 
-`stopped.reason` is one of `usage_error`, `spec_invalid`, `hooks_invalid`, `no_specs`, `agent_start_failed`, `agent_not_observed`, `budget_exceeded`, `interrupted` and `crashed`.
+`stopped.reason` is one of `usage_error`, `spec_invalid`, `hooks_invalid`, `no_specs`, `agent_start_failed`, `agent_not_observed`, `budget_exceeded`, `repeated_errors`, `interrupted` and `crashed`. A reason can be added within a version, as `repeated_errors` was, so a reader treats one it does not know as a run that stopped early.
 
 The file is written before the first message and again on every way out of the run, through a temporary file and a rename. So it is never half written, and it never shows an older run:
 
@@ -39,9 +39,10 @@ The file is written before the first message and again on every way out of the r
 - A run that was killed leaves `exit_code: null`.
 - An interrupted run keeps the tests that finished, and the test in progress is left out.
 - A run stopped by `--max-cost` keeps every test that ran, with `stopped.reason: "budget_exceeded"`. The test in progress had time to finish, and the ones after it are not in the file. When the ceiling is passed only at the last test, or by what was read after it, no test was left out, and `complete` is `true`. `stopped.message` says how much of the spend had no test context: that part of an agent highbar started counts for the ceiling and is in no `totals`.
+- A run stopped by [`--max-errors`](/reference/cli#max-errors) has `stopped.reason: "repeated_errors"`, `exit_code: 4`, and the line it printed in `stopped.message`, without the body of any reply. Its executions keep the status they had. The test it stopped in is in the file with the executions that ran, as an `error` whose `errors` say how many of its executions ran, and its spec's `complete` is `false`; the tests after it are not in the file. When the last error was the last execution of the last test, nothing was left out, and `complete` is `true`.
 - A run that cannot write the final file exits with 2, whatever its tests did.
 
-The one exception is a command line that highbar cannot read: an unknown option, `--runs abc` or a `--report` value without a known format. It exits with 2 before the file is opened, so an older file stays in place. A script that keeps reports should check the exit code first.
+The one exception is a command line that highbar cannot read: an unknown option, `--runs abc`, `--max-errors abc` or a `--report` value without a known format. It exits with 2 before the file is opened, so an older file stays in place. A script that keeps reports should check the exit code first.
 
 ## Each spec
 
@@ -53,7 +54,7 @@ The one exception is a command line that highbar cannot read: an unknown option,
 | `complete`, `summary`, `totals` | As above, for this spec. |
 | `warnings` | What the run warned about. |
 | `suites` | One entry per suite that ran: its `name` and its `totals`. |
-| `tests` | The tests that finished. |
+| `tests` | The tests that finished, and the one `--max-errors` stopped in. |
 
 ## Each test
 

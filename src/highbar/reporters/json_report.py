@@ -20,12 +20,23 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
 
-from highbar.domain.models import RunSummary, Spec, UsageTotals, iso_utc
+from highbar.domain.models import (
+    BUDGET_EXCEEDED,
+    REPEATED_ERRORS,
+    RunSummary,
+    Spec,
+    UsageTotals,
+    iso_utc,
+)
 from highbar.engine.secrets import redact
 from highbar.engine.usage import add_up
 
 SCHEMA_VERSION = 1
 GIT_TIMEOUT_S = 2
+
+# The stops that can come after the last execution of the last test, and leave the run
+# complete: the specs' own `complete` tells.
+CAN_END_COMPLETE = frozenset({BUDGET_EXCEEDED, REPEATED_ERRORS})
 
 
 class ReportError(Exception):
@@ -86,8 +97,10 @@ class JsonReport:
         """Write the final report. Raises ``ReportError``."""
         ran = {spec["path"] for spec in self._specs}
         # A ceiling passed once every test ran left nothing out, and `stopped` says it was
-        # passed (HB-32). Any other reason ended the run halfway.
-        halfway = self._stopped is not None and self._stopped["reason"] != "budget_exceeded"
+        # passed (HB-32); so did repeated errors whose last was the last execution of the
+        # last test (HB-34). Each spec says whether all of its tests ran all they had to.
+        # Any other reason ended the run halfway.
+        halfway = self._stopped is not None and self._stopped["reason"] not in CAN_END_COMPLETE
         complete = (
             not halfway
             and ran >= set(self._planned)

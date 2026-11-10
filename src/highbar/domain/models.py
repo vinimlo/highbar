@@ -524,6 +524,11 @@ class SuiteOutcome:
     totals: UsageTotals | None = None
 
 
+# Why a run stopped before its end: RunSummary.stop_reason, and the report's stopped.reason.
+BUDGET_EXCEEDED = "budget_exceeded"  # --max-cost
+REPEATED_ERRORS = "repeated_errors"  # --max-errors
+
+
 @dataclass(frozen=True)
 class RunSummary:
     """Summary of a complete test run.
@@ -535,8 +540,11 @@ class RunSummary:
     ``tests`` holds every finished test in its final state, and the counts are theirs:
     a late call can change a test after its result was first shown.
 
-    ``stopped`` says why the run ended before its last test, when it was stopped by its
-    cost ceiling; ``tests`` then holds the ones that finished.
+    ``stopped`` says why the run ended before its last test, and ``stop_reason`` which
+    stop it was: ``BUDGET_EXCEEDED`` (its cost ceiling, at the end of a test) or
+    ``REPEATED_ERRORS`` (executions in a row that failed for one cause of the
+    infrastructure, which can come in the middle of a test). ``tests`` then holds the
+    ones that ran, and a test that stopped halfway is an error with the executions it had.
 
     ``untagged_cost`` is what an agent highbar started spent, per currency, in `turn`
     records with no test context: in no total, and counted by the cost ceiling.
@@ -554,3 +562,4 @@ class RunSummary:
     suites: tuple[SuiteOutcome, ...] = ()
     stopped: str | None = None
     untagged_cost: dict[str, float] = field(default_factory=dict[str, float])
+    stop_reason: str | None = None

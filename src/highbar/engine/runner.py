@@ -10,10 +10,12 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from highbar.adapters.file_collector import TraceFormatError
-from highbar.adapters.http_client import AgentResponseError, HTTPClient
+from highbar.adapters.http_client import AgentResponseError, HTTPClient, InfraCause
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
 from highbar.assertions.response import truncate
 from highbar.domain.models import (
+    BUDGET_EXCEEDED,
+    REPEATED_ERRORS,
     Budget,
     Counts,
     ExecutionOutcome,
@@ -53,6 +55,7 @@ from highbar.engine.placeholders import PlaceholderError, Values, render
 from highbar.engine.runs import phrasing_status, resolve_runs
 from highbar.engine.secrets import redact, redact_value
 from highbar.engine.session import SessionContext, SessionError, SessionHooks
+from highbar.engine.streak import ErrorStreak, stop_message
 from highbar.engine.templates import TemplateError, resolve_template
 from highbar.engine.usage import (
     BudgetCheck,
@@ -166,6 +169,8 @@ class _Execution:
     turns: list[_TurnLog] = field(default_factory=list[_TurnLog])
     budget: Budget | None = None  # for the sum of its turns
     read: bool = False  # a window was read for it: a message that failed to send reads none
+    # Why the send of its last turn failed, when the transport or HTTP did (HB-34).
+    cause: InfraCause | None = None
 
     def close(self, result: TestResult) -> TestResult:
         self.errors, self.duration_ms = list(result.errors), result.duration_ms
@@ -275,6 +280,9 @@ class _Gate:
 
     A late call fails its own run, and the test is judged again against min_pass:
     a run that fails late counts like a run that fails in time, no more.
+
+    A test the run stopped in the middle of (``interrupted``, HB-34) is an error, and so
+    is the phrasing it stopped in: half a test is not a verdict, whatever its runs say.
     """
 
     min_pass: int
@@ -282,10 +290,21 @@ class _Gate:
     runs: list[list[Status]] = field(default_factory=list[list[Status]])
     # What each phrasing is: its kind and its text, in the order of ``runs``.
     phrasings: list[tuple[str, str | None]] = field(default_factory=list[tuple[str, str | None]])
+    each: int = 1  # the runs each phrasing has to make
+    interrupted: bool = False
 
     @property
     def status(self) -> Status:
-        return combine(phrasing_status(statuses, self.min_pass) for statuses in self.runs)
+        if self.interrupted:
+            return Status.ERROR
+        return combine(self.phrasing(number) for number in range(len(self.runs)))
+
+    def phrasing(self, number: int) -> Status:
+        """The status of one phrasing: an error when the run stopped before its last run."""
+        statuses = self.runs[number]
+        if self.interrupted and len(statuses) < self.each:
+            return Status.ERROR
+        return phrasing_status(statuses, self.min_pass)
 
     @property
     def counts(self) -> tuple[int, int, int] | None:
@@ -389,6 +408,8 @@ class TestRunner:
         max_cost: float | None = None,
         spent: Mapping[str, float] | None = None,
         spent_untagged: Mapping[str, float] | None = None,
+        max_errors: int | None = None,
+        streak: ErrorStreak | None = None,
     ) -> None:
         self._adapter = adapter
         self._client = client
@@ -414,6 +435,11 @@ class TestRunner:
         self._spent: Mapping[str, float] = spent or {}
         self._spent_untagged: Mapping[str, float] = spent_untagged or {}
         self._stopped: str | None = None
+        self._stop_reason: str | None = None  # BUDGET_EXCEEDED or REPEATED_ERRORS
+        # --max-errors (None or 0: off), and the errors in a row so far, which the specs
+        # before this one may have started: the count goes on across them (HB-34).
+        self._max_errors = max_errors
+        self._streak = streak if streak is not None else ErrorStreak()
         # What a managed agent spent with no test context, each record once: the turns have
         # it twice, on the one it was read in and on the one it may be the late usage of.
         self._strays: list[Usage] = []
@@ -440,7 +466,7 @@ class TestRunner:
         """Run all suites in the spec."""
         self._default_min_pass = spec.default_min_pass
         self._default_budget = spec.default_budget
-        self._stopped = None
+        self._stopped, self._stop_reason = None, None
         self._strays = []
         self._warned = set()
         self._inventory, self._seen, self._undeclared = None, set(), {}
@@ -488,7 +514,9 @@ class TestRunner:
                     self._reporter.on_test_result(name, result)
                     self._report_late(self._findings)
                     self._test_index += 1
-                    self._check_ceiling(name)
+                    # A stop for repeated errors came first, in the test: it is the reason.
+                    if self._stopped is None:
+                        self._check_ceiling(name)
                     if self._stopped is not None:
                         break
                 if self._stopped is not None:
@@ -517,7 +545,8 @@ class TestRunner:
 
         Every status comes from the tests' gates, never from what went to the reporter:
         a late call changes a test after ``on_test_result`` (D13). A test still running
-        is left out: half a test is not a result.
+        is left out: half a test is not a result. A test that repeated errors stopped
+        halfway is in, as an error with the executions it had (HB-34).
         """
         tests = tuple(self._outcome(index, seen) for index, seen in self._reported.items())
         statuses = [test.status for test in tests]
@@ -534,7 +563,13 @@ class TestRunner:
             suites=_suites(tests),
             stopped=self._mask(self._stopped),
             untagged_cost=_cost_of(self._masked_parts(stray) for stray in self._strays),
+            stop_reason=self._stop_reason,
         )
+
+    @property
+    def interrupted(self) -> bool:
+        """The run stopped in the middle of a test, so not every test ran all it had to."""
+        return any(gate.interrupted for gate in self._gates.values())
 
     def _budget_of(self, test: Test) -> Budget | None:
         """What one execution of ``test`` may spend: its own budget replaces the default."""
@@ -569,7 +604,7 @@ class TestRunner:
                 PhrasingOutcome(
                     kind=kind,
                     text=self._mask(text),
-                    status=phrasing_status(statuses, min_pass),
+                    status=gate.phrasing(number) if gate else phrasing_status(statuses, min_pass),
                     counts=_counts(statuses),
                     executions=tuple(executions),
                 )
@@ -1017,11 +1052,29 @@ class TestRunner:
             return
         over = over_limit(self._costs(), self._max_cost)
         if over:
+            self._stop_reason = BUDGET_EXCEEDED
             self._stopped = (
                 f"--max-cost {amount(self._max_cost)}: the run spent {_amounts(over)}"
                 f"{self._untagged_share(over)} by the end of '{last_test}', so it stopped "
                 "there; raise the ceiling to run the rest"
             )
+
+    def _tally(self, execution: _Execution, result: TestResult, name: str) -> None:
+        """After each execution: --max-errors of them in a row that failed for one cause
+        of the infrastructure stop the run there, in the middle of a test if need be.
+
+        Only an error whose transport or HTTP failed counts. Any other ending of an
+        execution (passed, failed, not observed, a session or template error, a reply
+        that cannot be read) starts the count over: an agent that fails now and then is
+        what min_pass is for (HB-34).
+        """
+        if not self._max_errors:
+            return
+        cause = execution.cause if result.status is Status.ERROR else None
+        count = self._streak.add(cause)
+        if cause is not None and count >= self._max_errors:
+            self._stop_reason = REPEATED_ERRORS
+            self._stopped = stop_message(count, cause, name)
 
     def _untagged_share(self, over: Mapping[str, float]) -> str:
         """How much of ``over`` had no test context: why the totals show less than that."""
@@ -1155,18 +1208,22 @@ class TestRunner:
                 for index, phrasing in enumerate(triggers)
             ]
 
-        statuses: list[Status] = []
         errors: list[str] = []
         traces: list[Trace] = []
-        gate = _Gate(min_pass, counted=runs > 1 and not test.variations)
+        gate = _Gate(min_pass, counted=runs > 1 and not test.variations, each=runs)
         self._gates[self._test_index] = gate
         # Every phrasing runs even after one fails: three of ten broken is a different
         # bug from one of ten, and stopping early hides which. They all go to the same
-        # running agent, back to back, with no reset in between.
+        # running agent, back to back, with no reset in between. Only --max-errors stops
+        # them, checked after each execution: the infrastructure can go down at any one.
         for index, (label, turns) in enumerate(phrasings):
-            results = [
+            ran: list[Status] = []
+            gate.runs.append(ran)
+            gate.phrasings.append(kinds[index])
+            results: list[TestResult] = []
+            for run in range(runs):
                 # Each run is its own execution, with its own test id and session.
-                self._execute(
+                result = self._execute(
                     turns,
                     time.time(),
                     labelled=bool(test.turns),
@@ -1176,20 +1233,30 @@ class TestRunner:
                     run=run,
                     budget=budget,
                 )
-                for run in range(runs)
-            ]
-            gate.runs.append([r.status for r in results])
-            gate.phrasings.append(kinds[index])
-            statuses.append(phrasing_status(gate.runs[-1], min_pass))
+                results.append(result)
+                ran.append(result.status)
+                self._tally(self._executions[-1], result, name)
+                if self._stopped is not None:
+                    break
             passed = sum(1 for r in results if r.passed)
             errors.extend(label + error for error in _merged_errors(results))
             if runs > 1 and test.variations and passed < min_pass:
-                errors.append(f"{label}{passed}/{runs} runs passed (min {min_pass})")
+                errors.append(f"{label}{passed}/{len(results)} runs passed (min {min_pass})")
             for r in results:
                 traces.extend(r.traces)
+            if self._stopped is not None:
+                break
+
+        done, planned = sum(len(statuses) for statuses in gate.runs), runs * len(phrasings)
+        if done < planned:
+            # The executions that ran stay as they ran; the test is not a verdict (HB-34).
+            gate.interrupted = True
+            errors.append(
+                f"the run stopped before this test ended: {done} of {planned} executions ran"
+            )
 
         return TestResult(
-            status=combine(statuses),
+            status=gate.status,
             errors=errors,
             duration_ms=(time.time() - start) * 1000,
             traces=traces,
@@ -1377,6 +1444,8 @@ class TestRunner:
                 resolved_trigger, values=replace(values, message=resolved_trigger)
             )
         except AgentResponseError as e:
+            # A failure of the transport or of HTTP is what --max-errors counts (HB-34).
+            execution.cause = e.cause
             return unverified(str(e))
         except PlaceholderError as e:
             return unverified(f"agent.request: {e}")

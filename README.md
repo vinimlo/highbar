@@ -133,6 +133,7 @@ The run exits with 1. Exit codes are what a CI job reads:
 | 1 | A test failed (the agent did something else) or errored (highbar could not verify it) |
 | 2 | Nothing could run: an invalid spec, an agent that did not start, a port already in use |
 | 3 | The run spent more than `--max-cost`, and stopped at the end of a test |
+| 4 | `--max-errors` executions in a row (5 by default) got no reply for the same cause, such as HTTP 500 from the same endpoint: the infrastructure failed, and the run stopped there |
 
 ## Connect your own agent
 
