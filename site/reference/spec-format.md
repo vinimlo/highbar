@@ -26,7 +26,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `session` | mapping | none | `setup` and `teardown` hooks, each a command or `{python: "module:function"}`. |
 | `correlate` | mapping | <code v-pre>{test: "{{test.id}}"}</code> | The context keys that link a trace record to a test. |
 
-`${NAME}` anywhere under `agent` is replaced by the environment variable when the spec is loaded; a missing variable is an error. Placeholders (<code v-pre>{{message}}</code>, <code v-pre>{{test.id}}</code>, <code v-pre>{{test.name}}</code>, <code v-pre>{{session.&lt;path&gt;}}</code>) are allowed in `request`, `correlate` and session commands. See [attach mode and sessions](/guides/attach-mode).
+`${NAME}` anywhere under `agent` is replaced by the environment variable when the spec is loaded; a missing variable is an error. Placeholders (<code v-pre>{{message}}</code>, <code v-pre>{{test.id}}</code>, <code v-pre>{{test.name}}</code>, <code v-pre>{{session.&lt;path&gt;}}</code>) are allowed in `request`, `correlate` and session commands. A trigger takes <code v-pre>{{session.&lt;path&gt;}}</code> too, when the agent has a `session`, in a test without `variations`. See [attach mode and sessions](/guides/attach-mode).
 
 ## `suites[]`
 

@@ -2,25 +2,39 @@
 
 ``previous`` is what the earlier turns of the execution left: ``function_calls``, the
 tool calls of all of them, ``turns``, each one's ``response``, and ``response``, the
-reply of the turn right before (HB-20).
+reply of the turn right before (HB-20). ``{{session.<path>}}`` is a value of the
+object the session setup returned, as in the request.
+
+Both are resolved in one pass over what the spec wrote: a reply or a session value
+that holds ``{{...}}`` goes in as text, and is never read as a template again.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
 from typing import Any
 
 from highbar._narrow import as_dict, as_list
 from highbar.domain.models import Trace
+from highbar.engine.paths import PathError, get_path
 
 # Spaces inside the braces are allowed: `{{ previous.x }}` is how most template
 # languages are written, and rejecting it would read as "no such value".
-_TEMPLATE_PATTERN = re.compile(r"\{\{\s*previous\.(.+?)\s*\}\}")
+_TEMPLATE_PATTERN = re.compile(r"\{\{\s*(previous|session)\.(.+?)\s*\}\}")
 
 _TRACE_FIELDS = sorted(f.name for f in fields(Trace))
+
+
+def session_placeholders(text: str) -> list[str]:
+    """The ``{{session.<path>}}`` in ``text``, written without spaces, in order."""
+    return [
+        f"{{{{session.{match.group(2)}}}}}"
+        for match in _TEMPLATE_PATTERN.finditer(text)
+        if match.group(1) == "session"
+    ]
 
 
 class TemplateError(ValueError):
@@ -40,22 +54,29 @@ class _Earlier:
 
 
 def resolve_template(
-    template: str, traces: list[Trace], responses: Sequence[str | None] = ()
+    template: str,
+    traces: list[Trace],
+    responses: Sequence[str | None] = (),
+    session: Mapping[str, Any] | None = None,
 ) -> str:
-    """Replace all {{previous.*}} expressions with actual values.
+    """Replace all {{previous.*}} and {{session.*}} expressions with actual values.
 
-    ``traces`` are the tool calls of the earlier turns and ``responses`` their replies,
-    in order. A string goes in as is; anything else (number, list, dict) as JSON, which
-    is what a person would type to the agent, not a Python repr.
+    ``traces`` are the tool calls of the earlier turns, ``responses`` their replies, in
+    order, and ``session`` what the session setup returned. A string goes in as is;
+    anything else (number, list, dict) as JSON, which is what a person would type to
+    the agent, not a Python repr.
     """
     earlier = [_Earlier(number, reply) for number, reply in enumerate(responses, start=1)]
 
     def replacer(match: re.Match[str]) -> str:
-        path = match.group(1)
+        kind, path = match.group(1), match.group(2)
         try:
-            value = _resolve_path(path, traces, earlier)
+            if kind == "session":
+                value = _session_value(path, session)
+            else:
+                value = _resolve_path(path, traces, earlier)
         except _Missing as e:
-            raise TemplateError(f"{{{{previous.{path}}}}}: {e}") from None
+            raise TemplateError(f"{{{{{kind}.{path}}}}}: {e}") from None
         if isinstance(value, str):
             return value
         return json.dumps(value, ensure_ascii=False, default=str)
@@ -65,6 +86,15 @@ def resolve_template(
 
 class _Missing(Exception):
     """A step of the path found nothing; the message says what was available."""
+
+
+def _session_value(path: str, session: Mapping[str, Any] | None) -> Any:
+    if session is None:
+        raise _Missing("there is no session: agent.session's setup returns it")
+    try:
+        return get_path(dict(session), path)
+    except PathError as e:
+        raise _Missing(str(e)) from None
 
 
 def _resolve_path(path: str, traces: list[Trace], earlier: list[_Earlier]) -> Any:

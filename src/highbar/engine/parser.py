@@ -39,6 +39,7 @@ from highbar.engine import placeholders
 from highbar.engine.placeholders import check_placeholders, uses_placeholder
 from highbar.engine.schema import SpecError, check_keys, require_type, user_keys
 from highbar.engine.secrets import redact
+from highbar.engine.templates import session_placeholders
 
 
 def parse_spec(path: str) -> Spec:
@@ -65,6 +66,33 @@ def parse_spec(path: str) -> Spec:
         return _parse_spec(raw)
     except SpecError as e:
         raise SpecError(f"{path}: {e}") from None
+
+
+def _check_trigger_sessions(suites: list[Suite], *, has_session: bool) -> None:
+    """A trigger's ``{{session.*}}`` needs a session, and no variations (HB-20).
+
+    Without agent.session the raw ``{{...}}`` would go to the agent. A paraphrase can
+    drop the placeholder or change it, and then its phrasing tests another message.
+    """
+    for i, suite in enumerate(suites):
+        for j, test in enumerate(suite.tests):
+            where = f"suites[{i}].tests[{j}]"
+            triggers = [(f"{where}.trigger", test.trigger)] if test.trigger is not None else []
+            triggers += [
+                (f"{where}.turns[{k}].trigger", turn.trigger)
+                for k, turn in enumerate(test.turns or [])
+            ]
+            for at, trigger in triggers:
+                for placeholder in session_placeholders(trigger):
+                    if not has_session:
+                        raise SpecError(
+                            f"{at}: '{placeholder}' needs agent.session, whose setup returns it"
+                        )
+                    if test.variations:
+                        raise SpecError(
+                            f"{where}: a trigger with '{placeholder}' cannot have variations: "
+                            "a paraphrase can drop it or change it"
+                        )
 
 
 class _StrictLoader(yaml.SafeLoader):
@@ -135,6 +163,8 @@ def _parse_spec(raw: Any) -> Spec:
                         "agent: attach mode (no 'start') needs 'traces', the file the agent "
                         f"writes: suites[{i}].tests[{j}] checks function_calls or a budget"
                     )
+
+    _check_trigger_sessions(suites, has_session=agent.session is not None)
 
     # min_pass is checked against runs where the run's runs are known: --runs (or
     # highbar.run(runs=...)) takes the place of defaults.runs.

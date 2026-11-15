@@ -312,6 +312,33 @@ class TestTestRunner:
         _, result = reporter.on_test_result.call_args[0]
         assert result.status is Status.PASSED
 
+    def test_hb20_a_trigger_sends_a_value_of_its_session(self) -> None:
+        runner, _, client, _, reporter = _make_runner()
+        hooks = MagicMock()
+        hooks.setup.return_value = {"customer": {"id": "C-9"}}
+        runner._session = hooks
+        test = Test(trigger="I am customer {{session.customer.id}}", expect=Expect())
+
+        runner.run(_make_spec([test]))
+
+        assert client.send.call_args.args[0] == "I am customer C-9"
+        _, result = reporter.on_test_result.call_args[0]
+        assert result.status is Status.PASSED
+
+    def test_hb20_a_session_key_that_is_not_there_is_an_error_and_nothing_is_sent(self) -> None:
+        runner, _, client, _, reporter = _make_runner()
+        hooks = MagicMock()
+        hooks.setup.return_value = {"conversation_id": 7}
+        runner._session = hooks
+        test = Test(trigger="I am {{session.customer_id}}", expect=Expect())
+
+        runner.run(_make_spec([test]))
+
+        assert client.send.call_count == 0
+        _, result = reporter.on_test_result.call_args[0]
+        assert result.status is Status.ERROR
+        assert "{{session.customer_id}}" in result.errors[0]
+
     def test_hb20_a_failure_label_shows_the_quoted_reply(self) -> None:
         runner, _, client, _, reporter = _make_runner()
         client.send.side_effect = lambda trigger, **_: "B"

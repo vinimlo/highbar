@@ -289,3 +289,66 @@ correlate: {conversation_id: "{{session.conversation_id}}"}
     def test_correlate_must_be_a_non_empty_mapping(self, tmp_path: Path) -> None:
         with pytest.raises(SpecError, match="correlate must be a non-empty mapping"):
             parse_spec(_spec(tmp_path, ATTACH + "correlate: {}\n"))
+
+
+class TestSessionInTriggers:
+    """HB-20 v1: {{session.*}} in a trigger, checked when the spec loads."""
+
+    WITH_SESSION = MANAGED + 'session:\n  setup: "open"\n'
+
+    def test_hb20_a_trigger_with_a_session_value_loads_with_a_session(self, tmp_path: Path) -> None:
+        suites = (
+            "suites:\n  - name: S\n    tests:\n"
+            '      - trigger: "I am {{session.customer_id}}"\n'
+            '        expect: {response: {contains: "ok"}}\n'
+            "      - turns:\n"
+            '          - trigger: "hi"\n'
+            '          - trigger: "my id: {{ session.customer.id }}"\n'
+            '            expect: {response: {contains: "ok"}}\n'
+        )
+
+        parse_spec(_spec(tmp_path, self.WITH_SESSION, suites))
+
+    @pytest.mark.parametrize(
+        ("suites", "where"),
+        [
+            (
+                '      - trigger: "I am {{session.customer_id}}"\n'
+                '        expect: {response: {contains: "ok"}}\n',
+                r"suites\[0\]\.tests\[0\]\.trigger",
+            ),
+            (
+                "      - turns:\n"
+                '          - trigger: "hi"\n'
+                '          - trigger: "I am {{session.customer_id}}"\n'
+                '            expect: {response: {contains: "ok"}}\n',
+                r"suites\[0\]\.tests\[0\]\.turns\[1\]\.trigger",
+            ),
+        ],
+    )
+    def test_hb20_a_session_value_needs_a_session(
+        self, tmp_path: Path, suites: str, where: str
+    ) -> None:
+        """Without agent.session, the raw {{...}} would go to the agent."""
+        path = _spec(tmp_path, MANAGED, "suites:\n  - name: S\n    tests:\n" + suites)
+
+        with pytest.raises(
+            SpecError, match=where + r": '\{\{session\.customer_id\}\}' needs agent\.session"
+        ):
+            parse_spec(path)
+
+    def test_hb20_a_session_value_and_variations_are_refused(self, tmp_path: Path) -> None:
+        """A paraphrase can drop the placeholder or change it, and then test something else."""
+        suites = (
+            "suites:\n  - name: S\n    tests:\n"
+            '      - trigger: "I am {{session.customer_id}}"\n'
+            "        variations: 3\n"
+            '        expect: {response: {contains: "ok"}}\n'
+        )
+
+        with pytest.raises(
+            SpecError,
+            match=r"tests\[0\]: a trigger with '\{\{session\.customer_id\}\}' "
+            r"cannot have variations",
+        ):
+            parse_spec(_spec(tmp_path, self.WITH_SESSION, suites))
