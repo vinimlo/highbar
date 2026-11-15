@@ -85,7 +85,11 @@ class TerminalReporter:
 
     def on_run_end(self, summary: RunSummary) -> None:
         self._console.print()
-        self._console.print(f"  {format_summary(summary, styled=True)}")
-        for warning in summary.totals.warnings if summary.totals is not None else ():
-            self.on_warning(f"incomplete sum: {warning}")
-        self._console.print()
+        # One write from the summary line to its blank line (rich buffers inside `with`).
+        # rich exits 1 when a write finds the pipe closed, so a reader that leaves at the
+        # summary must find nothing after it in a write of its own (HB-35).
+        with self._console:
+            self._console.print(f"  {format_summary(summary, styled=True)}")
+            for warning in summary.totals.warnings if summary.totals is not None else ():
+                self.on_warning(f"incomplete sum: {warning}")
+            self._console.print()

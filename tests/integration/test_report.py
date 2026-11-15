@@ -733,3 +733,29 @@ def test_i4_a_value_from_one_spec_stays_masked_in_the_next(project: _Project) ->
     assert token not in result.stdout + result.stderr
     (turn,) = project.data()["specs"][1]["tests"][0]["phrasings"][0]["executions"][0]["turns"]
     assert turn["response"] == "token=${HB_TEST_TOKEN}"
+
+
+@pytest.mark.timeout(30)
+def test_hb35_after_the_summary_of_a_passing_run_only_the_report_line(project: _Project) -> None:
+    """A write after the summary races a reader that leaves there (`sed '/passed/q'`).
+
+    `--keep-traces` printed the trace path after the summary, in a write of its own,
+    and 8 of 30 passing runs piped into such a reader exited 1. `Report:` is the one
+    line allowed after it: it goes through `_last_line`, which cannot change the code.
+    """
+    result = subprocess.run(
+        project.command(
+            project.spec(PASSES), "--keep-traces", "--report", f"json={project.report}"
+        ),
+        cwd=project.root,
+        env=project.env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = result.stdout
+    assert "Traces kept at" in out
+    after = out[out.index("passed") :].splitlines()[1:]
+    assert [line.strip() for line in after if line.strip()] == [f"Report: {project.report}"]
