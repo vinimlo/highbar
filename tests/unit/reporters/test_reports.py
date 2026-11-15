@@ -6,6 +6,7 @@ import json
 import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -104,3 +105,39 @@ def test_hb19_a_file_that_cannot_be_replaced_puts_back_the_ones_before_it(tmp_pa
     assert _unfinished(tmp_path / "report.json")
     assert _unfinished(tmp_path / "junit.xml")
     assert sorted(p.name for p in tmp_path.iterdir()) == ["junit.xml", "report.json", "summary.md"]
+
+
+class _FullAfterTwo(JsonReport):
+    """A report whose disk fills up after two writes: start() and finish()."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(path, version="0.2.0")
+        self._writes = 0
+
+    def _stage(self, body: dict[str, Any]) -> str:
+        self._writes += 1
+        if self._writes > 2:
+            raise ReportError(f"cannot write the report to {self.path}: No space left on device")
+        return super()._stage(body)
+
+
+def test_hb19_a_file_that_cannot_be_put_back_is_named_in_the_error(tmp_path: Path) -> None:
+    """A double fault: the last replace fails, and so does putting r.json back.
+
+    r.json still holds the final result while the run exits 2: the error must say so.
+    """
+    first = _FullAfterTwo(tmp_path / "r.json")
+    page = MarkdownReport(tmp_path / "summary.md", version="0.2.0")
+    reports = Reports([first, page], version="0.2.0")
+    reports.start()
+    reports.add("specs/orders.highbar.yaml", SPEC, _summary(_outcome("a", Status.PASSED)), True)
+    (tmp_path / "summary.md").unlink()
+    (tmp_path / "summary.md").mkdir()
+
+    with pytest.raises(ReportError) as raised:
+        reports.finish(0)
+
+    message = str(raised.value)
+    assert message.startswith(f"cannot write the report to {tmp_path / 'summary.md'}: ")
+    assert f"{tmp_path / 'r.json'} could not be put back" in message
+    assert json.loads((tmp_path / "r.json").read_text())["exit_code"] == 0  # what it names
