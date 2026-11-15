@@ -10,7 +10,10 @@ of its output, so a setup that imports the application can log before it.
 
 A Python hook runs in a thread of its own, the same one that imported it, so a module
 that opens a connection at import time can use it; a call that outlives
-``agent.timeout`` is abandoned there, and the run goes on.
+``agent.timeout`` is abandoned there, and the run goes on. What that thread prints, and
+what the logging handlers its module made at import write, goes to
+``.highbar/logs/<spec>-hooks-<timestamp>.log``, not into the run's output (HB-22); a
+hook's failure names the file and ends with its last lines.
 
 An HTTP hook is a request with placeholders in its URL, headers and body (HB-13), so
 highbar can run from an image of its own, away from the agent's. A setup's reply must
@@ -30,16 +33,19 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, cast
+from pathlib import Path
+from typing import Any, TextIO, cast
 
 import httpx
 
 from highbar._narrow import as_dict
 from highbar.assertions.response import truncate
 from highbar.domain.models import CommandHook, HttpHook, PythonHook, SessionConfig
+from highbar.engine.logs import log_path, make_folder
 from highbar.engine.placeholders import PlaceholderError, Values, render, render_url
+from highbar.engine.secrets import redact
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,7 @@ class SessionHooks:
         spec_path: str,
         timeout_ms: int,
         transport: httpx.BaseTransport | None = None,
+        secrets: Mapping[str, str] | None = None,
     ) -> None:
         self._config = config
         self._transport = transport
@@ -79,6 +86,9 @@ class SessionHooks:
         self._timeout_s = timeout_ms / 1000
         self._functions: dict[str, Callable[..., Any]] = {}
         self._worker: _Worker | None = None
+        # The lines a failure shows go to the terminal: masked like any message.
+        self._secrets = dict(secrets or {})
+        self._log = _HookLog(spec_path)
 
     def load(self) -> None:
         """Import the Python hooks, once, before any agent starts. Raises ``SessionError``."""
@@ -135,20 +145,37 @@ class SessionHooks:
 
     def _in_worker(self, what: str, action: str, task: Callable[[], Any]) -> Any:
         if self._worker is None:
-            self._worker = _Worker()
-        finished, outcome = self._worker.run(task, self._timeout_s)
+            self._worker = _Worker(self._log)
+        mark = self._log.mark()
+        with _routed(self._log):
+            finished, outcome = self._worker.run(task, self._timeout_s)
         if not finished:
             # The thread stays stuck in the hook; the next hook gets a new one.
             self._worker = None
             raise SessionError(
-                f"session.{what} did not finish in {self._timeout_s:g}s (agent.timeout)"
+                self._with_output(
+                    f"session.{what} did not finish in {self._timeout_s:g}s (agent.timeout)",
+                    mark,
+                )
             )
         if "error" in outcome:
             error = outcome["error"]
-            if isinstance(error, SessionError):
-                raise error
-            raise SessionError(f"session.{what} raised {_describe(error)}") from None
+            message = (
+                str(error)
+                if isinstance(error, SessionError)
+                else f"session.{what} raised {_describe(error)}"
+            )
+            raise SessionError(self._with_output(message, mark)) from None
         return outcome.get("result")
+
+    def _with_output(self, message: str, mark: int) -> str:
+        """``message``, and when the hook wrote anything in this call, where and its end."""
+        lines = [line for line in self._log.since(mark).splitlines() if line.strip()]
+        if not lines:
+            return message
+        tail = "\n".join(lines[-TAIL_LINES:])
+        shown = f"{message}; its output is in {self._log.path}, ending with:\n{tail}"
+        return redact(shown, self._secrets)
 
     def _run(
         self, hook: CommandHook, what: str, ctx: SessionContext, session: Mapping[str, Any]
@@ -289,10 +316,100 @@ class SessionHooks:
         return text
 
 
+# How many of a failed hook's last lines its message shows.
+TAIL_LINES = 10
+
+# Set in a hook's thread: where what it writes goes.
+_HOOK_THREAD = threading.local()
+
+
+class _HookLog:
+    """The file a spec's Python hooks write to, made at their first write (HB-22)."""
+
+    def __init__(self, spec_path: str) -> None:
+        self._spec_path = spec_path
+        self.path: Path | None = None
+        self._written = 0
+        self._lock = threading.Lock()
+
+    def write(self, text: str) -> int:
+        with self._lock:
+            if self.path is None:
+                self.path = log_path(self._spec_path, "hooks")
+                make_folder(self.path)
+            # Opened for each write: a hook abandoned at its timeout may write at any time.
+            with self.path.open("a", encoding="utf-8", errors="replace") as file:
+                file.write(text)
+            self._written += len(text)
+        return len(text)
+
+    def mark(self) -> int:
+        """Where the next write starts, to tell what one call wrote."""
+        with self._lock:
+            return self._written
+
+    def since(self, mark: int) -> str:
+        with self._lock:
+            if self.path is None:
+                return ""
+            return self.path.read_text(encoding="utf-8", errors="replace")[mark:]
+
+
+class _Routed:
+    """``sys.stdout`` or ``sys.stderr`` while a Python hook runs: what a hook's thread
+    writes goes to its log, and the rest goes on unchanged.
+
+    Once the call is over, only what the hook kept writes here: a logging handler its
+    module made at import, as ``logging.basicConfig`` does. That handler also catches
+    the run's own logging, an HTTP client's included, so all it writes goes to the log.
+    """
+
+    def __init__(self, original: TextIO, log: _HookLog) -> None:
+        self._original = original
+        self._log = log
+        self.installed = True
+
+    def _target(self) -> _HookLog | None:
+        log: _HookLog | None = getattr(_HOOK_THREAD, "log", None)
+        return log if log is not None or self.installed else self._log
+
+    def write(self, text: str) -> int:
+        log = self._target()
+        return self._original.write(text) if log is None else log.write(text)
+
+    def writelines(self, lines: Iterator[str]) -> None:
+        for line in lines:
+            self.write(line)
+
+    def flush(self) -> None:
+        if self._target() is None:
+            self._original.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._original, name)
+
+
+@contextlib.contextmanager
+def _routed(log: _HookLog) -> Iterator[None]:
+    """Route the hook's thread's output while the run waits for it, then put it back."""
+    saved = sys.stdout, sys.stderr
+    routed = _Routed(saved[0], log), _Routed(saved[1], log)
+    sys.stdout, sys.stderr = cast("TextIO", routed[0]), cast("TextIO", routed[1])
+    try:
+        yield
+    finally:
+        for stream in routed:
+            stream.installed = False
+        # The run's own streams, even over a wrapper the hook put on ours (colorama.init()
+        # does when the output is not a terminal, as in CI): what follows is the run's.
+        sys.stdout, sys.stderr = saved
+
+
 class _Worker:
     """A daemon thread that runs Python hooks, imports and calls alike, one at a time."""
 
-    def __init__(self) -> None:
+    def __init__(self, log: _HookLog) -> None:
+        self._log = log
         self._tasks: queue.Queue[tuple[Callable[[], Any], dict[str, Any], threading.Event]] = (
             queue.Queue()
         )
@@ -305,6 +422,7 @@ class _Worker:
         return done.wait(timeout), outcome
 
     def _serve(self) -> None:
+        _HOOK_THREAD.log = self._log
         while True:
             task, outcome, done = self._tasks.get()
             try:

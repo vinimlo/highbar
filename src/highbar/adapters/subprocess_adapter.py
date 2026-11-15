@@ -26,6 +26,7 @@ from pathlib import Path
 import httpx
 
 from highbar.adapters.ports import accepts_connections, describe_listener, endpoint_address
+from highbar.engine.logs import make_folder
 
 _POLL_INTERVAL = 0.2
 _STOP_GRACE = 5.0
@@ -77,10 +78,7 @@ class SubprocessAdapter:
             raise AgentStartError(f"`start` is not a valid command line: {e}") from None
 
         try:
-            self._log_path.parent.mkdir(parents=True, exist_ok=True)
-            gitignore = self._log_path.parent / ".gitignore"
-            if not gitignore.exists():
-                gitignore.write_text("*\n")
+            make_folder(self._log_path)
             log = open(self._log_path, "ab")  # noqa: SIM115 — closed right after Popen
         except OSError as e:
             raise AgentStartError(

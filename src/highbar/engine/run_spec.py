@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import tempfile
-import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
 from highbar.domain.models import RunSummary, Spec
 from highbar.domain.protocols import Reporter, TraceCollector
+from highbar.engine.logs import log_path
 from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.runner import TestRunner
 from highbar.engine.secrets import redact
@@ -33,7 +33,12 @@ def load_session_hooks(path: str, spec: Spec) -> SessionHooks | None:
     """The spec's session hooks, with the Python ones imported. Raises ``SessionError``."""
     if spec.agent.session is None:
         return None
-    hooks = SessionHooks(spec.agent.session, spec_path=path, timeout_ms=spec.agent.timeout)
+    hooks = SessionHooks(
+        spec.agent.session,
+        spec_path=path,
+        timeout_ms=spec.agent.timeout,
+        secrets=spec.agent.secrets,
+    )
     hooks.load()
     return hooks
 
@@ -202,15 +207,5 @@ def _run(runner: TestRunner, spec: Spec, on_end: OnEnd | None) -> RunSummary:
 
 
 def agent_log_path(spec_path: str) -> Path:
-    """``.highbar/logs/<spec stem>-<timestamp>.log``, relative to where highbar runs.
-
-    Never an existing file: two specs with the same name in the same second would
-    share a log, and one's failure would show the other agent's output.
-    """
-    stem = Path(spec_path).name.removesuffix(".yaml").removesuffix(".highbar")
-    base = Path(".highbar") / "logs" / f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}"
-    path, n = base.with_suffix(".log"), 1
-    while path.exists():
-        n += 1
-        path = base.parent / f"{base.name}-{n}.log"
-    return path
+    """``.highbar/logs/<spec stem>-<timestamp>.log``, relative to where highbar runs."""
+    return log_path(spec_path)
