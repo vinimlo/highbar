@@ -319,6 +319,7 @@ session:
             ('{htp: {url: "http://h/s"}}', r"unknown key 'htp'"),
             ('{http: {url: "http://h:8734{{test.id}}/s"}}', r"not in its scheme or host"),
             ('{http: {url: "http://{{test.name}}/s"}}', r"not in its scheme or host"),
+            ('{http: {url: "http://h/s", headers: {X-Ação: "1"}}}', r"header name 'X-Ação'"),
         ],
     )
     def test_hb13_a_malformed_http_hook_is_a_spec_error(

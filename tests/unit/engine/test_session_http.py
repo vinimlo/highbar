@@ -215,8 +215,10 @@ class TestValuesInTheUrlAreData:
         assert server.requests[0].url.params.get_list("mode") == ["new"]
         assert server.requests[0].url.params["label"] == "a&mode=old"
 
-    @pytest.mark.parametrize("value", ["..", "."])
+    @pytest.mark.parametrize("value", ["..", ".", ""])
     def test_hb13_a_value_that_is_a_path_step_is_refused(self, value: str) -> None:
+        """`..` and `.` move the request up the path; an empty value sends a teardown's
+        DELETE to the collection, `/test/conversations/`."""
         server = _Server(raw=b"")
         hook = HttpHook(url="http://a.test/test/conversations/{{session.id}}", method="DELETE")
 

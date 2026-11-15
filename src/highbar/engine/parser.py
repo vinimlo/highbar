@@ -330,6 +330,11 @@ def _parse_request(raw: Any, has_session: bool) -> RequestConfig:
 def _parse_headers(raw: Any, where: str) -> dict[str, str]:
     require_type(raw, dict, where, "headers must be a mapping")
     for name, value in raw.items():
+        if not str(name).isascii():
+            raise SpecError(
+                f"{where}.headers: the header name {name!r} has characters outside ASCII, "
+                "which a header cannot carry"
+            )
         if not isinstance(value, str):
             raise SpecError(
                 f"{where}.headers: {name} must be a string (quote it), got {type(value).__name__}"
