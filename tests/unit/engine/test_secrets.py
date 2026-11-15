@@ -333,6 +333,55 @@ class TestMaskByPlace:
 
         assert sorted(secrets.values()) == sorted(masked)
 
+    @pytest.mark.parametrize(
+        ("url", "env", "masked"),
+        [
+            (
+                "http://${API_TOKEN}@localhost:8000/chat",
+                {"API_TOKEN": "t0ken/s3cr3t"},
+                ["API_TOKEN"],
+            ),
+            (
+                "${AGENT_URL}",
+                {"AGENT_URL": "http://t0ken/s3cr3t@localhost:8000/chat"},
+                ["AGENT_URL"],
+            ),
+        ],
+        ids=["a-slash-in-a-token-the-spec-puts-before-the-at", "an-at-inside-a-whole-url"],
+    )  # fmt: skip
+    def test_hb6_a_value_where_the_spec_puts_a_password_stays_masked(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        url: str,
+        env: dict[str, str],
+        masked: list[str],
+    ) -> None:
+        """The security review of d3db372: read only with its values in, a ``/`` in a
+        password ends the host before its ``@``, and the password read as a host and a
+        path. Where the spec puts a password counts too, and an ``@`` from a value masks
+        every variable of the URL."""
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+
+        secrets = parse_spec(_spec(tmp_path, f'endpoint: "{url}"\n')).agent.secrets
+
+        assert sorted(secrets.values()) == sorted(masked)
+
+    def test_hb6_the_error_refusing_a_port_never_shows_a_password_with_a_slash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With its values in, ``bot:p4ss/s3cr3t@`` reads as host ``bot`` and port
+        ``p4ss``, and the error refusing that port quoted the URL."""
+        monkeypatch.setenv("API_PASSWORD", "p4ss/s3cr3t")
+        url = "http://bot:${API_PASSWORD}@localhost:8000/chat"
+
+        with pytest.raises(SpecError) as info:
+            parse_spec(_spec(tmp_path, f'endpoint: "{url}"\n'))
+
+        assert "p4ss/s3cr3t" not in str(info.value)
+        assert "${API_PASSWORD}" in str(info.value)
+
     def test_hb6_a_value_also_used_in_a_header_is_masked_in_the_traces_path_too(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

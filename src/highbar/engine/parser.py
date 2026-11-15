@@ -551,18 +551,38 @@ def _secret_in_url(url: str, at: int) -> bool:
     """A variable in a URL's userinfo (a password), query (an API key) or fragment is a
     secret; the scheme, host, port and path are shown.
 
-    The URL is read with its values in, as it is sent, so a ``?``, ``#``, ``@`` or ``//``
-    that a value brings moves the parts as it would for the agent; a variable whose value
-    touches a secret part is a secret. A URL that is not ``scheme://host`` with nothing
-    odd in it (a space, a control character, a backslash) cannot be read the way every
-    client would read it, and all its variables are secrets.
+    The URL is read twice. As the spec wrote it: a variable before an ``@`` (the first of
+    ``@ / ? #`` after it, in the spec's own text) is a password, and one after a ``?`` or
+    ``#`` is a query or a fragment, whatever its value holds, so a ``/`` in a password
+    does not make it a host. With its values in, as it is sent: a ``?``, ``#`` or ``//``
+    that a value brings moves the parts as it would for the agent, and a variable whose
+    value touches a secret part is a secret. A value with an ``@`` in it, and a URL that
+    is not ``scheme://host`` with nothing odd in it (a space, a control character, a
+    backslash), cannot be read the way every client would read it: all its variables are
+    secrets.
     """
+    if any("@" in os.environ.get(m.group(1), "") for m in _ENV_VAR.finditer(url)):
+        return True
+    if _secret_as_written(url, at):
+        return True
     whole, spans = _url_with_values(url)
     regions = _secret_regions(whole)
     if regions is None:
         return True
     start, end = spans[at]
     return any(start < stop and begin < end for begin, stop in regions)
+
+
+def _secret_as_written(url: str, at: int) -> bool:
+    """Whether the spec's own text, its values left out, puts the variable at ``at``
+    before an ``@`` or after a ``?`` or ``#``."""
+    match = _ENV_VAR.match(url, at)
+    after = _ENV_VAR.sub("", url[match.end() :]) if match else ""
+    before = _ENV_VAR.sub("", url[:at])
+    if "?" in before or "#" in before:
+        return True
+    delimiter = re.search(r"[@/?#]", after)
+    return delimiter is not None and delimiter.group() == "@"
 
 
 def _url_with_values(url: str) -> tuple[str, dict[int, tuple[int, int]]]:
