@@ -281,12 +281,16 @@ def _check_args_used(agent: dict[str, Any], suites: list[Suite]) -> None:
 
 
 def _check_history_seeded(agent: AgentConfig, suites: list[Suite]) -> None:
-    """A test with a ``history`` needs a session setup that hands it to the agent (HB-24).
+    """A test with a ``history`` needs something that hands it to the agent (HB-24).
 
-    Without one, the test would start from an empty conversation while its spec says it
-    starts in the middle of one: a pass there would not mean what it says. A command or
-    an HTTP setup sees only its placeholders, so it must use ``{{test.history}}``; a
-    Python setup gets ``ctx.history``, and what it does with it cannot be read here.
+    Without it, the test would start from an empty conversation while its spec says it
+    starts in the middle of one: a pass there would not mean what it says. A session
+    setup seeds it: a command or an HTTP setup sees only its placeholders, so it must use
+    ``{{test.history}}``; a Python setup gets ``ctx.history``, and what it does with it
+    cannot be read here. An agent with no state of its own takes the conversation in
+    each request instead, through ``{{test.history}}`` in ``agent.request`` (v2). That
+    holds in a single-turn test only: from a conversation's second turn on, the request
+    would carry the history without the turns the test itself ran.
     """
     setup = agent.session.setup if agent.session is not None else None
     if setup is None:
@@ -302,12 +306,18 @@ def _check_history_seeded(agent: AgentConfig, suites: list[Suite]) -> None:
             "sees only its placeholders, so the test would start from an empty conversation"
         )
     request = agent.request
-    if uses_placeholder([request.headers, request.body], "test.history"):
-        problem += " ({{test.history}} in agent.request does not seed it)"
+    in_request = uses_placeholder([request.headers, request.body], "test.history")
     for i, suite in enumerate(suites):
         for j, test in enumerate(suite.tests):
-            if test.history:
-                raise SpecError(f"suites[{i}].tests[{j}].history: {problem}")
+            if not test.history or (in_request and len(test.turns or []) <= 1):
+                continue
+            if in_request:
+                problem = (
+                    "'{{test.history}}' in agent.request hands it on only in a single-turn "
+                    "test: from the second turn on, the request would carry it without the "
+                    "turns this test ran. Seed it in agent.session's setup instead"
+                )
+            raise SpecError(f"suites[{i}].tests[{j}].history: {problem}")
 
 
 def _hook_parts(hook: CommandHook | HttpHook) -> list[Any]:
