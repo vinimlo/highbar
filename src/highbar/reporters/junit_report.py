@@ -12,23 +12,12 @@ failed gets one more case, ``highbar.run``, with an ``error`` that says why.
 
 from __future__ import annotations
 
-import re
 import xml.etree.ElementTree as ET
 from typing import Any
 
+from highbar.reporters._run import printable as _text
+from highbar.reporters._run import run_error as _run_error
 from highbar.reporters.json_report import JsonReport
-
-# What XML 1.0 can hold. Anything else (a NUL, an escape code, a lone surrogate the
-# agent sent) is written as its Python escape, as the JSON report keeps it readable.
-_NOT_XML = re.compile("[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
-
-
-def _text(value: Any) -> str:
-    def escape(match: re.Match[str]) -> str:
-        code = ord(match.group())
-        return f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}"
-
-    return _NOT_XML.sub(escape, str(value))
 
 
 class JUnitReport(JsonReport):
@@ -81,19 +70,6 @@ def _add_spec(root: ET.Element, spec: dict[str, Any], totals: dict[str, int]) ->
         suite.set(key, str(count))
         totals[key] += count
     suite.set("time", _seconds(elapsed))
-
-
-def _run_error(body: dict[str, Any], *, failed: bool) -> str | None:
-    """Why the run itself is not a pass, when its test cases would not say so."""
-    code = body["exit_code"]
-    if code is None:
-        return "the run did not finish: highbar stopped before writing its result"
-    stopped = body["stopped"]
-    if stopped is not None:
-        return f"{stopped['reason']}: {stopped['message']} (exit code {code})"
-    if code != 0 and not failed:
-        return f"the run exited with code {code}"
-    return None
 
 
 def _seconds(milliseconds: Any) -> str:

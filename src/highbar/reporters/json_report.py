@@ -50,6 +50,11 @@ class JsonReport:
     def path(self) -> Path:
         return self._path
 
+    @property
+    def paths(self) -> list[Path]:
+        """Every file this report writes: one here, one per format in ``Reports``."""
+        return [self._path]
+
     def start(self) -> None:
         """Write the unfinished report. Raises ``ReportError``, before any message goes."""
         self._write(self._body(exit_code=None, complete=False))
@@ -119,6 +124,13 @@ class JsonReport:
         return (text + "\n").encode("utf-8", "backslashreplace")
 
     def _write(self, body: dict[str, Any]) -> None:
+        self._replace(self._stage(body))
+
+    def _stage(self, body: dict[str, Any]) -> str:
+        """``body`` in a temporary file next to the report, not yet in its place.
+
+        Raises ``ReportError``, and then leaves no temporary behind.
+        """
         data = self._render(body)
         temporary: str | None = None
         try:
@@ -132,10 +144,18 @@ class JsonReport:
                 f.flush()
                 os.fsync(f.fileno())
             os.chmod(temporary, mode)
-            os.replace(temporary, self._path)
         except OSError as e:
             if temporary is not None:
                 Path(temporary).unlink(missing_ok=True)
+            raise ReportError(f"cannot write the report to {self._path}: {e}") from None
+        return temporary
+
+    def _replace(self, temporary: str) -> None:
+        """Put a staged file in the report's place, at once. Raises ``ReportError``."""
+        try:
+            os.replace(temporary, self._path)
+        except OSError as e:
+            Path(temporary).unlink(missing_ok=True)
             raise ReportError(f"cannot write the report to {self._path}: {e}") from None
 
 

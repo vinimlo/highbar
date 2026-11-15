@@ -13,7 +13,7 @@ Runs the tests of a spec file, or of every `*.highbar.yaml` under a directory. W
 | `--runs N` | Run each phrasing N times (N ≥ 1), in place of the specs' `defaults.runs`. A test's own `runs` still wins. |
 | `--frozen` | Never generate variations: a phrasing missing from the committed cache fails. Use it in CI. |
 | `--keep-traces` | Keep the trace file of each spec whose agent highbar started, and print its path. |
-| `--report json=FILE` | Also write the results to FILE. See the [report](/reference/report). `junit=FILE` writes them as JUnit XML instead, for CI tools that read it. |
+| `--report json=FILE` | Also write the results to FILE. See the [report](/reference/report). `junit=FILE` writes them as JUnit XML, for CI tools that read it, and `markdown=FILE` as a summary for a CI job's page (`$GITHUB_STEP_SUMMARY`). Give it once per file to write more than one. |
 | `--max-cost AMOUNT` | A ceiling on what the whole run spends. Over it, the run stops at the end of the test in progress and exits with 3. |
 
 All specs are parsed and validated before any agent starts. With several specs, each one prints its own summary, and a total follows at the end. When the turns report [usage](/reference/trace-contract#usage-tokens-and-cost), a summary ends with its tokens and cost, and says `incomplete`, with what is missing, when they are only part of the sum:
