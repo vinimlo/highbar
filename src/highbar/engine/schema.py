@@ -42,8 +42,9 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "http_hook": frozenset({"url", "method", "headers", "body"}),
     "suite": frozenset({"name", "tests"}),
     "test": frozenset(
-        {"id", "name", "trigger", "expect", "turns", "variations", "runs", "min_pass"}
+        {"id", "name", "trigger", "expect", "turns", "variations", "runs", "min_pass", "session"}
     ),
+    "test_session": frozenset({"args"}),
     "turn": frozenset({"name", "trigger", "expect"}),
     "expect": frozenset({"function_calls", "response", "ordered", "exclusive", "forbid", "budget"}),
     "budget": frozenset({"max_input_tokens", "max_cost"}),

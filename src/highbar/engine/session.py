@@ -31,7 +31,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 import httpx
@@ -49,6 +49,8 @@ class SessionContext:
     test_id: str
     test_name: str
     spec_path: str
+    # The test's own session.args (HB-9): the state this execution starts from.
+    args: Mapping[str, Any] = field(default_factory=dict[str, Any])
 
 
 class SessionError(RuntimeError):
@@ -149,7 +151,13 @@ class SessionHooks:
     def _run(
         self, hook: CommandHook, what: str, ctx: SessionContext, session: Mapping[str, Any]
     ) -> str:
-        values = Values(message=None, test_id=ctx.test_id, test_name=ctx.test_name, session=session)
+        values = Values(
+            message=None,
+            test_id=ctx.test_id,
+            test_name=ctx.test_name,
+            session=session,
+            args=ctx.args,
+        )
         try:
             argv = [_as_argument(render(token, values)) for token in hook.argv]
         except PlaceholderError as e:
@@ -195,7 +203,13 @@ class SessionHooks:
         self, hook: HttpHook, what: str, ctx: SessionContext, session: Mapping[str, Any]
     ) -> str:
         """Send the hook's request and return the reply's text. Raises ``SessionError``."""
-        values = Values(message=None, test_id=ctx.test_id, test_name=ctx.test_name, session=session)
+        values = Values(
+            message=None,
+            test_id=ctx.test_id,
+            test_name=ctx.test_name,
+            session=session,
+            args=ctx.args,
+        )
         try:
             url = render_url(hook.url, values)
             headers = {name: _as_argument(render(v, values)) for name, v in hook.headers.items()}
