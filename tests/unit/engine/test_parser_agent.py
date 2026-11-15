@@ -317,6 +317,8 @@ session:
             ('{http: "http://h/s"}', r"http must be a mapping"),
             ('{python: "m:f", http: {url: "http://h/s"}}', r"either python or http"),
             ('{htp: {url: "http://h/s"}}', r"unknown key 'htp'"),
+            ('{http: {url: "http://h:8734{{test.id}}/s"}}', r"not in its scheme or host"),
+            ('{http: {url: "http://{{test.name}}/s"}}', r"not in its scheme or host"),
         ],
     )
     def test_hb13_a_malformed_http_hook_is_a_spec_error(

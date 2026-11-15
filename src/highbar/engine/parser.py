@@ -415,6 +415,11 @@ def _parse_http_hook(raw: Any, where: str, allowed: frozenset[str]) -> HttpHook:
     if not url.lower().startswith(("http://", "https://")):
         # The value is not shown: it may hold a ${VAR}.
         raise SpecError(f"{where}: url must start with http:// or https://")
+    if "{{" in url.split("://", 1)[1].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]:
+        # A value there would choose the host the hook's headers go to.
+        raise SpecError(
+            f"{where}: placeholders go in the URL's path and query, not in its scheme or host"
+        )
 
     method = raw.get("method", "POST")
     require_type(method, str, where, "method must be a string")

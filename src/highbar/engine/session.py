@@ -39,7 +39,7 @@ import httpx
 from highbar._narrow import as_dict
 from highbar.assertions.response import truncate
 from highbar.domain.models import CommandHook, HttpHook, PythonHook, SessionConfig
-from highbar.engine.placeholders import PlaceholderError, Values, render
+from highbar.engine.placeholders import PlaceholderError, Values, render, render_url
 
 
 @dataclass(frozen=True)
@@ -197,7 +197,7 @@ class SessionHooks:
         """Send the hook's request and return the reply's text. Raises ``SessionError``."""
         values = Values(message=None, test_id=ctx.test_id, test_name=ctx.test_name, session=session)
         try:
-            url = _as_argument(render(hook.url, values))
+            url = render_url(hook.url, values)
             headers = {name: _as_argument(render(v, values)) for name, v in hook.headers.items()}
             body = render(hook.body, values)
         except PlaceholderError as e:
@@ -209,11 +209,18 @@ class SessionHooks:
                     f"session.{what}: the header {name} has a control character or leading "
                     "or trailing whitespace (often a secret read with its newline); not shown"
                 )
+            if not value.isascii():
+                # An accented test name, usually. The value is not shown either.
+                raise SessionError(
+                    f"session.{what}: the header {name} has characters outside ASCII, which "
+                    "a header cannot carry; send the value in the body or the URL instead"
+                )
 
         content: dict[str, Any] = {}
         if isinstance(body, str):
             content["content"] = body.encode("utf-8")
-            headers.setdefault("Content-Type", "text/plain; charset=utf-8")
+            if not any(name.lower() == "content-type" for name in headers):
+                headers["Content-Type"] = "text/plain; charset=utf-8"
         elif body is not None:
             content["json"] = body
 

@@ -173,3 +173,75 @@ class TestTeardown:
             _hooks(
                 teardown=HttpHook(url="http://agent.test/s", method="DELETE"), handler=server
             ).teardown(CTX, {})
+
+
+class TestValuesInTheUrlAreData:
+    """Review of #28: a value from the session cannot move the request.
+
+    A teardown's values come from the setup's reply, which is the agent under test.
+    Pasted raw into the URL, they chose the host (and sent it the hook's headers) or
+    the resource the DELETE reached.
+    """
+
+    @pytest.mark.parametrize(
+        ("value", "path"),
+        [
+            ("../../admin/users", "/test/conversations/..%2F..%2Fadmin%2Fusers"),
+            ("c-1#x", "/test/conversations/c-1%23x"),
+            ("c-1?all=1", "/test/conversations/c-1%3Fall%3D1"),
+            ("@evil.test/x", "/test/conversations/%40evil.test%2Fx"),
+            ("café 1", "/test/conversations/caf%C3%A9%201"),
+        ],
+    )
+    def test_hb13_a_session_value_is_one_encoded_piece_of_the_url(
+        self, value: str, path: str
+    ) -> None:
+        server = _Server(raw=b"")
+        hook = HttpHook(url="http://a.test/test/conversations/{{session.id}}", method="DELETE")
+
+        _hooks(teardown=hook, handler=server).teardown(CTX, {"id": value})
+
+        (sent,) = server.requests
+        assert sent.url.host == "a.test"
+        assert sent.url.raw_path.decode().split("?")[0] == path
+
+    def test_hb13_a_value_in_the_query_stays_in_its_parameter(self) -> None:
+        server = _Server(body={})
+        hook = HttpHook(url="http://a.test/s?label={{test.name}}&mode=new", method="GET")
+        ctx = SessionContext(test_id="abc", test_name="a&mode=old", spec_path="s.yaml")
+
+        _hooks(setup=hook, handler=server).setup(ctx)
+
+        assert server.requests[0].url.params.get_list("mode") == ["new"]
+        assert server.requests[0].url.params["label"] == "a&mode=old"
+
+    @pytest.mark.parametrize("value", ["..", "."])
+    def test_hb13_a_value_that_is_a_path_step_is_refused(self, value: str) -> None:
+        server = _Server(raw=b"")
+        hook = HttpHook(url="http://a.test/test/conversations/{{session.id}}", method="DELETE")
+
+        with pytest.raises(SessionError, match=r"session\.teardown: \{\{session\.id\}\}"):
+            _hooks(teardown=hook, handler=server).teardown(CTX, {"id": value})
+        assert server.requests == []
+
+
+class TestHeadersOfTheHook:
+    def test_hb13_a_lowercase_content_type_is_sent_once(self) -> None:
+        server = _Server(body={})
+        hook = HttpHook(
+            url="http://a.test/s", headers={"content-type": "application/xml"}, body="<x/>"
+        )
+
+        _hooks(setup=hook, handler=server).setup(CTX)
+
+        assert server.requests[0].headers.get_list("content-type") == ["application/xml"]
+
+    def test_hb13_a_header_outside_ascii_is_a_session_error_without_the_value(self) -> None:
+        server = _Server(body={})
+        hook = HttpHook(url="http://a.test/s", headers={"X-Test": "{{test.name}}"})
+        ctx = SessionContext(test_id="abc", test_name="cancelar ação", spec_path="s.yaml")
+
+        with pytest.raises(SessionError, match=r"session\.setup: the header X-Test") as raised:
+            _hooks(setup=hook, handler=server).setup(ctx)
+        assert "ação" not in str(raised.value)
+        assert server.requests == []
