@@ -191,7 +191,32 @@ highbar run --report junit=.highbar/reports/junit.xml
 - A run that did not finish, stopped halfway, or exited with an error code while no test failed (a spec that does not load, an agent that does not start, `--max-cost`) gets one more case, `highbar.run`, with an `error` that says why. A JUnit reader counts cases, and zero failed cases would read as a pass.
 - Text that XML cannot hold, such as a NUL or a terminal escape in a reply, is written as its escape (`\x1b`).
 
-JUnit has no place for usage, phrasings or executions: keep the JSON report for those. One `--report` per run.
+JUnit has no place for usage, phrasings or executions: keep the JSON report for those, from the same run ([below](#more-than-one-format)).
+
+## Markdown summary
+
+`--report markdown=<file>` writes the report as a page to read. GitHub Actions shows the file at `$GITHUB_STEP_SUMMARY` on the page of the run.
+
+```console
+highbar run --report markdown="$GITHUB_STEP_SUMMARY"
+```
+
+- The heading says whether the run passed: `passed` only when it exited 0, `not passed (exit code 1)` otherwise, and `the run did not finish` while it runs or when it died.
+- When the tests do not say why the run did not pass (it stopped halfway, or exited with an error code while no test failed), a quote under the heading does.
+- The tests that failed or errored come first, in a table with their first error. The ones that passed are folded under them.
+- Text from the agent is escaped, so a pipe, a tag or a link shows as written. A table shows 200 tests and a cell 300 characters, and the page says how many tests it left out: GitHub drops a step summary over 1 MiB whole.
+
+`$GITHUB_STEP_SUMMARY` belongs to one step, and highbar replaces the file. Give the run a step of its own, or write the summary to another file and add it in a later step that runs either way: `cat summary.md >> "$GITHUB_STEP_SUMMARY"`, with `if: always()`.
+
+## More than one format
+
+Give `--report` once per file:
+
+```console
+highbar run --report json=report.json --report junit=junit.xml --report markdown=summary.md
+```
+
+They are one report in three formats, written at the same moments and with the same result. A path given twice, or one that is a spec of the run, stops the run before it starts (exit 2).
 
 ## Comparing runs
 

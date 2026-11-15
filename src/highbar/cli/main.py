@@ -11,6 +11,7 @@ from functools import partial
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import FrameType
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -28,6 +29,8 @@ from highbar.engine.session import SessionError, SessionHooks
 from highbar.engine.usage import add_costs, add_up
 from highbar.reporters.json_report import JsonReport, ReportError
 from highbar.reporters.junit_report import JUnitReport
+from highbar.reporters.markdown_report import MarkdownReport
+from highbar.reporters.reports import Reports
 from highbar.reporters.terminal import format_summary
 from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
 from highbar.variations.generator import VariationError, VariationGenerator
@@ -117,15 +120,19 @@ def run(
             "runs still wins. With min_pass, a flaky test becomes a gate."
         ),
     ),
-    report_to: str | None = typer.Option(
-        None,
-        "--report",
-        metavar="json=FILE|junit=FILE",
-        help=(
-            "Also write the results to FILE, as JSON or as JUnit XML. It is replaced before "
-            "the first message, and written on every way out of the run."
+    # Annotated, unlike the options around it: a list default in the signature is mutable.
+    report_to: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--report",
+            metavar="json=FILE|junit=FILE|markdown=FILE",
+            help=(
+                "Also write the results to FILE, as JSON, as JUnit XML or as a Markdown "
+                "summary (for $GITHUB_STEP_SUMMARY). Give it once per file. Each is replaced "
+                "before the first message, and written on every way out of the run."
+            ),
         ),
-    ),
+    ] = None,
     max_cost: float | None = typer.Option(
         None,
         "--max-cost",
@@ -167,29 +174,42 @@ def run(
     raise typer.Exit(_close_report(report, code))
 
 
-# The formats of --report. JUnit is the same report, for CI tools that read JUnit XML.
-_REPORTS: dict[str, type[JsonReport]] = {"json": JsonReport, "junit": JUnitReport}
+# The formats of --report: the same report, for a script (JSON), for the CI tools that
+# read JUnit XML, and for a CI job's summary page (Markdown).
+_REPORTS: dict[str, type[JsonReport]] = {
+    "json": JsonReport,
+    "junit": JUnitReport,
+    "markdown": MarkdownReport,
+}
 
 
-def _open_report(value: str | None, paths: list[str]) -> JsonReport | None:
+def _open_report(values: list[str] | None, paths: list[str]) -> JsonReport | None:
     """The report of this run, already on disk, or exit 2 before anything starts.
 
-    Writing it now proves the path works before an hour of tests, and replaces an
-    older report: a run that dies must not leave someone else's green at that path.
+    Writing it now proves the paths work before an hour of tests, and replaces older
+    reports: a run that dies must not leave someone else's green at those paths.
     """
-    if value is None:
+    if not values:
         return None
-    kind, separator, target = value.partition("=")
-    if kind not in _REPORTS or not separator or not target:
-        console.print(
-            f"  [red]\u2717[/red] --report takes json=<file> or junit=<file>, got {escape(value)}"
-        )
-        raise typer.Exit(EXIT_UNRUNNABLE)
-    path = Path(target)
-    if path.resolve() in {Path(spec).resolve() for spec in paths}:
-        console.print(f"  [red]\u2717[/red] --report: {escape(target)} is a spec of this run")
-        raise typer.Exit(EXIT_UNRUNNABLE)
-    report = _REPORTS[kind](path, version=_version())
+    specs = {Path(spec).resolve() for spec in paths}
+    parts: list[JsonReport] = []
+    for value in values:
+        kind, separator, target = value.partition("=")
+        if kind not in _REPORTS or not separator or not target:
+            console.print(
+                "  [red]\u2717[/red] --report takes json=<file>, junit=<file> or markdown=<file>, "
+                f"got {escape(value)}"
+            )
+            raise typer.Exit(EXIT_UNRUNNABLE)
+        path = Path(target)
+        if path.resolve() in specs:
+            console.print(f"  [red]\u2717[/red] --report: {escape(target)} is a spec of this run")
+            raise typer.Exit(EXIT_UNRUNNABLE)
+        if path.resolve() in {part.path.resolve() for part in parts}:
+            console.print(f"  [red]\u2717[/red] --report: {escape(target)} is given twice")
+            raise typer.Exit(EXIT_UNRUNNABLE)
+        parts.append(_REPORTS[kind](path, version=_version()))
+    report = parts[0] if len(parts) == 1 else Reports(parts, version=_version())
     try:
         report.start()
     except ReportError as e:
@@ -207,7 +227,7 @@ def _close_report(report: JsonReport | None, code: int) -> int:
     except ReportError as e:
         _last_line(f"  [red]\u2717[/red] {escape(str(e))}")
         return EXIT_UNRUNNABLE
-    _last_line(f"  Report: {escape(str(report.path))}\n")
+    _last_line(f"  Report: {escape(', '.join(str(path) for path in report.paths))}\n")
     return code
 
 

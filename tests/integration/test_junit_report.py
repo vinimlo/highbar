@@ -42,4 +42,4 @@ def test_hb19_a_format_it_does_not_know_names_both(project: _Project) -> None:
     )
 
     assert result.returncode == 2
-    assert "json=<file> or junit=<file>" in result.stdout
+    assert "json=<file>, junit=<file> or markdown=<file>" in result.stdout

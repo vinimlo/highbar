@@ -16,6 +16,8 @@
 - `definition_sha256` on each test of the report, to tell whether two runs measured the same thing.
 - `highbar.run()` returns each test in `summary.tests` and the warnings in `summary.warnings`, and takes a `reporter`.
 - `highbar run --report junit=<file>`: the report as JUnit XML, for the CI tools that read it, with the JSON report's lifecycle. Each spec is a `testsuite` and each test a `testcase`, with a `failure` or an `error`. A run that did not finish, stopped halfway, or exited with an error code while no test failed gets one more case, `highbar.run`, with an `error`: zero failed cases would read as a pass.
+- `highbar run --report markdown=<file>`: the report as a Markdown summary for a CI job's page (`$GITHUB_STEP_SUMMARY`): whether the run passed, the tests that did not with why, and the others folded. Text from the agent is escaped, and a long list is cut, so the page stays under GitHub's 1 MiB.
+- `--report` can be given more than once, one file per format, all from the same run.
 
 ### Changed
 

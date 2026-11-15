@@ -50,6 +50,11 @@ class JsonReport:
     def path(self) -> Path:
         return self._path
 
+    @property
+    def paths(self) -> list[Path]:
+        """Every file this report writes: one here, one per format in ``Reports``."""
+        return [self._path]
+
     def start(self) -> None:
         """Write the unfinished report. Raises ``ReportError``, before any message goes."""
         self._write(self._body(exit_code=None, complete=False))
