@@ -97,15 +97,18 @@ _SUITE = typer.Option(
     None,
     "--suite",
     metavar="NAME",
-    help="Run only the suites with this name. Give it more than once for more suites.",
+    help=(
+        "Run only the suites with this name. Given more than once, any of them; with -k "
+        "or --tag, a test must match each."
+    ),
 )
 _TAG = typer.Option(
     None,
     "--tag",
     metavar="NAME",
     help=(
-        "Run only the tests with this tag, their suite's or their own. Give it more than "
-        "once for any of them."
+        "Run only the tests with this tag, their suite's or their own. Given more than "
+        "once, any of them; with --suite or -k, a test must match each."
     ),
 )
 _KEYWORD = typer.Option(
@@ -114,7 +117,7 @@ _KEYWORD = typer.Option(
     metavar="TEXT",
     help=(
         "Run only the tests whose <suite>/<name> or id contains TEXT, ignoring case. "
-        "Give it more than once for any of them."
+        "Given more than once, any of them; with --suite or --tag, a test must match each."
     ),
 )
 

@@ -176,6 +176,22 @@ class TestSelection:
         fake.assert_not_called()
 
 
+class TestSelectionHelp:
+    def test_hb17_the_help_says_how_the_options_combine(self) -> None:
+        """Any value within an option, every option given (the review of #46)."""
+        result = runner.invoke(app, ["run", "--help"], env={"COLUMNS": "200"})
+
+        text = " ".join(result.output.replace("\u2502", " ").split())
+        for option, others in (
+            ("--suite", "-k or --tag"),
+            ("-k", "--suite or --tag"),
+            ("--tag", "--suite or -k"),
+        ):
+            assert (
+                f"Given more than once, any of them; with {others}, a test must match each." in text
+            ), option
+
+
 class TestExitCodes:
     def test_version_flag(self) -> None:
         result = runner.invoke(app, ["--version"])

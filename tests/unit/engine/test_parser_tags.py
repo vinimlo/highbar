@@ -52,3 +52,13 @@ class TestTags:
         tagged = Case(trigger="a", expect=OK, tags=("smoke",))
 
         assert tagged.definition_sha256 == plain.definition_sha256
+
+
+@pytest.mark.parametrize("tag", ["' smoke'", "'smoke '", '"\\tsmoke"'])
+def test_hb17_a_tag_with_spaces_around_it_is_refused(tmp_path: Path, tag: str) -> None:
+    """--tag smoke would never pick ' smoke': the typo is said at load (the review of #46)."""
+    with pytest.raises(
+        SpecError,
+        match=r"suites\[0\]\.tests\[0\]: tags\[1\] must be a name without spaces around it",
+    ):
+        parse_spec(_spec(tmp_path, MANAGED, _suites("", f"        tags: [smoke, {tag}]\n")))

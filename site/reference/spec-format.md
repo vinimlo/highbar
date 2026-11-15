@@ -34,7 +34,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 |---|---|---|
 | `name` | text | Required. |
 | `tests` | list | Required, not empty. |
-| `tags` | list of texts | Labels for [`--tag`](/reference/cli#part-of-the-tests). Each of the suite's tests has them, before its own. |
+| `tags` | list of texts | Labels for [`--tag`](/reference/cli#part-of-the-tests), each without spaces around it. Each of the suite's tests has them, before its own. |
 
 ## `tests[]`
 

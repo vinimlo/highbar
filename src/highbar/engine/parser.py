@@ -451,6 +451,11 @@ def _parse_tags(raw: dict[str, Any], where: str) -> tuple[str, ...]:
     for k, name in enumerate(names):
         if not isinstance(name, str) or not name.strip():
             raise SpecError(f"{where}: tags[{k}] must be a name, got {name!r}")
+        if name != name.strip():
+            # --tag smoke would never pick it, and nothing would say why.
+            raise SpecError(
+                f"{where}: tags[{k}] must be a name without spaces around it, got {name!r}"
+            )
     return tuple(dict.fromkeys(str(name) for name in names))
 
 
