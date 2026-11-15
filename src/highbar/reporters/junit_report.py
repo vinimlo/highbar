@@ -20,7 +20,7 @@ from highbar.reporters.json_report import JsonReport
 
 # What XML 1.0 can hold. Anything else (a NUL, an escape code, a lone surrogate the
 # agent sent) is written as its Python escape, as the JSON report keeps it readable.
-_NOT_XML = re.compile("[^\t\n\r\x20-퟿-�\U00010000-\U0010ffff]")
+_NOT_XML = re.compile("[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 
 
 def _text(value: Any) -> str:
@@ -43,6 +43,7 @@ class JUnitReport(JsonReport):
         if reason is not None:
             suite = ET.SubElement(root, "testsuite", name="highbar", tests="1", failures="0")
             suite.set("errors", "1")
+            suite.set("time", _seconds(0))
             case = ET.SubElement(suite, "testcase", classname="highbar", name="run", time="0")
             ET.SubElement(case, "error", message=_text(reason)).text = _text(reason)
             totals["tests"] += 1

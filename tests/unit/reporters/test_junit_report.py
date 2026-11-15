@@ -173,3 +173,13 @@ def test_hb19_text_xml_cannot_hold_is_escaped_and_the_file_parses(tmp_path: Path
     failure = _cases(ET.parse(report.path).getroot())[0].find("failure")
     assert failure is not None
     assert failure.get("message") == "got '\\x00\\x1b[31mred\\x1b[0m' & <b>"
+
+
+def test_hb19_every_suite_has_a_time_the_run_suite_too(tmp_path: Path) -> None:
+    """Review of #32: a stricter reader may require `time` on each `testsuite`."""
+    report = _report(tmp_path)
+
+    report.start()
+
+    root = ET.parse(report.path).getroot()
+    assert [suite.get("time") for suite in root.findall("testsuite")] == ["0.000"]
