@@ -15,6 +15,7 @@ import pytest
 from highbar.domain.models import Expect, ResponseExpect, Status, Turn, Window
 from highbar.domain.models import Test as Case
 from highbar.engine.parser import parse_spec
+from highbar.engine.runner import _too_slow
 from highbar.engine.schema import SpecError
 from tests.unit.engine.fakes import FakeAgent, observed
 from tests.unit.engine.test_budget import _run
@@ -127,3 +128,48 @@ class TestTheRun:
 
         assert outcome.status is Status.FAILED
         assert len(outcome.errors) == 2
+
+
+class TestAfterTheReview:
+    """revisao-highbar's suggestions on f79ac17: the clock, the edge, and the hash."""
+
+    def test_hb18_the_wall_clock_moving_back_does_not_make_a_reply_fast(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real = time.time
+
+        def script(message: str, test_id: str) -> Window:
+            time.sleep(0.08)
+            # NTP or a resumed VM moves the wall clock back an hour during the request.
+            monkeypatch.setattr(time, "time", lambda: real() - 3600)
+            return observed(message, test_id)
+
+        test = Case(trigger="t", expect=Expect(max_duration_ms=10))
+
+        (outcome,) = _run([test], FakeAgent(script)).tests
+
+        assert outcome.status is Status.FAILED
+
+    @pytest.mark.parametrize(
+        ("limit", "took", "message"),
+        [
+            (100, 100.4, "the reply took 101 ms, over max_duration_ms 100"),
+            (1234.5678, 2000, "the reply took 2000 ms, over max_duration_ms 1234.5678"),
+            (1500000, 1600000.2, "the reply took 1600001 ms, over max_duration_ms 1500000"),
+        ],
+    )
+    def test_hb18_what_goes_over_reads_as_over(
+        self, limit: float, took: float, message: str
+    ) -> None:
+        assert _too_slow(limit, took) == [message]
+
+    def test_hb18_1000_and_1000_0_are_the_same_limit(self, tmp_path: Path) -> None:
+        def sha(value: object) -> str:
+            return Case(trigger="a", expect=Expect(max_duration_ms=value)).definition_sha256  # type: ignore[arg-type]
+
+        assert sha(1000) == sha(1000.0)
+        whole = parse_spec(_spec(tmp_path, MANAGED, _suites("{max_duration_ms: 1000}")))
+        point = parse_spec(_spec(tmp_path, MANAGED, _suites("{max_duration_ms: 1000.0}")))
+        assert (
+            whole.suites[0].tests[0].definition_sha256 == point.suites[0].tests[0].definition_sha256
+        )

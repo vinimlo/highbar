@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import math
 import time
 import uuid
 from collections.abc import Iterable, Mapping
@@ -232,7 +233,13 @@ def _too_slow(limit: float | None, took: float | None) -> list[str]:
     """
     if limit is None or took is None or took <= limit:
         return []
-    return [f"the reply took {round(took)} ms, over max_duration_ms {limit:g}"]
+    # Rounded up, so a time over the limit never reads as the limit itself.
+    return [f"the reply took {math.ceil(took)} ms, over max_duration_ms {_as_written(limit)}"]
+
+
+def _as_written(number: float) -> str:
+    """``1500000`` and ``1234.5678`` as the spec has them, not as ``1.5e+06`` or ``1234.57``."""
+    return str(int(number)) if float(number).is_integer() else repr(float(number))
 
 
 def _amounts(costs: Mapping[str, float]) -> str:
@@ -1448,7 +1455,9 @@ class TestRunner:
                 "give each test execution its own value"
             )
 
-        sent_at = time.time()
+        # The monotonic clock: a wall clock moved back during the request would make a
+        # slow reply look fast, and max_duration_ms decides a verdict (HB-18).
+        sent_at = time.monotonic()
         try:
             response = self._client.send(
                 resolved_trigger, values=replace(values, message=resolved_trigger)
@@ -1462,7 +1471,7 @@ class TestRunner:
         except Exception as e:
             # The message never reached the agent, so its behavior was not checked.
             return unverified(f"HTTP error: {e}")
-        log.response, log.response_ms = response, (time.time() - sent_at) * 1000
+        log.response, log.response_ms = response, (time.monotonic() - sent_at) * 1000
 
         time.sleep(self._settle_time)
         window, unreadable = self._read()
