@@ -12,7 +12,7 @@ expect:
     - name: cancel_order
 ```
 
-The title shows the count: `✓ cancels when asked 5/5 (min 4)` or `✗ cancels when asked 3/5 (min 4)`. A failure that repeats across runs is shown once, with how many runs it hit: `(2 of 5 runs)`.
+The title shows the count: `✓ cancels when asked 5/5 (min 4)` or `✗ cancels when asked 3/5 (min 4)`. A failure that repeats across runs is shown once, with how many runs it hit: `(2 of 5 runs)`. A response check is one line too when the reply changed between runs, with the reply of the first run it failed in: `Response does not contain 'refund'. Got: 'I can't help with that' (3 of 5 runs; reply from run 2)`. The JSON report keeps each run's own message.
 
 ## `min_pass`
 

@@ -419,6 +419,9 @@ class AssertionResult:
 
     passed: bool
     message: str
+    # What a failure says apart from the agent's reply, which changes on every run: a
+    # phrasing's runs are grouped by it (HB-27). None when the message is all of it.
+    condition: str | None = None
 
 
 @dataclass(frozen=True)
