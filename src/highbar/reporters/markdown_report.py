@@ -19,10 +19,13 @@ from typing import Any
 from highbar.reporters._run import printable, run_error
 from highbar.reporters.json_report import JsonReport
 
-# Rows per table, and characters per cell before the escapes: with both, the page stays
-# well under GitHub's 1 MiB for a step summary, whatever the agent wrote.
+# Rows per table, and characters per cell before the escapes, keep the page short to read.
+# PAGE_LIMIT keeps it under GitHub's 1 MiB for a step summary whatever the spec and the
+# agent wrote: no row is added past it, in bytes. Every other line of the page together
+# is far smaller than the room left above it.
 ROW_LIMIT = 200
 CELL_LIMIT = 300
+PAGE_LIMIT = 900 * 1024
 
 # What GitHub's Markdown reads as markup in the middle of a line: emphasis, code, links,
 # HTML and entities, a table's pipe, strikethrough and math. A backslash makes each one
@@ -50,21 +53,29 @@ def render(body: dict[str, Any]) -> str:
     lines += [_counts(body), ""]
     if not_passed:
         lines += ["| Result | Test | Spec | Time | Why |", "| --- | --- | --- | --- | --- |"]
-        lines += [
-            f"| {_MARKS.get(str(test['status']), str(test['status']))} | {_name(key, test)} "
-            f"| {_cell(key)} | {_seconds(test)} | {_why(test)} |"
-            for key, test in not_passed[:ROW_LIMIT]
-        ]
-        lines += _left_out(len(not_passed))
+        shown = _fit(
+            [
+                f"| {_MARKS.get(str(test['status']), str(test['status']))} | {_name(key, test)} "
+                f"| {_cell(key)} | {_seconds(test)} | {_why(test)} |"
+                for key, test in not_passed[:ROW_LIMIT]
+            ],
+            lines,
+        )
+        lines += shown
+        lines += _left_out(len(not_passed), len(shown))
         lines.append("")
     if passed:
         lines += [f"<details><summary>{len(passed)} passed</summary>", ""]
         lines += ["| Test | Spec | Time |", "| --- | --- | --- |"]
-        lines += [
-            f"| {_name(key, test)} | {_cell(key)} | {_seconds(test)} |"
-            for key, test in passed[:ROW_LIMIT]
-        ]
-        lines += _left_out(len(passed))
+        shown = _fit(
+            [
+                f"| {_name(key, test)} | {_cell(key)} | {_seconds(test)} |"
+                for key, test in passed[:ROW_LIMIT]
+            ],
+            lines,
+        )
+        lines += shown
+        lines += _left_out(len(passed), len(shown))
         lines += ["", "</details>", ""]
     return "\n".join(lines)
 
@@ -106,8 +117,25 @@ def _seconds(test: dict[str, Any]) -> str:
     return f"{(test.get('duration_ms') or 0) / 1000:.2f}s"
 
 
-def _left_out(count: int) -> list[str]:
-    return ["", f"…and {count - ROW_LIMIT} more not shown."] if count > ROW_LIMIT else []
+def _fit(rows: list[str], page: list[str]) -> list[str]:
+    """The first ``rows`` that fit in what ``page`` leaves of PAGE_LIMIT."""
+    room = PAGE_LIMIT - _size(page)
+    shown: list[str] = []
+    for row in rows:
+        room -= _size([row])
+        if room < 0:
+            break
+        shown.append(row)
+    return shown
+
+
+def _size(lines: list[str]) -> int:
+    """The bytes of ``lines`` on the page, each with its newline."""
+    return sum(len(line.encode("utf-8", "backslashreplace")) + 1 for line in lines)
+
+
+def _left_out(count: int, shown: int) -> list[str]:
+    return ["", f"…and {count - shown} more not shown."] if count > shown else []
 
 
 def _cell(value: Any) -> str:

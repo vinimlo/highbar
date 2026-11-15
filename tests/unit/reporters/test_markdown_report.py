@@ -172,3 +172,28 @@ def test_hb19_the_time_is_the_runs_as_the_terminal_shows_it() -> None:
     }
 
     assert "**1 passed** · 4.58s" in render(body)
+
+
+def test_hb19_long_names_cannot_take_the_page_over_a_mib() -> None:
+    """Names and the spec path are cells too: 400 emoji each came to 1.22 MB in review."""
+    long = "\U0001f986" * 400
+    statuses = ["failed"] * 1000 + ["passed"] * 1000
+    tests = [
+        {"suite": long, "name": long, "status": s, "errors": [long], "duration_ms": 1.0}
+        for s in statuses
+    ]
+    body = {
+        "exit_code": 1,
+        "stopped": None,
+        "duration_ms": 2000.0,
+        "summary": {"total": 2000, "passed": 1000, "failed": 1000, "errored": 0, "variations": 0},
+        "specs": [{"key": long, "tests": tests}],
+    }
+
+    page = render(body)
+
+    assert len(page.encode("utf-8")) < 1024 * 1024
+    shown = len(_rows(page))
+    assert 0 < shown < 2 * ROW_LIMIT
+    left = [int(n) for n in re.findall(r"…and (\d+) more not shown\.", page)]
+    assert sum(left) == 2000 - shown

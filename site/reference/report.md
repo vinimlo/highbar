@@ -204,7 +204,7 @@ highbar run --report markdown="$GITHUB_STEP_SUMMARY"
 - The heading says whether the run passed: `passed` only when it exited 0, `not passed (exit code 1)` otherwise, and `the run did not finish` while it runs or when it died.
 - When the tests do not say why the run did not pass (it stopped halfway, or exited with an error code while no test failed), a quote under the heading does.
 - The tests that failed or errored come first, in a table with their first error. The ones that passed are folded under them.
-- Text from the agent is escaped, so a pipe, a tag or a link shows as written. A table shows 200 tests and a cell 300 characters, and the page says how many tests it left out: GitHub drops a step summary over 1 MiB whole.
+- Text from the agent is escaped, so a pipe, a tag or a link shows as written. A table shows 200 tests and a cell 300 characters, no row is added once the page reaches 900 KiB, and the page says how many tests it left out: GitHub drops a step summary over 1 MiB whole.
 
 `$GITHUB_STEP_SUMMARY` belongs to one step, and highbar replaces the file. Give the run a step of its own, or write the summary to another file and add it in a later step that runs either way: `cat summary.md >> "$GITHUB_STEP_SUMMARY"`, with `if: always()`.
 
@@ -216,7 +216,7 @@ Give `--report` once per file:
 highbar run --report json=report.json --report junit=junit.xml --report markdown=summary.md
 ```
 
-They are one report in three formats, written at the same moments and with the same result. A path given twice, or one that is a spec of the run, stops the run before it starts (exit 2).
+They are one report in three formats, written at the same moments and with the same result. When one file cannot be written, none of them keeps the result: they all say the run did not finish, and the run exits 2. A path given twice, or one that is a spec of the run, stops the run before it starts (exit 2).
 
 ## Comparing runs
 
