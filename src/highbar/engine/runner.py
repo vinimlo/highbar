@@ -50,7 +50,7 @@ from highbar.engine.observation import (
     same_value,
 )
 from highbar.engine.placeholders import PlaceholderError, Values, render
-from highbar.engine.runs import phrasing_status, resolve_runs
+from highbar.engine.runs import against_expected, phrasing_status, resolve_runs
 from highbar.engine.secrets import redact, redact_value
 from highbar.engine.session import SessionContext, SessionError, SessionHooks
 from highbar.engine.templates import TemplateError, resolve_template
@@ -307,6 +307,21 @@ class _Gate:
         return f"{execution.label}{finding.error}{which}"
 
 
+# What a test that a late call judged again now is, in the warning that says so.
+_VERDICTS = {
+    Status.PASSED: "now passes",
+    Status.FAILED: "now fails",
+    Status.ERROR: "is now unverified",
+}
+
+
+def _judged(test: Test, result: TestResult) -> TestResult:
+    """``result`` as the reporter shows it: judged against the test's expect_status."""
+    status, mismatch = against_expected(result.status, test.expect_status)
+    errors = [mismatch, *result.errors] if mismatch else result.errors
+    return replace(result, status=status, errors=errors, expected=test.expect_status)
+
+
 @dataclass
 class _Reported:
     """A test whose result went out, kept to the end: a late call can still change it."""
@@ -314,7 +329,7 @@ class _Reported:
     suite: str
     test: Test
     name: str  # as the reporter showed it
-    status: Status
+    status: Status  # what happened, before expect_status judges it
     duration_ms: float
     errors: list[str]
 
@@ -493,7 +508,7 @@ class TestRunner:
                     self._reported[self._test_index] = _Reported(
                         suite.name, test, name, result.status, result.duration_ms, [*result.errors]
                     )
-                    self._reporter.on_test_result(name, result)
+                    self._reporter.on_test_result(name, _judged(test, result))
                     self._report_late(self._findings)
                     self._test_index += 1
                     self._check_ceiling(name)
@@ -582,19 +597,23 @@ class TestRunner:
                     executions=tuple(executions),
                 )
             )
+        observed = gate.status if gate else reported.status
+        status, mismatch = against_expected(observed, test.expect_status)
+        errors = (mismatch, *reported.errors) if mismatch else tuple(reported.errors)
         outcome = TestOutcome(
             id=self._mask(stable_key(reported.suite, test)),
             suite=self._mask(reported.suite),
             name=self._mask(test.plain_name),
             definition_sha256=self._measured(test).definition_sha256,
-            status=gate.status if gate else reported.status,
+            status=status,
             runs=runs,
             min_pass=min_pass,
             counts=_counts([status for run in statuses_by_phrasing for status in run]),
             duration_ms=reported.duration_ms,
-            errors=self._mask(tuple(reported.errors)),
+            errors=self._mask(errors),
             phrasings=tuple(phrasings),
             budget=self._budget_of(test),
+            expect_status=test.expect_status,
         )
         return replace(outcome, totals=add_up(outcome.usages))
 
@@ -679,12 +698,19 @@ class TestRunner:
             )
             detail = "; ".join(gate.describe(f) for f in group)
             reported.errors.extend(gate.describe(f) for f in group)
-            if after is not before:
-                reported.status = after
-                verdict = "now fails" if after is Status.FAILED else "is now unverified"
-                self._warn(f"{name}: {verdict}{tally}: {detail}")
-            elif after is Status.PASSED:
-                self._warn(f"{name}: a run now fails{tally}, and the test still passes: {detail}")
+            reported.status = after
+            # The verdict is the test's, judged against its expect_status (HB-21): a late
+            # call that fails a negative control can make it pass.
+            expected = reported.test.expect_status
+            was, now = against_expected(before, expected)[0], against_expected(after, expected)[0]
+            ends = f" (it ends {after}, and expect_status is {expected})" if expected else ""
+            if now is not was:
+                self._warn(f"{name}: {_VERDICTS[now]}{ends}{tally}: {detail}")
+            elif now is Status.PASSED or after is Status.PASSED:
+                still = "passes" if now is Status.PASSED else "fails"
+                self._warn(
+                    f"{name}: a run now fails{tally}, and the test still {still}{ends}: {detail}"
+                )
         self._findings = []
 
     def _last_read(self, execution: _Execution | None = None) -> _Execution | None:

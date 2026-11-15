@@ -39,6 +39,7 @@ from highbar.domain.models import (
     ResponseExpect,
     SessionConfig,
     Spec,
+    Status,
     Suite,
     Test,
     Turn,
@@ -403,7 +404,21 @@ def _parse_repetition(raw: dict[str, Any], where: str) -> dict[str, Any]:
         fields["runs"] = _parse_runs(raw["runs"], where)
     if "min_pass" in raw:
         fields["min_pass"] = _parse_min_pass(raw["min_pass"], where)
+    if "expect_status" in raw:
+        fields["expect_status"] = _parse_expect_status(raw["expect_status"], where)
     return fields
+
+
+def _parse_expect_status(value: Any, where: str) -> Status:
+    """``failed`` or ``error``: the state a negative control must end in (HB-21)."""
+    if value == "passed":
+        raise SpecError(f"{where}: expect_status: passed is what every test expects: leave it out")
+    if value not in ("failed", "error"):
+        raise SpecError(
+            f"{where}: expect_status must be failed or error (the state this negative "
+            f"control must end in), got {value!r}"
+        )
+    return Status(value)
 
 
 def _parse_budget(raw: Any, where: str) -> Budget:

@@ -102,7 +102,10 @@ class TestUnknownKeys:
 
         with pytest.raises(
             SpecError,
-            match=r"unknown key 'zzz' \(allowed: expect, history, id, min_pass, name, runs, ",
+            match=(
+                r"unknown key 'zzz' \(allowed: expect, expect_status, history, id, "
+                r"min_pass, name, runs, "
+            ),
         ):
             parse_spec(path)
 

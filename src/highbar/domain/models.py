@@ -304,6 +304,9 @@ class Test:
     # The conversation before its first message (HB-24): {role, content} each, for the
     # session's setup to seed. highbar sends none of it.
     history: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
+    # The state a negative control must end in (HB-21): ``failed`` or ``error``. The test
+    # passes when it ends exactly there; None: it must pass, as every test.
+    expect_status: Status | None = None
 
     @property
     def requires_observation(self) -> bool:
@@ -336,6 +339,9 @@ class Test:
             definition["session_args"] = self.session_args
         if self.history:
             definition["history"] = self.history
+        if self.expect_status is not None:
+            # It changes what counts as right. Only when set, as session_args and history.
+            definition["expect_status"] = str(self.expect_status)
         # ASCII, so a lone surrogate from YAML is an escape and not a failed encode.
         text = json.dumps(_canonical(definition), sort_keys=True, default=str)
         return hashlib.sha256(text.encode("ascii")).hexdigest()
@@ -414,6 +420,8 @@ class TestResult:
     traces: list[Trace] = field(default_factory=list[Trace])
     # (passed, runs, min_pass) when a test without variations ran more than once.
     counts: tuple[int, int, int] | None = None
+    # The test's expect_status (HB-21): ``status`` is already judged against it.
+    expected: Status | None = None
 
     @property
     def passed(self) -> bool:
@@ -530,6 +538,9 @@ class TestOutcome:
     phrasings: tuple[PhrasingOutcome, ...] = ()
     budget: Budget | None = None  # what each execution may spend, default included
     totals: UsageTotals | None = None
+    # The state the test expects to end in (HB-21); ``status`` is judged against it, and
+    # its phrasings and executions keep what happened.
+    expect_status: Status | None = None
 
     @property
     def usages(self) -> list[Usage | None]:

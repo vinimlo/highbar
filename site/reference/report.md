@@ -110,8 +110,9 @@ The one exception is a command line that highbar cannot read: an unknown option,
 | Field | |
 |---|---|
 | `id` | The test's [`id`](/reference/spec-format#tests) in the spec, or `<suite>/<name>`. Unique in a spec. |
-| `definition_sha256` | Of the trigger, the turns, the expectation and the number of variations. `name`, `id`, `runs` and `min_pass` stay out, and so does an option left at its default, so a new one changes the hash of no test that does not use it. A budget changes what counts as right, so it is part of the expectation: one from `defaults.budget` hashes the same as one written in the test. |
-| `status`, `errors` | The final ones, late calls included. |
+| `definition_sha256` | Of the trigger, the turns, the expectation, the number of variations and `expect_status`. `name`, `id`, `runs` and `min_pass` stay out, and so does an option left at its default, so a new one changes the hash of no test that does not use it. A budget changes what counts as right, so it is part of the expectation: one from `defaults.budget` hashes the same as one written in the test. |
+| `status`, `errors` | The final ones, late calls included. With `expect_status`, `status` is judged against it: `passed` when the test ended exactly there. The phrasings and executions keep what happened. |
+| `expect_status` | `failed` or `error`, the state this negative control must end in, or `null`. See [a test that must fail](/guides/assertions#a-test-that-must-fail-expect-status). |
 | `runs`, `min_pass` | As they applied to this test, with fractions resolved. |
 | `counts` | How the executions ended. There is no rate: an `error` is neither a pass nor a failure, so whoever computes one has to decide what to do with it. |
 | `phrasings[].kind` | `trigger`, `variation`, or `conversation` for a multi-turn test, whose `text` is `null`. A test that stopped before running, such as one without its variations, has no phrasings. |
