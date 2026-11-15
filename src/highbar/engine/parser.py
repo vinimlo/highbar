@@ -206,11 +206,13 @@ _NOT_IN_TRIGGERS = {
         "the session setup seeds it (ctx.history, or {{test.history}} in a command or HTTP "
         "setup), or agent.request hands it on in a single-turn test"
     ),
+    "run": "use it in agent.request, a session hook or agent.run.teardown",
 }
 
 
 def _check_not_in_triggers(suites: list[Suite]) -> None:
-    """``{{test.args.<path>}}`` or ``{{test.history}}`` in a trigger stops the spec (HB-9, HB-24).
+    """``{{test.args.<path>}}``, ``{{test.history}}`` or ``{{run.<path>}}`` in a trigger stops
+    the spec (HB-9, HB-24, HB-10).
 
     A trigger is sent as written, braces included, so the agent would get a message
     nobody meant to send, and the test could pass on it. Names highbar does not own
@@ -502,8 +504,14 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
             )
         traces = _required_text(raw, "traces")
 
-    session = _parse_session(raw["session"]) if "session" in raw else None
+    # What agent.run.setup returns is {{run.*}} (HB-10): known before any session.
+    run_raw = as_dict(raw.get("run"))
+    has_run = run_raw is not None and "setup" in run_raw
+    session = _parse_session(raw["session"], has_run) if "session" in raw else None
     has_session = session is not None
+    read_result = placeholders.reads(
+        [raw.get(key) for key in ("request", "session", "correlate", "run")], "run"
+    )
 
     return AgentConfig(
         endpoint=endpoint,
@@ -512,13 +520,13 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
         startup_timeout=_milliseconds(raw, "startup_timeout", 15000, minimum=1),
         settle_time=_milliseconds(raw, "settle_time", 500, minimum=0),
         timeout=_milliseconds(raw, "timeout", 60000, minimum=1),
-        request=_parse_request(raw.get("request"), has_session),
+        request=_parse_request(raw.get("request"), has_session, has_run),
         response=_parse_response_path(raw["response"]) if "response" in raw else None,
         traces=traces,
         session=session,
-        run=_parse_run(raw["run"]) if "run" in raw else None,
+        run=_parse_run(raw["run"], read_result) if "run" in raw else None,
         correlate=(
-            _parse_correlate(raw["correlate"], has_session)
+            _parse_correlate(raw["correlate"], has_session, has_run)
             if "correlate" in raw
             else {"test": "{{test.id}}"}
         ),
@@ -662,7 +670,7 @@ def _required_text(raw: dict[str, Any], key: str) -> str:
     return value
 
 
-def _parse_request(raw: Any, has_session: bool) -> RequestConfig:
+def _parse_request(raw: Any, has_session: bool, has_run: bool) -> RequestConfig:
     if raw is None:
         return RequestConfig()
     where = "agent.request"
@@ -678,10 +686,14 @@ def _parse_request(raw: Any, has_session: bool) -> RequestConfig:
 
     body = raw.get("body", RequestConfig().body)
     # A misspelled placeholder is reported as such, before "never uses {{message}}".
-    check_placeholders(
-        headers, f"{where}.headers", allowed=placeholders.ALL, has_session=has_session
-    )
-    check_placeholders(body, f"{where}.body", allowed=placeholders.ALL, has_session=has_session)
+    for part, value in (("headers", headers), ("body", body)):
+        check_placeholders(
+            value,
+            f"{where}.{part}",
+            allowed=placeholders.ALL,
+            has_session=has_session,
+            has_run=has_run,
+        )
     if not uses_placeholder(body, "message"):
         raise SpecError(
             f"{where}.body: never uses {{{{message}}}}, so the trigger would not be sent"
@@ -723,25 +735,28 @@ def _parse_response_path(raw: Any) -> str:
     return raw
 
 
-def _parse_session(raw: Any) -> SessionConfig:
+def _parse_session(raw: Any, has_run: bool) -> SessionConfig:
     where = "agent.session"
     require_type(raw, dict, where, "must be a mapping with setup and/or teardown")
     check_keys(raw, "session", where)
     if "setup" not in raw and "teardown" not in raw:
         raise SpecError(f"{where}: needs setup or teardown")
     return SessionConfig(
-        setup=_parse_hook(raw["setup"], f"{where}.setup", placeholders.SETUP)
+        setup=_parse_hook(raw["setup"], f"{where}.setup", placeholders.SETUP, has_run=has_run)
         if "setup" in raw
         else None,
-        teardown=_parse_hook(raw["teardown"], f"{where}.teardown", placeholders.TEARDOWN)
+        teardown=_parse_hook(
+            raw["teardown"], f"{where}.teardown", placeholders.TEARDOWN, has_run=has_run
+        )
         if "teardown" in raw
         else None,
     )
 
 
-def _parse_run(raw: Any) -> RunConfig:
-    """Hooks once per spec, around the run (HB-10). They belong to no test, so no
-    placeholder: a ``{{test.id}}`` there would have nothing to stand for."""
+def _parse_run(raw: Any, read_result: bool) -> RunConfig:
+    """Hooks once per spec, around the run (HB-10). They belong to no test, so no test's
+    placeholder: a ``{{test.id}}`` there would have nothing to stand for. The teardown
+    reads what the setup returned, ``{{run.*}}`` (v1)."""
     where = "agent.run"
     require_type(raw, dict, where, "must be a mapping with setup and/or teardown")
     check_keys(raw, "run", where)
@@ -749,13 +764,19 @@ def _parse_run(raw: Any) -> RunConfig:
         raise SpecError(f"{where}: needs setup or teardown")
     return RunConfig(
         setup=_parse_hook(raw["setup"], f"{where}.setup", frozenset()) if "setup" in raw else None,
-        teardown=_parse_hook(raw["teardown"], f"{where}.teardown", frozenset())
+        teardown=_parse_hook(
+            raw["teardown"],
+            f"{where}.teardown",
+            placeholders.RUN_TEARDOWN,
+            has_run="setup" in raw,
+        )
         if "teardown" in raw
         else None,
+        read_result=read_result,
     )
 
 
-def _parse_hook(raw: Any, where: str, allowed: frozenset[str]) -> Hook:
+def _parse_hook(raw: Any, where: str, allowed: frozenset[str], *, has_run: bool = False) -> Hook:
     """A command (text, split like a shell would, run without one), ``{python: ...}`` or
     ``{http: {url, method, headers, body}}``."""
     if isinstance(raw, str):
@@ -765,7 +786,7 @@ def _parse_hook(raw: Any, where: str, allowed: frozenset[str]) -> Hook:
             raise SpecError(f"{where}: not a valid command line: {e}") from None
         if not argv:
             raise SpecError(f"{where}: cannot be empty")
-        check_placeholders(argv, where, allowed=allowed, has_session=True)
+        check_placeholders(argv, where, allowed=allowed, has_session=True, has_run=has_run)
         return CommandHook(argv=argv)
 
     require_type(
@@ -775,7 +796,7 @@ def _parse_hook(raw: Any, where: str, allowed: frozenset[str]) -> Hook:
     if "python" in raw and "http" in raw:
         raise SpecError(f"{where}: a hook is either python or http, not both")
     if "http" in raw:
-        return _parse_http_hook(raw["http"], f"{where}.http", allowed)
+        return _parse_http_hook(raw["http"], f"{where}.http", allowed, has_run)
     target = raw.get("python")
     require_type(target, str, where, "python must be 'module:function'")
     module, colon, function = target.partition(":")
@@ -787,7 +808,7 @@ def _parse_hook(raw: Any, where: str, allowed: frozenset[str]) -> Hook:
 _HOOK_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 
 
-def _parse_http_hook(raw: Any, where: str, allowed: frozenset[str]) -> HttpHook:
+def _parse_http_hook(raw: Any, where: str, allowed: frozenset[str], has_run: bool) -> HttpHook:
     """A request highbar sends itself, so it can run away from the agent's image (HB-13)."""
     require_type(raw, dict, where, "http must be a mapping with a url")
     check_keys(raw, "http_hook", where)
@@ -814,11 +835,13 @@ def _parse_http_hook(raw: Any, where: str, allowed: frozenset[str]) -> HttpHook:
     headers = _parse_headers(raw.get("headers", {}), where)
     body = raw.get("body")
     for part, value in (("url", url), ("headers", headers), ("body", body)):
-        check_placeholders(value, f"{where}.{part}", allowed=allowed, has_session=True)
+        check_placeholders(
+            value, f"{where}.{part}", allowed=allowed, has_session=True, has_run=has_run
+        )
     return HttpHook(url=url, method=method.upper(), headers=headers, body=body)
 
 
-def _parse_correlate(raw: Any, has_session: bool) -> dict[str, Any]:
+def _parse_correlate(raw: Any, has_session: bool, has_run: bool) -> dict[str, Any]:
     where = "agent.correlate"
     correlate = as_dict(raw)
     if not correlate:
@@ -829,7 +852,9 @@ def _parse_correlate(raw: Any, has_session: bool) -> dict[str, Any]:
     for key, value in correlate.items():
         if isinstance(value, bool) or not isinstance(value, (str, int, float)):
             raise SpecError(f"{where}.{key}: must be text, a number or a placeholder")
-    check_placeholders(correlate, where, allowed=placeholders.ALL, has_session=has_session)
+    check_placeholders(
+        correlate, where, allowed=placeholders.ALL, has_session=has_session, has_run=has_run
+    )
     return dict(correlate)
 
 

@@ -175,6 +175,9 @@ class RunConfig:
 
     setup: Hook | None = None
     teardown: Hook | None = None
+    # The spec reads what the setup returns as {{run.*}} (v1): only then must the setup
+    # return a JSON object. A setup whose result nobody reads may print what it likes.
+    read_result: bool = False
 
 
 @dataclass(frozen=True)

@@ -75,6 +75,8 @@ class SessionContext:
     args: Mapping[str, Any] = field(default_factory=dict[str, Any])
     # The test's history (HB-24): the conversation the setup seeds before its message.
     history: Sequence[Mapping[str, str]] = ()
+    # What agent.run.setup returned (HB-10), the same for every test: {{run.*}}.
+    run: Mapping[str, Any] = field(default_factory=dict[str, Any])
 
 
 @dataclass(frozen=True)
@@ -176,6 +178,8 @@ class SessionHooks:
         # The lines a failure shows go to the terminal: masked like any message.
         self._secrets = dict(secrets or {})
         self._log = _HookLog(spec_path)
+        # What agent.run.setup returned, for its teardown's {{run.*}}.
+        self._run_values: dict[str, Any] = {}
 
     def load(self) -> None:
         """Import the Python hooks, once, before any agent starts. Raises ``SessionError``."""
@@ -200,28 +204,9 @@ class SessionHooks:
         hook = self._config.setup
         if hook is None:
             return {}
-        if isinstance(hook, PythonHook):
-            result = self._call("session.setup", ctx)
-            if not isinstance(result, Mapping):
-                raise SessionError(
-                    f"session.setup must return a mapping, got {type(result).__name__}"
-                )
-            session: dict[str, Any] = dict(cast("Mapping[str, Any]", result))
-        elif isinstance(hook, HttpHook):
-            session = _json_object(self._send(hook, "session.setup", ctx, {}))
-        else:
-            session = _last_json_object(self._run(hook, "session.setup", ctx, {}))
+        session = self._result("session.setup", hook, ctx)
         if "headers" in session and not isinstance(session["headers"], Mapping):
             raise SessionError("session.setup returned 'headers' that is not an object")
-        for key, value in session.items():
-            # It goes into requests and commands as JSON; an ORM object would crash there.
-            try:
-                json.dumps(value)
-            except (TypeError, ValueError):
-                raise SessionError(
-                    f"session.setup returned a value that is not JSON: {key} is "
-                    f"{type(value).__name__}"
-                ) from None
         return session
 
     def teardown(self, ctx: SessionContext, session: Mapping[str, Any]) -> None:
@@ -236,14 +221,70 @@ class SessionHooks:
         else:
             self._run(hook, "session.teardown", ctx, session)
 
-    def before_run(self) -> None:
-        """``agent.run.setup``, once, before the agent starts. Raises ``RunHookError``."""
-        self._run_hook("agent.run.setup", self._run_config.setup if self._run_config else None)
+    def before_run(self) -> dict[str, Any]:
+        """``agent.run.setup``, once, before the agent starts: what it returned when the
+        spec reads it as ``{{run.*}}``, else ``{}``. Raises ``RunHookError``."""
+        config = self._run_config
+        if config is None or config.setup is None:
+            return {}
+        try:
+            if config.read_result:
+                self._run_values = self._result("agent.run.setup", config.setup, None)
+            else:
+                self._run_hook("agent.run.setup", config.setup)
+        except SessionError as e:
+            # It leaves the run, past the runner that masks a test's errors.
+            raise RunHookError(redact(str(e), self._secrets)) from None
+        return dict(self._run_values)
 
     def after_run(self) -> None:
         """``agent.run.teardown``, once the run is over. Raises ``RunHookError``."""
         hook = self._run_config.teardown if self._run_config else None
-        self._run_hook("agent.run.teardown", hook)
+        if hook is None:
+            return
+        try:
+            self._run_hook("agent.run.teardown", hook)
+        except SessionError as e:
+            raise RunHookError(redact(str(e), self._secrets)) from None
+
+    def _run_hook(self, what: str, hook: CommandHook | PythonHook | HttpHook) -> None:
+        # A run hook reads no test's placeholder (the parser refuses them), only {{run.*}}.
+        no_test = SessionContext(
+            test_id="", test_name="", spec_path=self._spec_path, run=self._run_values
+        )
+        if isinstance(hook, PythonHook):
+            self._call(what)
+        elif isinstance(hook, HttpHook):
+            self._send(hook, what, no_test, {})
+        else:
+            self._run(hook, what, no_test, {})
+
+    def _result(
+        self, what: str, hook: CommandHook | PythonHook | HttpHook, ctx: SessionContext | None
+    ) -> dict[str, Any]:
+        """What a setup returned: the JSON object a session's or a run's values come from.
+
+        ``ctx`` is the test's; a run's setup has none, and its Python function gets nothing.
+        """
+        values_ctx = ctx or SessionContext(test_id="", test_name="", spec_path=self._spec_path)
+        if isinstance(hook, PythonHook):
+            result = self._call(what, ctx) if ctx is not None else self._call(what)
+            if not isinstance(result, Mapping):
+                raise SessionError(f"{what} must return a mapping, got {type(result).__name__}")
+            values: dict[str, Any] = dict(cast("Mapping[str, Any]", result))
+        elif isinstance(hook, HttpHook):
+            values = _json_object(self._send(hook, what, values_ctx, {}), what)
+        else:
+            values = _last_json_object(self._run(hook, what, values_ctx, {}), what)
+        for key, value in values.items():
+            # It goes into requests and commands as JSON; an ORM object would crash there.
+            try:
+                json.dumps(value)
+            except (TypeError, ValueError):
+                raise SessionError(
+                    f"{what} returned a value that is not JSON: {key} is {type(value).__name__}"
+                ) from None
+        return values
 
     def check(self, target: str, ctx: CheckContext) -> list[str]:
         """The failures ``expect.check`` found; none is a pass. Raises ``SessionError``.
@@ -260,22 +301,6 @@ class SessionHooks:
                 f"passes), got {_shape(found)}"
             )
         return [str(message) for message in messages]
-
-    def _run_hook(self, what: str, hook: CommandHook | PythonHook | HttpHook | None) -> None:
-        if hook is None:
-            return
-        # A run hook reads no placeholder (the parser refuses them): no test to fill in.
-        no_test = SessionContext(test_id="", test_name="", spec_path=self._spec_path)
-        try:
-            if isinstance(hook, PythonHook):
-                self._call(what)
-            elif isinstance(hook, HttpHook):
-                self._send(hook, what, no_test, {})
-            else:
-                self._run(hook, what, no_test, {})
-        except SessionError as e:
-            # It leaves the run, past the runner that masks a test's errors.
-            raise RunHookError(redact(str(e), self._secrets)) from None
 
     def _call(self, what: str, *args: Any) -> Any:
         function = self._functions[what]
@@ -325,6 +350,7 @@ class SessionHooks:
             session=session,
             args=ctx.args,
             history=ctx.history,
+            run=ctx.run,
         )
         try:
             argv = [_as_argument(render(token, values)) for token in hook.argv]
@@ -377,6 +403,7 @@ class SessionHooks:
             session=session,
             args=ctx.args,
             history=ctx.history,
+            run=ctx.run,
         )
         try:
             url = render_url(hook.url, values)
@@ -610,7 +637,7 @@ def _load(target: str, what: str) -> Callable[..., Any]:
     return function
 
 
-def _last_json_object(stdout: str) -> dict[str, Any]:
+def _last_json_object(stdout: str, what: str) -> dict[str, Any]:
     lines = [line for line in stdout.splitlines() if line.strip()]
     last = lines[-1] if lines else ""
     try:
@@ -620,22 +647,20 @@ def _last_json_object(stdout: str) -> dict[str, Any]:
     mapping = as_dict(value)
     if mapping is None:
         raise SessionError(
-            "session.setup must print a JSON object as its last line of output, "
+            f"{what} must print a JSON object as its last line of output, "
             f"got {truncate(last, 200)!r}"
         )
     return mapping
 
 
-def _json_object(text: str) -> dict[str, Any]:
+def _json_object(text: str, what: str) -> dict[str, Any]:
     try:
         value = json.loads(text)
     except ValueError:
         value = None
     mapping = as_dict(value)
     if mapping is None:
-        raise SessionError(
-            f"session.setup must return a JSON object, got {truncate(text.strip(), 200)!r}"
-        )
+        raise SessionError(f"{what} must return a JSON object, got {truncate(text.strip(), 200)!r}")
     return mapping
 
 

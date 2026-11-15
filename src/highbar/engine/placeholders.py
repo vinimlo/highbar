@@ -3,8 +3,9 @@
 ``{{message}}`` is the trigger being sent, ``{{test.id}}`` the id of this test
 execution (also sent as ``X-Highbar-Test``), ``{{test.name}}`` the test's name,
 ``{{test.args.<path>}}`` a value of the test's own ``session: {args: ...}`` (HB-9),
-``{{test.history}}`` its ``history`` as a list of ``{role, content}`` (HB-24), and
-``{{session.<path>}}`` a value from the object the session setup returned.
+``{{test.history}}`` its ``history`` as a list of ``{role, content}`` (HB-24),
+``{{session.<path>}}`` a value from the object the session setup returned, and
+``{{run.<path>}}`` one from the object ``agent.run.setup`` returned (HB-10).
 
 A value that is only a placeholder keeps the JSON type of what it resolves to: an
 integer ``conversation_id`` goes out as an integer. Inside a longer text it is
@@ -29,11 +30,14 @@ from highbar.engine.templates import no_path_message
 
 PLACEHOLDER = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
 
-ALL = frozenset({"message", "test.id", "test.name", "test.args", "test.history", "session"})
+ALL = frozenset({"message", "test.id", "test.name", "test.args", "test.history", "session", "run"})
 # Hooks run outside a message: no {{message}}; setup runs before the session exists.
-# A test's args are known before it: setup can use them.
-SETUP = frozenset({"test.id", "test.name", "test.args", "test.history"})
-TEARDOWN = frozenset({"test.id", "test.name", "test.args", "test.history", "session"})
+# A test's args are known before it: setup can use them. The run's values are known
+# before any test.
+SETUP = frozenset({"test.id", "test.name", "test.args", "test.history", "run"})
+TEARDOWN = frozenset({"test.id", "test.name", "test.args", "test.history", "session", "run"})
+# agent.run.teardown belongs to no test: it reads only what agent.run.setup returned.
+RUN_TEARDOWN = frozenset({"run"})
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,7 @@ class Values:
     session: Mapping[str, Any]
     args: Mapping[str, Any] = field(default_factory=dict[str, Any])
     history: Sequence[Mapping[str, str]] = ()
+    run: Mapping[str, Any] = field(default_factory=dict[str, Any])
 
 
 class PlaceholderError(ValueError):
@@ -53,6 +58,8 @@ class PlaceholderError(ValueError):
 def _kind(name: str) -> str:
     if name.startswith("session."):
         return "session"
+    if name.startswith("run."):
+        return "run"
     return "test.args" if name.startswith("test.args.") else name
 
 
@@ -72,26 +79,30 @@ def args_used(value: Any, where: str) -> list[tuple[str, str]]:
 
 
 def check_placeholders(
-    value: Any, where: str, *, allowed: frozenset[str], has_session: bool
+    value: Any, where: str, *, allowed: frozenset[str], has_session: bool, has_run: bool = False
 ) -> None:
     """Reject placeholders that are unknown, or not available where they are used."""
     if (mapping := as_dict(value)) is not None:
         for key, item in mapping.items():
-            check_placeholders(item, f"{where}.{key}", allowed=allowed, has_session=has_session)
+            check_placeholders(
+                item, f"{where}.{key}", allowed=allowed, has_session=has_session, has_run=has_run
+            )
         return
     if (items := as_list(value)) is not None:
         for index, item in enumerate(items):
-            check_placeholders(item, f"{where}[{index}]", allowed=allowed, has_session=has_session)
+            check_placeholders(
+                item, f"{where}[{index}]", allowed=allowed, has_session=has_session, has_run=has_run
+            )
         return
     if not isinstance(value, str):
         return
     for match in PLACEHOLDER.finditer(value):
         name = match.group(1)
-        if name == "session":
+        if name in ("session", "run"):
             # As in a trigger. It loaded, and only failed when the request was built.
-            raise SpecError(f"{where}: '{{{{session}}}}' {no_path_message('session')}")
+            raise SpecError(f"{where}: '{{{{{name}}}}}' {no_path_message(name)}")
         kind = _kind(name)
-        if kind not in ALL or name in ("session.", "test.args", "test.args."):
+        if kind not in ALL or name in ("session.", "run.", "test.args", "test.args."):
             known = [
                 "message",
                 "test.id",
@@ -99,13 +110,14 @@ def check_placeholders(
                 "test.args.<key>",
                 "test.history",
                 "session.<key>",
+                "run.<key>",
             ]
             close = difflib.get_close_matches(name, known, n=1, cutoff=0.6)
             hint = f" — did you mean '{{{{{close[0]}}}}}'?" if close else ""
             raise SpecError(
                 f"{where}: unknown placeholder '{match.group(0)}'{hint} "
                 "(placeholders here: {{message}}, {{test.id}}, {{test.name}}, "
-                "{{test.args.<key>}}, {{test.history}}, {{session.<key>}})"
+                "{{test.args.<key>}}, {{test.history}}, {{session.<key>}}, {{run.<key>}})"
             )
         if kind not in allowed:
             raise SpecError(f"{where}: '{match.group(0)}' is not available here")
@@ -113,6 +125,21 @@ def check_placeholders(
             raise SpecError(
                 f"{where}: '{match.group(0)}' needs agent.session, whose setup returns it"
             )
+        if kind == "run" and not has_run:
+            raise SpecError(
+                f"{where}: '{match.group(0)}' needs agent.run with a setup, which returns it"
+            )
+
+
+def reads(value: Any, kind: str) -> bool:
+    """Whether ``value`` has a placeholder of ``kind`` (``run`` for ``{{run.<key>}}``)."""
+    if (mapping := as_dict(value)) is not None:
+        return any(reads(item, kind) for item in mapping.values())
+    if (items := as_list(value)) is not None:
+        return any(reads(item, kind) for item in items)
+    return isinstance(value, str) and any(
+        _kind(match.group(1)) == kind for match in PLACEHOLDER.finditer(value)
+    )
 
 
 def uses_placeholder(value: Any, name: str) -> bool:
@@ -190,6 +217,8 @@ def _resolve(name: str, values: Values) -> Any:
             return get_path(dict(values.args), name.removeprefix("test.args."))
         except PathError as e:
             raise PlaceholderError(f"{{{{{name}}}}}: {e}") from None
+    if _kind(name) == "run":
+        return _run_value(name.removeprefix("run."), values)
     path = name.removeprefix("session.")
     try:
         value = get_path(dict(values.session), path)
@@ -200,5 +229,17 @@ def _resolve(name: str, values: Values) -> Any:
         # the text "null") would fail the agent for the setup's fault.
         raise PlaceholderError(
             f"{{{{session.{path}}}}}: the value is null: the session setup returned no value for it"
+        )
+    return value
+
+
+def _run_value(path: str, values: Values) -> Any:
+    try:
+        value = get_path(dict(values.run), path)
+    except PathError as e:
+        raise PlaceholderError(f"{{{{run.{path}}}}}: {e}") from None
+    if value is None:
+        raise PlaceholderError(
+            f"{{{{run.{path}}}}}: the value is null: agent.run.setup returned no value for it"
         )
     return value
