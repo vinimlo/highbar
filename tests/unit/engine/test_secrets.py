@@ -243,6 +243,60 @@ class TestMaskByPlace:
 
         assert parse_spec(path).agent.secrets == ({value: "AGENT_URL"} if masked else {})
 
+    @pytest.mark.parametrize(
+        ("key", "url", "env"),
+        [
+            ("endpoint", "${AGENT_URL}&key=${API_KEY}", {"AGENT_URL": "http://localhost:8000/chat?v=1"}),
+            ("endpoint", "${AGENT_URL}${API_KEY}", {"AGENT_URL": "http://localhost:8000/chat?key="}),
+            ("endpoint", "${AGENT_URL}${API_KEY}", {"AGENT_URL": "http://localhost:8000/chat#k="}),
+            ("endpoint", "http://bot:${API_KEY}${AT_HOST}", {"AT_HOST": "@localhost:8000/chat"}),
+            ("health", "${HEALTH_BASE}&key=${API_KEY}", {"HEALTH_BASE": "http://localhost:8000/up?v=1"}),
+        ],
+        ids=["U1-query-from-a-value", "U2-key-after-a-query", "U3-key-after-a-fragment",
+             "U4-password-before-an-at-from-a-value", "U17-health"],
+    )  # fmt: skip
+    def test_hb6_a_mark_from_one_value_masks_every_variable_of_the_url(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        key: str,
+        url: str,
+        env: dict[str, str],
+    ) -> None:
+        """The review of cfa902d: a URL whose ``?``, ``#`` or ``@`` comes from a value
+        cannot be read by position, so none of its variables is shown."""
+        monkeypatch.setenv("API_KEY", "k3y-s3cr3t-value")
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        agent = (
+            f'endpoint: "{url}"\n'
+            if key == "endpoint"
+            else f'endpoint: "http://localhost:8000/chat"\nhealth: "{url}"\n'
+        )
+
+        secrets = parse_spec(_spec(tmp_path, agent)).agent.secrets
+
+        assert secrets == {"k3y-s3cr3t-value": "API_KEY", **{v: n for n, v in env.items()}}
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http:/bot:${API_PASSWORD}@localhost:8000/chat",
+            "//bot:${API_PASSWORD}@localhost:8000/chat",
+        ],
+        ids=["U5-one-slash-short", "U6-no-scheme"],
+    )
+    def test_hb6_the_error_refusing_a_url_without_scheme_never_shows_its_password(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, url: str
+    ) -> None:
+        monkeypatch.setenv("API_PASSWORD", "p4ss-s3cr3t")
+
+        with pytest.raises(SpecError) as info:
+            parse_spec(_spec(tmp_path, f'endpoint: "{url}"\n'))
+
+        assert "p4ss-s3cr3t" not in str(info.value)
+        assert "${API_PASSWORD}" in str(info.value)
+
     def test_hb6_a_value_also_used_in_a_header_is_masked_in_the_traces_path_too(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

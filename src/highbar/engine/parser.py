@@ -520,7 +520,7 @@ def _expand_env(value: Any, where: str, found: dict[str, str]) -> Any:
         if name not in os.environ:
             raise SpecError(f"{where}: environment variable {name} is not set")
         expanded = os.environ[name]
-        if _secret_place(where, value, match.start(), expanded):
+        if _secret_place(where, value, match.start()):
             found[expanded] = name
         return expanded
 
@@ -533,7 +533,7 @@ _SECRET_BLOCKS = ("agent.request", "agent.session")
 _URLS = ("agent.endpoint", "agent.health")
 
 
-def _secret_place(where: str, text: str, at: int, value: str) -> bool:
+def _secret_place(where: str, text: str, at: int) -> bool:
     """Whether ``${NAME}`` at ``at`` in ``text``, the value at ``where``, is a secret (HB-6).
 
     A token goes in a header, a body, a session hook or a URL's query, and those values
@@ -544,13 +544,20 @@ def _secret_place(where: str, text: str, at: int, value: str) -> bool:
     for block in _SECRET_BLOCKS:
         if where == block or where.startswith((f"{block}.", f"{block}[")):
             return True
-    return where in _URLS and _secret_in_url(text, at, value)
+    return where in _URLS and _secret_in_url(text, at)
 
 
-def _secret_in_url(url: str, at: int, value: str) -> bool:
+def _secret_in_url(url: str, at: int) -> bool:
     """A variable in a URL's userinfo (a password), query (an API key) or fragment is a
-    secret, and so is one whose value carries any of them; the rest of a URL is shown."""
-    if any(mark in value for mark in "?#@"):
+    secret; the scheme, host, port and path are shown.
+
+    The parts are read from the URL as written, so they must be where they are written:
+    when a value brings a ``?``, ``#`` or ``@``, or the URL has no ``://`` once its values
+    are in, which part a variable is in cannot be told, and every variable is a secret.
+    """
+    values = [os.environ.get(m.group(1), "") for m in _ENV_VAR.finditer(url)]
+    whole = _ENV_VAR.sub(lambda m: os.environ.get(m.group(1), ""), url)
+    if "://" not in whole or any(mark in value for value in values for mark in "?#@"):
         return True
     query = min((i for i in (url.find("?"), url.find("#")) if i >= 0), default=len(url))
     if at >= query:
