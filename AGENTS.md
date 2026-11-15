@@ -6,7 +6,7 @@ highbar runs evals for AI agents that behave like tests. A YAML spec says what t
 
 ## Stack
 
-Python ≥ 3.12, uv, typer + rich (CLI), httpx, pyyaml, pytest, ruff, pyright (strict on `src`). The SDK (`import highbar`, `highbar.sdk`, `highbar.asgi`) loads only the standard library, so it can live in an agent's production image.
+Python ≥ 3.11, uv, typer + rich (CLI), httpx, pyyaml, pytest, ruff, pyright (strict on `src`). The SDK (`import highbar`, `highbar.sdk`, `highbar.asgi`) loads only the standard library, so it can live in an agent's production image.
 
 ## Commands
 
