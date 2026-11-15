@@ -68,7 +68,7 @@ def slow(ctx):
 def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
     # Each test imports its own copy, from its own folder.
-    for name in ("hb22_app", "hb22_quiet", "hb22_bad", "hb22_root"):
+    for name in ("hb22_app", "hb22_quiet", "hb22_bad", "hb22_root", "hb22_wraps"):
         monkeypatch.delitem(sys.modules, name, raising=False)
     (tmp_path / "hb22_app.py").write_text(APP, encoding="utf-8")
     return tmp_path
@@ -235,3 +235,49 @@ def test_hb22_a_handler_the_hook_set_up_writes_to_the_file_from_any_thread(
     assert "HTTP Request" not in "".join(capsys.readouterr())
     (log,) = _logs(app)
     assert "HTTP Request: POST /chat" in log.read_text(encoding="utf-8")
+
+
+def test_hb22_a_module_that_wraps_stdout_at_import_leaves_the_run_its_terminal(
+    app: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The review of 4fa3e97: colorama.init() wraps sys.stdout when it is not a terminal,
+    as in CI, and the wrapper kept the run's own lines going to the hook's file."""
+    (app / "hb22_wraps.py").write_text(
+        textwrap.dedent(
+            """\
+            import sys
+
+            class Wrapper:
+                def __init__(self, wrapped):
+                    self.wrapped = wrapped
+                def write(self, text):
+                    return self.wrapped.write(text)
+                def flush(self):
+                    self.wrapped.flush()
+
+            sys.stdout = Wrapper(sys.stdout)
+
+            def setup(ctx):
+                return {}
+            """
+        ),
+        encoding="utf-8",
+    )
+    hooks = SessionHooks(
+        SessionConfig(setup=PythonHook("hb22_wraps:setup")),
+        spec_path="specs/a.highbar.yaml",
+        timeout_ms=10_000,
+    )
+    hooks.load()
+    hooks.setup(CTX)
+
+    print("✓ where is my order")
+
+    assert "✓ where is my order" in capsys.readouterr().out
+
+
+def test_hb22_the_hook_log_is_kept_out_of_git(app: Path) -> None:
+    """In attach mode no agent writes the folder's .gitignore, and the file holds raw values."""
+    _hooks("setup").setup(CTX)
+
+    assert (app / ".highbar" / "logs" / ".gitignore").read_text(encoding="utf-8").strip() == "*"

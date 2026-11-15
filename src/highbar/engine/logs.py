@@ -6,6 +6,15 @@ import time
 from pathlib import Path
 
 
+def make_folder(log: Path) -> None:
+    """Make the folder ``log`` goes in, with a ``.gitignore`` that keeps every log in it
+    out of git: a log holds what the agent and the hooks wrote, values included."""
+    log.parent.mkdir(parents=True, exist_ok=True)
+    gitignore = log.parent / ".gitignore"
+    if not gitignore.exists():
+        gitignore.write_text("*\n")
+
+
 def log_path(spec_path: str, kind: str = "") -> Path:
     """``.highbar/logs/<spec stem>[-<kind>]-<timestamp>.log``, never an existing file.
 

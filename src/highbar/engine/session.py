@@ -43,7 +43,7 @@ import httpx
 from highbar._narrow import as_dict
 from highbar.assertions.response import truncate
 from highbar.domain.models import CommandHook, HttpHook, PythonHook, SessionConfig
-from highbar.engine.logs import log_path
+from highbar.engine.logs import log_path, make_folder
 from highbar.engine.placeholders import PlaceholderError, Values, render, render_url
 from highbar.engine.secrets import redact
 
@@ -336,7 +336,7 @@ class _HookLog:
         with self._lock:
             if self.path is None:
                 self.path = log_path(self._spec_path, "hooks")
-                self.path.parent.mkdir(parents=True, exist_ok=True)
+                make_folder(self.path)
             # Opened for each write: a hook abandoned at its timeout may write at any time.
             with self.path.open("a", encoding="utf-8", errors="replace") as file:
                 file.write(text)
@@ -400,11 +400,9 @@ def _routed(log: _HookLog) -> Iterator[None]:
     finally:
         for stream in routed:
             stream.installed = False
-        # Put back only what is still ours: the hook may have replaced it in turn.
-        if sys.stdout is cast("TextIO", routed[0]):
-            sys.stdout = saved[0]
-        if sys.stderr is cast("TextIO", routed[1]):
-            sys.stderr = saved[1]
+        # The run's own streams, even over a wrapper the hook put on ours (colorama.init()
+        # does when the output is not a terminal, as in CI): what follows is the run's.
+        sys.stdout, sys.stderr = saved
 
 
 class _Worker:
