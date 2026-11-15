@@ -32,6 +32,37 @@ class TestMarks:
         assert "HTTP error: refused" in output
         assert "✗" not in output
 
+    def test_hb21_a_negative_control_shows_what_it_expected(
+        self, reporter: TerminalReporter, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        result = Result(
+            status=Status.PASSED,
+            errors=["response does not contain 'ok'"],
+            duration_ms=3.0,
+            expected=Status.FAILED,
+        )
+
+        reporter.on_test_result("a tool that fails", result)
+
+        output = capsys.readouterr().out
+        assert "✓ a tool that fails (expected failed)" in output
+        # What made it fail is in the report; the terminal keeps one line for a control.
+        assert "does not contain" not in output
+
+    def test_hb21_a_control_that_did_not_fail_shows_why(
+        self, reporter: TerminalReporter, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        mismatch = "passed, but expect_status is failed"
+        result = Result(
+            status=Status.FAILED, errors=[mismatch], duration_ms=3.0, expected=Status.FAILED
+        )
+
+        reporter.on_test_result("a tool that fails", result)
+
+        output = capsys.readouterr().out
+        assert "✗ a tool that fails (expected failed)" in output
+        assert mismatch in output
+
 
 class TestSummary:
     def test_counts_the_three_outcomes_separately(self) -> None:

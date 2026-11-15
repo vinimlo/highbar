@@ -152,3 +152,24 @@ The message gives the most basic reason first:
 | called them in another order | `calls matched but out of order: expected get_order, cancel_order; got cancel_order, get_order` |
 | made a call nobody expected (`exclusive`) | `unexpected calls: delete_account` |
 | called a forbidden tool | `forbidden tool 'delete_account' was called` |
+
+## A test that must fail: `expect_status`
+
+A negative control proves the plumbing: a tool that fails must fail the test, and a test highbar cannot verify, like a budget on usage the agent does not report, must end in `error`. Without a way to say so, the run is red when the control works, and it gets checked by hand. `expect_status` says which state the test must end in:
+
+```yaml test
+name: "a broken get_order fails the test"
+trigger: "Where is order 1042?"
+expect:
+  function_calls:
+    - name: get_order
+expect_status: failed
+```
+
+- The test passes when it ends exactly in that state, `failed` or `error`. The terminal marks it `✓ a broken get_order fails the test (expected failed)`, on one line.
+- It fails when it passes, with `passed, but expect_status is failed: this negative control no longer catches what it was written for`. It also fails when it ends in the other state (`ended error, but expect_status is failed`): a control that expects a failure and could not verify anything proves nothing.
+- The state is the test's, after `runs` and `min_pass`, and after late calls: a late call that fails a control makes it pass, and the run says so in a warning.
+- `error` is any state highbar could not verify, an agent that timed out included.
+- A run that cannot observe the agent at all stops before its first message, with exit code 2, and no control is judged. That is a managed agent (`agent.start`) whose SDK never writes its `hello`, or an attached agent whose `agent.traces` file does not exist. The check runs only when a test of the spec needs a record. An attached agent whose trace file exists but stays empty does not stop the run: each test that needs a record ends in `error`, so a control expecting `error` passes.
+- In the [report](/reference/report#each-test), `status` is the judged one and `expect_status` says what was expected. The phrasings and executions keep what happened, and so do `errors`.
+

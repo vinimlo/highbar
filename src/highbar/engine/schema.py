@@ -53,6 +53,7 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
             "min_pass",
             "session",
             "history",
+            "expect_status",
         }
     ),
     "test_session": frozenset({"args"}),
