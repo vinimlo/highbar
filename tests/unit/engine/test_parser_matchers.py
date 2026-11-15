@@ -126,3 +126,41 @@ class TestTextOnlyPlaces:
             ValueError, match=rf"error: '{key}' does not apply to an error, which is text"
         ):
             parse_spec(path)
+
+
+class TestArgumentNamesAreNotMatchers:
+    """Review of #26: the keys of params and result are argument names, at every load.
+
+    `subset_match` reads the top of params and result as names, so the parser has to as
+    well: a tool with an argument named `gt` or `len` must still be testable.
+    """
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            '{gt: 10, currency: "USD"}',
+            '{lt: "2026-01-01"}',
+            '{len: "short"}',
+            '{lens: "50mm"}',
+            '{contains: "x", size: "L"}',
+        ],
+    )
+    def test_hb7_an_argument_named_like_a_matcher_loads(self, tmp_path: Path, params: str) -> None:
+        parse_spec(_spec_with_params(tmp_path, params))
+
+    def test_hb7_a_matcher_below_an_argument_named_gt_is_still_checked(
+        self, tmp_path: Path
+    ) -> None:
+        path = _spec_with_params(tmp_path, '{gt: {lte: "ten"}}')
+
+        with pytest.raises(ValueError, match=r"params\.gt: 'lte' needs a number, got str"):
+            parse_spec(path)
+
+    def test_hb7_a_bound_beyond_float_range_is_a_spec_error(self, tmp_path: Path) -> None:
+        """`math.isfinite` turns its argument into a float, and a 400-digit int overflows."""
+        huge = "9" * 400
+        path = _spec_with_params(tmp_path, f"{{n: {{lte: {huge}}}}}")
+
+        call = parse_spec(path).suites[0].tests[0].expect.function_calls[0]
+
+        assert call.params == {"n": {"lte": int(huge)}}

@@ -28,7 +28,7 @@
 
 ### Upgrading from 0.1.0
 
-- An object in `params` or `result` whose keys are all among `lt`, `lte`, `gt`, `gte`, `len` and `len_lte` (with the older matcher names) is now a matcher, not a literal to compare. To compare such an object as it is, wrap it: `{equals: {lt: 5}}`.
+- An object in a value of `params` or `result` whose keys are all among `lt`, `lte`, `gt`, `gte`, `len` and `len_lte` (with the older matcher names) is now a matcher, not a literal to compare. To compare such an object as it is, wrap it: `{equals: {lt: 5}}`. The keys right under `params` and `result` are always argument names, so an argument called `gt` or `len` is compared as before.
 - A spec with two tests of the same key no longer parses. The key is `<suite>/<name>`, and a test without a name uses its trigger, or its number of turns for a multi-turn test. So this reaches two such tests in one suite, in two suites with the same name, and in two suites without a name. Give one an `id` or a different `name`. The key is what tells them apart in a report, and numbering them would tie it to their position.
 ## 0.1.0
 

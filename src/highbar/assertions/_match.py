@@ -261,8 +261,9 @@ def validate_expected(expected: Any, where: str) -> None:
         if _number(bound) is None:
             msg = f"{where}: '{key}' needs a number, got {type(bound).__name__}"
             raise ValueError(msg)
-        if not math.isfinite(bound):
-            # `lte: .inf` holds for every number, and nothing is ever below `.nan`.
+        if isinstance(bound, float) and not math.isfinite(bound):
+            # `lte: .inf` holds for every number, and nothing is ever below `.nan`. An int
+            # is always finite, and math.isfinite would overflow on a huge one.
             msg = f"{where}: '{key}' needs a finite number, got {bound!r}"
             raise ValueError(msg)
 

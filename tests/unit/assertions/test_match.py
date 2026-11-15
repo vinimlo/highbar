@@ -325,3 +325,12 @@ class TestComparisonOperands:
         """`lte: .inf` holds for every number: a check that cannot fail."""
         with pytest.raises(ValueError, match=rf"params\.n: '{key}' needs a finite number"):
             validate_expected({"n": {key: operand}}, "params")
+
+
+class TestHugeBounds:
+    def test_hb7_an_int_beyond_float_range_is_a_valid_bound(self) -> None:
+        huge = int("9" * 400)
+
+        validate_expected({"n": {"lte": huge}}, "params")
+        assert subset_match({"n": {"lte": huge}}, {"n": 10**300})
+        assert not subset_match({"n": {"gt": huge}}, {"n": 1.0})

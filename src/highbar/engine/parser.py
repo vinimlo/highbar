@@ -669,10 +669,14 @@ def _parse_function_call(raw: Any, where: str) -> FunctionCallExpect:
                 "here '{{...}}' would be compared as literal text"
             )
         # A malformed matcher must fail at `highbar validate`, not in the middle of a run.
-        try:
-            validate_expected(value, f"{where}.{field}")
-        except ValueError as e:
-            raise SpecError(str(e)) from None
+        # The keys at the top are argument names, as `subset_match` reads them: a tool
+        # may well take an argument called `gt` or `len`, so only their values are
+        # checked as expected values.
+        for name, expected in (as_dict(value) or {}).items():
+            try:
+                validate_expected(expected, f"{where}.{field}.{name}")
+            except ValueError as e:
+                raise SpecError(str(e)) from None
 
     return FunctionCallExpect(
         name=_parse_call_name(raw["name"], where),
