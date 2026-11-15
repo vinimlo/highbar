@@ -131,6 +131,18 @@ def check_placeholders(
             )
 
 
+def owned(text: str) -> list[str]:
+    """The placeholders highbar resolves somewhere, as written in ``text``.
+
+    ``{{.ID}}`` in a ``docker --format`` is not one of them, and stays text.
+    """
+    return [
+        match.group(0)
+        for match in PLACEHOLDER.finditer(text)
+        if _kind(match.group(1)) in ALL or match.group(1) in ("session", "run")
+    ]
+
+
 def reads(value: Any, kind: str) -> bool:
     """Whether ``value`` has a placeholder of ``kind`` (``run`` for ``{{run.<key>}}``)."""
     if (mapping := as_dict(value)) is not None:

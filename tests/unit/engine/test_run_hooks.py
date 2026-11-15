@@ -499,10 +499,10 @@ class TestRunValuesHooks:
             hooks.before_run()
 
     def test_hb10_a_result_nobody_reads_is_not_checked(self) -> None:
-        """v0's setups print what they like: their output is read only when used."""
-        hooks = _hooks(_command("print('done')"))
+        """v0's setups print what they like: the run goes on, and only ctx.run refuses."""
+        run = _hooks(_command("print('done')")).before_run()
 
-        assert hooks.before_run() == {}
+        assert repr(run) == "<no run values>"
 
     def test_hb10_the_run_teardown_reads_what_the_setup_returned(self, tmp_path: Path) -> None:
         log = tmp_path / "flags.log"
@@ -616,3 +616,101 @@ class TestRunnerRunValues:
         assert render({"variant": "{{run.variant}}"}, values) == {"variant": "beta"}
         (ctx,) = hooks.contexts
         assert ctx.run == {"variant": "beta"}
+
+
+class TestRunValuesWhereTheyAreNotRead:
+    """Review of #61: a run value must never reach the agent as written, nor default."""
+
+    @pytest.mark.parametrize(
+        ("agent", "where"),
+        [
+            ('start: "python agent.py --variant {{run.variant}}"\n', "start"),
+            ('start: "python agent.py --test {{test.id}}"\n', "start"),
+            ('traces: "var/{{run.variant}}.jsonl"\n', "traces"),
+        ],
+    )
+    def test_hb10_start_and_traces_do_not_resolve_placeholders(
+        self, tmp_path: Path, agent: str, where: str
+    ) -> None:
+        with pytest.raises(
+            SpecError, match=rf"agent\.{where}: '\{{\{{[a-z.]+\}}\}}' is not resolved here"
+        ):
+            parse_spec(_spec_with(tmp_path, RUN + agent))
+
+    def test_hb10_braces_highbar_does_not_own_stay_in_start(self, tmp_path: Path) -> None:
+        spec = parse_spec(_spec_with(tmp_path, "start: \"docker ps --format '{{.ID}}'\"\n"))
+
+        assert spec.agent.start == "docker ps --format '{{.ID}}'"
+
+    def _session_reading(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> Any:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "hb10_session.py").write_text(
+            "def open_on(ctx):\n" + textwrap.indent(textwrap.dedent(body), "    "),
+            encoding="utf-8",
+        )
+        monkeypatch.delitem(sys.modules, "hb10_session", raising=False)
+        return PythonHook("hb10_session:open_on")
+
+    def _hooks_with(self, setup: Any, session_setup: Any) -> SessionHooks:
+        """No {{run.*}} anywhere in the spec's text: read_result is False."""
+        hooks = SessionHooks(
+            SessionConfig(setup=session_setup),
+            spec_path="specs/a.highbar.yaml",
+            timeout_ms=10_000,
+            run=RunConfig(setup=setup),
+        )
+        hooks.load()
+        return hooks
+
+    def _ctx(self, run: Any) -> SessionContext:
+        return SessionContext(test_id="t", test_name="n", spec_path="s", run=run)
+
+    def test_hb10_a_python_session_hook_reads_ctx_run_with_no_placeholder_anywhere(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        hook = self._session_reading(tmp_path, monkeypatch, "return {'v': ctx.run['variant']}\n")
+        hooks = self._hooks_with(_command('print(\'{"variant": "v2"}\')'), hook)
+
+        run = hooks.before_run()
+
+        assert hooks.setup(self._ctx(run)) == {"v": "v2"}
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "return {'v': ctx.run.get('variant', 'v1')}\n",
+            # A hook that swallows the error is still an error: its default is not the setup's.
+            "try:\n    v = ctx.run['variant']\nexcept Exception:\n    v = 'v1'\nreturn {'v': v}\n",
+        ],
+    )
+    def test_hb10_ctx_run_of_a_setup_that_returned_no_object_is_an_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str
+    ) -> None:
+        hook = self._session_reading(tmp_path, monkeypatch, body)
+        hooks = self._hooks_with(_command("print('turned v2 on')"), hook)
+
+        run = hooks.before_run()
+
+        with pytest.raises(
+            SessionError,
+            match=r"^ctx\.run: agent\.run\.setup must print a JSON object as its last line "
+            r"of output, got 'turned v2 on'",
+        ):
+            hooks.setup(self._ctx(run))
+
+    def test_hb10_a_hook_that_does_not_read_ctx_run_is_not_held_to_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """v0's setups print what they like; only reading ctx.run asks for an object."""
+        hook = self._session_reading(
+            tmp_path,
+            monkeypatch,
+            "if ctx.test_id == 'reads':\n    ctx.run['variant']\nreturn {'id': 1}\n",
+        )
+        hooks = self._hooks_with(_command("print('turned v2 on')"), hook)
+        run = hooks.before_run()
+
+        with pytest.raises(SessionError, match=r"^ctx\.run: "):
+            hooks.setup(SessionContext(test_id="reads", test_name="n", spec_path="s", run=run))
+        # The next test's hook reads nothing of it: the earlier read is not held against it.
+        assert hooks.setup(self._ctx(run)) == {"id": 1}

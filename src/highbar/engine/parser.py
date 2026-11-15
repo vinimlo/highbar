@@ -503,6 +503,15 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
                 "trace file and passes it to the agent in HIGHBAR_TRACES_URL"
             )
         traces = _required_text(raw, "traces")
+    for key, text in (("start", start), ("traces", traces)):
+        # Run values are the first that exist before the agent starts (review of #61): the
+        # agent would get the braces as written.
+        if found := placeholders.owned(text or ""):
+            raise SpecError(
+                f"agent.{key}: '{found[0]}' is not resolved here, so it would be used as "
+                "written; pass the value in agent.request, or have agent.run.setup write "
+                "it where the agent reads it"
+            )
 
     # What agent.run.setup returns is {{run.*}} (HB-10): known before any session.
     run_raw = as_dict(raw.get("run"))
