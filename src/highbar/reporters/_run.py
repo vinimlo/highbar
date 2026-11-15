@@ -7,7 +7,7 @@ from typing import Any
 
 # What XML 1.0 can hold. Anything else (a NUL, an escape code, a lone surrogate the
 # agent sent) is written as its Python escape, as the JSON report keeps it readable.
-_NOT_PRINTABLE = re.compile("[^\t\n\r\x20-퟿-�\U00010000-\U0010ffff]")
+_NOT_PRINTABLE = re.compile("[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 
 
 def printable(value: Any) -> str:
