@@ -169,8 +169,13 @@ class TestPreviousResponse:
         with pytest.raises(TemplateError, match=r"keys: function_calls, response, turns"):
             resolve_template("{{previous.reply}}", [], ["a"])
 
-    def test_hb20_the_list_of_turns_renders_as_json(self) -> None:
-        assert resolve_template("{{previous.turns}}", [], ["a"]) == '[{"response": "a"}]'
+    @pytest.mark.parametrize("path", ["turns", "turns[0]", "turns[1]"])
+    def test_hb20_a_turn_is_not_a_value_only_its_response_is(self, path: str) -> None:
+        """Review of #33: a turn as JSON carried an unread reply out as "response": null."""
+        template = "{{previous." + path + "}}"
+        for replies in (["a", None], ["a", "b"]):
+            with pytest.raises(TemplateError, match=r"end the path with \.response"):
+                resolve_template(template, [], replies)
 
     def test_hb20_calls_still_resolve_next_to_responses(self) -> None:
         template = "{{previous.function_calls[0].result.id}} after {{previous.response}}"

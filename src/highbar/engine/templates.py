@@ -58,19 +58,13 @@ def resolve_template(
             raise TemplateError(f"{{{{previous.{path}}}}}: {e}") from None
         if isinstance(value, str):
             return value
-        return json.dumps(value, ensure_ascii=False, default=_as_json)
+        return json.dumps(value, ensure_ascii=False, default=str)
 
     return _TEMPLATE_PATTERN.sub(replacer, template)
 
 
 class _Missing(Exception):
     """A step of the path found nothing; the message says what was available."""
-
-
-def _as_json(value: Any) -> Any:
-    if isinstance(value, _Earlier):
-        return {"response": value.response}
-    return str(value)
 
 
 def _resolve_path(path: str, traces: list[Trace], earlier: list[_Earlier]) -> Any:
@@ -110,6 +104,10 @@ def _resolve_path(path: str, traces: list[Trace], earlier: list[_Earlier]) -> An
         else:
             raise _Missing(f"cannot read '{part}' from a {type(current).__name__}")
 
+    if isinstance(current, _Earlier) or current is earlier:
+        # A turn as JSON would carry an unread reply out as "response": null, the very
+        # message the rule above refuses to send.
+        raise _Missing("a turn is not a value: end the path with .response")
     return current
 
 
