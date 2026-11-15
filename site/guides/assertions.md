@@ -77,7 +77,7 @@ expect:
           all: {score: {gte: 0.5}}
 ```
 
-`all` fails on an empty list: every item of nothing matched, and nothing was checked. `in` and `contains_all` need a list with at least one value.
+`all` fails on an empty list: every item of nothing matched, and nothing was checked. When an empty list is fine and its items are text or numbers, say what none of them may be with `not_contains`, which holds on `[]`: `tags: {not_contains: "private"}`. `in` and `contains_all` need a list with at least one value, and `any: {}`, `all: {}` and an empty text in `contains_all` are refused when the spec loads, because they hold on anything.
 
 These matchers apply to values of `params` and `result`; `response` and `error` refuse them. A reply and an error are text, where a bound or a length could never hold. A literal object whose keys are all matcher names is read as a matcher: to compare `{lt: 5}` itself, write `{equals: {lt: 5}}`.
 

@@ -143,6 +143,9 @@ class TestArgumentNamesAreNotMatchers:
             '{len: "short"}',
             '{lens: "50mm"}',
             '{contains: "x", size: "L"}',
+            '{in: "title", query: "x"}',
+            '{in: "inbox"}',
+            '{all: true, any: "x"}',
         ],
     )
     def test_hb7_an_argument_named_like_a_matcher_loads(self, tmp_path: Path, params: str) -> None:

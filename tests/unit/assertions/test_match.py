@@ -449,3 +449,23 @@ class TestListOperands:
             },
             "result",
         )
+
+
+class TestOperandsThatCannotFail:
+    """Review of #27: an operand that holds on any input is refused at load time."""
+
+    @pytest.mark.parametrize("key", ["any", "all"])
+    def test_hb7_any_or_all_of_an_empty_object_is_refused(self, key: str) -> None:
+        """`all: {}` only says "these are objects": green on any list of objects."""
+        with pytest.raises(ValueError, match=rf"result\.documents: '{key}' needs something"):
+            validate_expected({"documents": {key: {}}}, "result")
+
+    def test_hb7_an_empty_piece_in_contains_all_is_refused(self) -> None:
+        """ "" is in every text, so it adds a check that cannot fail."""
+        with pytest.raises(ValueError, match=r"params\.q: 'contains_all' has an empty text"):
+            validate_expected({"q": {"contains_all": ["refund", ""]}}, "params")
+
+    @pytest.mark.parametrize("key", ["any", "all"])
+    def test_hb7_an_empty_object_deeper_inside_any_or_all_is_refused(self, key: str) -> None:
+        with pytest.raises(ValueError, match=rf"'{key}' needs something"):
+            validate_expected({"documents": {"any": {"tags": {key: {}}}}}, "result")

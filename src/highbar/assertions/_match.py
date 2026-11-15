@@ -317,7 +317,16 @@ def validate_expected(expected: Any, where: str) -> None:
         if key in mapping and not as_list(mapping[key]):
             msg = f"{where}: '{key}' needs a non-empty list, got {mapping[key]!r}"
             raise ValueError(msg)
+    if "contains_all" in mapping and "" in mapping["contains_all"]:
+        # "" is in every text: one piece that can never fail.
+        msg = f"{where}: 'contains_all' has an empty text, which every value contains"
+        raise ValueError(msg)
 
     for key in ITEM_KEYS:
-        if key in mapping:
-            validate_expected(mapping[key], f"{where}.{key}")
+        if key not in mapping:
+            continue
+        if as_dict(mapping[key]) == {}:
+            # `all: {}` subset-matches nothing, so it only says "these are objects".
+            msg = f"{where}: '{key}' needs something to match in each item, got {{}}"
+            raise ValueError(msg)
+        validate_expected(mapping[key], f"{where}.{key}")
