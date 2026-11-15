@@ -11,6 +11,10 @@ of its output, so a setup that imports the application can log before it.
 A Python hook runs in a thread of its own, the same one that imported it, so a module
 that opens a connection at import time can use it; a call that outlives
 ``agent.timeout`` is abandoned there, and the run goes on.
+
+An HTTP hook is a request with placeholders in its URL, headers and body (HB-13), so
+highbar can run from an image of its own, away from the agent's. A setup's reply must
+be a JSON object; any reply that is not 2xx is the hook's failure.
 """
 
 from __future__ import annotations
@@ -25,14 +29,17 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
+import httpx
+
 from highbar._narrow import as_dict
 from highbar.assertions.response import truncate
-from highbar.domain.models import CommandHook, PythonHook, SessionConfig
-from highbar.engine.placeholders import PlaceholderError, Values, render
+from highbar.domain.models import CommandHook, HttpHook, PythonHook, SessionConfig
+from highbar.engine.placeholders import PlaceholderError, Values, render, render_url
 
 
 @dataclass(frozen=True)
@@ -48,9 +55,22 @@ class SessionError(RuntimeError):
     """A hook failed; the message starts with ``session.setup`` or ``session.teardown``."""
 
 
+# A setup's reply becomes the session, which goes into every request: past this, it is
+# not a session object.
+MAX_HOOK_REPLY_BYTES = 10_000_000
+
+
 class SessionHooks:
-    def __init__(self, config: SessionConfig, *, spec_path: str, timeout_ms: int) -> None:
+    def __init__(
+        self,
+        config: SessionConfig,
+        *,
+        spec_path: str,
+        timeout_ms: int,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
         self._config = config
+        self._transport = transport
         self._spec_path = spec_path
         self._timeout_s = timeout_ms / 1000
         self._functions: dict[str, Callable[..., Any]] = {}
@@ -76,6 +96,8 @@ class SessionHooks:
                     f"session.setup must return a mapping, got {type(result).__name__}"
                 )
             session: dict[str, Any] = dict(cast("Mapping[str, Any]", result))
+        elif isinstance(hook, HttpHook):
+            session = _json_object(self._send(hook, "setup", ctx, {}))
         else:
             session = _last_json_object(self._run(hook, "setup", ctx, {}))
         if "headers" in session and not isinstance(session["headers"], Mapping):
@@ -98,6 +120,8 @@ class SessionHooks:
             return
         if isinstance(hook, PythonHook):
             self._call("teardown", ctx, session)
+        elif isinstance(hook, HttpHook):
+            self._send(hook, "teardown", ctx, session)
         else:
             self._run(hook, "teardown", ctx, session)
 
@@ -166,6 +190,85 @@ class SessionHooks:
                 + (f":\n{tail}" if tail else "")
             )
         return stdout
+
+    def _send(
+        self, hook: HttpHook, what: str, ctx: SessionContext, session: Mapping[str, Any]
+    ) -> str:
+        """Send the hook's request and return the reply's text. Raises ``SessionError``."""
+        values = Values(message=None, test_id=ctx.test_id, test_name=ctx.test_name, session=session)
+        try:
+            url = render_url(hook.url, values)
+            headers = {name: _as_argument(render(v, values)) for name, v in hook.headers.items()}
+            body = render(hook.body, values)
+        except PlaceholderError as e:
+            raise SessionError(f"session.{what}: {e}") from None
+        for name, value in headers.items():
+            if value != value.strip() or any(ord(c) < 32 or ord(c) == 127 for c in value):
+                # Usually a token read with its newline, from the session or a ${VAR}.
+                raise SessionError(
+                    f"session.{what}: the header {name} has a control character or leading "
+                    "or trailing whitespace (often a secret read with its newline); not shown"
+                )
+            if not value.isascii():
+                # An accented test name, usually. The value is not shown either.
+                raise SessionError(
+                    f"session.{what}: the header {name} has characters outside ASCII, which "
+                    "a header cannot carry; send the value in the body or the URL instead"
+                )
+
+        content: dict[str, Any] = {}
+        if isinstance(body, str):
+            content["content"] = body.encode("utf-8")
+            if not any(name.lower() == "content-type" for name in headers):
+                headers["Content-Type"] = "text/plain; charset=utf-8"
+        elif body is not None:
+            content["json"] = body
+
+        seconds = self._timeout_s
+        late = f"session.{what} did not finish in {seconds:g}s (agent.timeout)"
+        # httpx's timeout bounds each read, not the whole reply: the deadline bounds it.
+        deadline = time.monotonic() + seconds
+        try:
+            with (
+                httpx.Client(timeout=seconds, transport=self._transport) as client,
+                client.stream(hook.method, url, headers=headers, **content) as reply,
+            ):
+                raw = bytearray()
+                for chunk in reply.iter_bytes():
+                    raw += chunk
+                    if len(raw) > MAX_HOOK_REPLY_BYTES:
+                        raise SessionError(
+                            f"session.{what}: the reply from {url} is larger than "
+                            f"{MAX_HOOK_REPLY_BYTES // 1_000_000} MB"
+                        )
+                    if time.monotonic() > deadline:
+                        raise SessionError(late)
+        except httpx.TimeoutException:
+            raise SessionError(late) from None
+        except httpx.ConnectError as e:
+            raise SessionError(f"session.{what}: cannot reach {url}: {e}") from None
+        except httpx.LocalProtocolError:
+            # The library quotes the offending value whole: say which problem, never it.
+            raise SessionError(
+                f"session.{what}: the request to {url} could not be sent: a header value "
+                "is not valid; the value is not shown"
+            ) from None
+        except (httpx.HTTPError, httpx.InvalidURL) as e:
+            raise SessionError(f"session.{what}: {hook.method} {url} failed: {e}") from None
+
+        text = bytes(raw).decode(reply.charset_encoding or "utf-8", errors="replace")
+        status = reply.status_code
+        if 300 <= status < 400:
+            where = reply.headers.get("Location", "an unnamed location")
+            raise SessionError(
+                f"session.{what}: {hook.method} {url} returned HTTP {status}, redirected to "
+                f"{where}; point the hook at that URL"
+            )
+        if not reply.is_success:
+            raise SessionError(
+                f"session.{what}: {hook.method} {url} returned HTTP {status}: {truncate(text, 200)}"
+            )
+        return text
 
 
 class _Worker:
@@ -237,6 +340,19 @@ def _last_json_object(stdout: str) -> dict[str, Any]:
         raise SessionError(
             "session.setup must print a JSON object as its last line of output, "
             f"got {truncate(last, 200)!r}"
+        )
+    return mapping
+
+
+def _json_object(text: str) -> dict[str, Any]:
+    try:
+        value = json.loads(text)
+    except ValueError:
+        value = None
+    mapping = as_dict(value)
+    if mapping is None:
+        raise SessionError(
+            f"session.setup must return a JSON object, got {truncate(text.strip(), 200)!r}"
         )
     return mapping
 

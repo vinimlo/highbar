@@ -143,7 +143,21 @@ class PythonHook:
     target: str
 
 
-Hook = CommandHook | PythonHook
+@dataclass(frozen=True)
+class HttpHook:
+    """A session hook sent as an HTTP request; placeholders are resolved in each part.
+
+    ``body`` is sent as JSON, and ``None`` sends no body. A setup's reply must be a JSON
+    object, which becomes the session.
+    """
+
+    url: str
+    method: str = "POST"
+    headers: dict[str, str] = field(default_factory=dict[str, str])
+    body: Any = None
+
+
+Hook = CommandHook | PythonHook | HttpHook
 
 
 @dataclass(frozen=True)

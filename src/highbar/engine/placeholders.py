@@ -18,6 +18,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 from highbar._narrow import as_dict, as_list
 from highbar.engine.paths import PathError, get_path
@@ -110,6 +111,33 @@ def render(value: Any, values: Values) -> Any:
         return json.dumps(resolved, ensure_ascii=False)
 
     return PLACEHOLDER.sub(text, value)
+
+
+def render_url(template: str, values: Values) -> str:
+    """Resolve the placeholders of a URL, each value percent-encoded as one piece.
+
+    A value is data in the URL, as it is JSON in a body: a ``/``, ``?``, ``#`` or ``@``
+    in it is encoded, so it cannot reach another resource, query or host. A value that
+    is a whole path step (``.`` or ``..``) is refused, because it would move the
+    request up the path even encoded, and so is an empty one, which would drop its
+    piece (a DELETE to the collection). Raises ``PlaceholderError``.
+    """
+
+    def piece(match: re.Match[str]) -> str:
+        resolved = _resolve(match.group(1), values)
+        text = resolved if isinstance(resolved, str) else json.dumps(resolved, ensure_ascii=False)
+        if text in (".", ".."):
+            raise PlaceholderError(
+                f"{{{{{match.group(1)}}}}} is {text!r}, a step of the URL's path, not a value"
+            )
+        if text == "":
+            # `/conversations/{{session.id}}` with "" is the collection, not one of it.
+            raise PlaceholderError(
+                f"{{{{{match.group(1)}}}}} is empty, which would leave its piece out of the URL"
+            )
+        return quote(text, safe="")
+
+    return PLACEHOLDER.sub(piece, template)
 
 
 def _resolve(name: str, values: Values) -> Any:

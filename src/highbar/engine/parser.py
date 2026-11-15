@@ -32,6 +32,7 @@ from highbar.domain.models import (
     Expect,
     FunctionCallExpect,
     Hook,
+    HttpHook,
     PythonHook,
     RequestConfig,
     ResponseExpect,
@@ -318,19 +319,7 @@ def _parse_request(raw: Any, has_session: bool) -> RequestConfig:
     if method.upper() not in ("POST", "PUT", "PATCH"):
         raise SpecError(f"{where}: method must be POST, PUT or PATCH, got {method!r}")
 
-    headers = raw.get("headers", {})
-    require_type(headers, dict, where, "headers must be a mapping")
-    for name, value in headers.items():
-        if not isinstance(value, str):
-            raise SpecError(
-                f"{where}.headers: {name} must be a string (quote it), got {type(value).__name__}"
-            )
-        if value != value.strip() or any(ord(c) < 32 or ord(c) == 127 for c in value):
-            # Usually a token read from a file with its newline. The value is not shown.
-            raise SpecError(
-                f"{where}.headers.{name}: the value has a control character or leading or "
-                "trailing whitespace (often a secret read with its newline); not shown"
-            )
+    headers = _parse_headers(raw.get("headers", {}), where)
 
     body = raw.get("body", RequestConfig().body)
     # A misspelled placeholder is reported as such, before "never uses {{message}}".
@@ -343,6 +332,27 @@ def _parse_request(raw: Any, has_session: bool) -> RequestConfig:
             f"{where}.body: never uses {{{{message}}}}, so the trigger would not be sent"
         )
     return RequestConfig(method=method.upper(), headers=dict(headers), body=body)
+
+
+def _parse_headers(raw: Any, where: str) -> dict[str, str]:
+    require_type(raw, dict, where, "headers must be a mapping")
+    for name, value in raw.items():
+        if not str(name).isascii():
+            raise SpecError(
+                f"{where}.headers: the header name {name!r} has characters outside ASCII, "
+                "which a header cannot carry"
+            )
+        if not isinstance(value, str):
+            raise SpecError(
+                f"{where}.headers: {name} must be a string (quote it), got {type(value).__name__}"
+            )
+        if value != value.strip() or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            # Usually a token read from a file with its newline. The value is not shown.
+            raise SpecError(
+                f"{where}.headers.{name}: the value has a control character or leading or "
+                "trailing whitespace (often a secret read with its newline); not shown"
+            )
+    return dict(raw)
 
 
 _RESPONSE_PATH = re.compile(r"[^.\s]+(?:\.[^.\s]+)*")
@@ -375,7 +385,8 @@ def _parse_session(raw: Any) -> SessionConfig:
 
 
 def _parse_hook(raw: Any, where: str, allowed: frozenset[str]) -> Hook:
-    """A command (text, split like a shell would, run without one) or ``{python: ...}``."""
+    """A command (text, split like a shell would, run without one), ``{python: ...}`` or
+    ``{http: {url, method, headers, body}}``."""
     if isinstance(raw, str):
         try:
             argv = shlex.split(raw)
@@ -386,14 +397,54 @@ def _parse_hook(raw: Any, where: str, allowed: frozenset[str]) -> Hook:
         check_placeholders(argv, where, allowed=allowed, has_session=True)
         return CommandHook(argv=argv)
 
-    require_type(raw, dict, where, "must be a command or {python: 'module:function'}")
-    check_keys(raw, "python_hook", where)
+    require_type(
+        raw, dict, where, "must be a command, {python: 'module:function'} or {http: {url: ...}}"
+    )
+    check_keys(raw, "hook", where)
+    if "python" in raw and "http" in raw:
+        raise SpecError(f"{where}: a hook is either python or http, not both")
+    if "http" in raw:
+        return _parse_http_hook(raw["http"], f"{where}.http", allowed)
     target = raw.get("python")
     require_type(target, str, where, "python must be 'module:function'")
     module, colon, function = target.partition(":")
     if not colon or not module.strip() or not function.strip() or ":" in function:
         raise SpecError(f"{where}: python must be 'module:function', got {target!r}")
     return PythonHook(target=target)
+
+
+_HOOK_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
+
+def _parse_http_hook(raw: Any, where: str, allowed: frozenset[str]) -> HttpHook:
+    """A request highbar sends itself, so it can run away from the agent's image (HB-13)."""
+    require_type(raw, dict, where, "http must be a mapping with a url")
+    check_keys(raw, "http_hook", where)
+    if "url" not in raw:
+        raise SpecError(f"{where}: missing 'url' (where the hook sends its request)")
+    url = raw["url"]
+    require_type(url, str, where, "url must be a string")
+    if not url.lower().startswith(("http://", "https://")):
+        # The value is not shown: it may hold a ${VAR}.
+        raise SpecError(f"{where}: url must start with http:// or https://")
+    if "{{" in url.split("://", 1)[1].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]:
+        # A value there would choose the host the hook's headers go to.
+        raise SpecError(
+            f"{where}: placeholders go in the URL's path and query, not in its scheme or host"
+        )
+
+    method = raw.get("method", "POST")
+    require_type(method, str, where, "method must be a string")
+    if method.upper() not in _HOOK_METHODS:
+        raise SpecError(
+            f"{where}: method must be one of {', '.join(_HOOK_METHODS)}, got {method!r}"
+        )
+
+    headers = _parse_headers(raw.get("headers", {}), where)
+    body = raw.get("body")
+    for part, value in (("url", url), ("headers", headers), ("body", body)):
+        check_placeholders(value, f"{where}.{part}", allowed=allowed, has_session=True)
+    return HttpHook(url=url, method=method.upper(), headers=headers, body=body)
 
 
 def _parse_correlate(raw: Any, has_session: bool) -> dict[str, Any]:
