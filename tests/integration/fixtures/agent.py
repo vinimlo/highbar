@@ -1,6 +1,12 @@
-"""Minimal test agent for integration testing."""
+"""Minimal test agent for integration testing.
+
+It listens on the port given as its argument, 8111 without one: the tests give each run
+a free port of its own, since the build node runs several suites at once (HB-42).
+"""
 
 from __future__ import annotations
+
+import sys
 
 import uvicorn
 from fastapi import FastAPI
@@ -44,4 +50,4 @@ async def health() -> dict[str, str]:
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8111)
+    uvicorn.run(app, host="0.0.0.0", port=int(sys.argv[1]) if len(sys.argv) > 1 else 8111)
