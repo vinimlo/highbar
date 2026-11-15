@@ -8,7 +8,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 |---|---|---|
 | `agent` | mapping | Required. How to reach the agent. |
 | `suites` | list | Required, not empty. |
-| `defaults` | mapping | Optional. `runs`: how many times each test runs (default 1). `min_pass`: how many runs must pass in a test without its own `min_pass`, with the same values as the test's (default: all). `budget`: what each execution may spend in a test without its own [`budget`](#budget). |
+| `defaults` | mapping | Optional. `runs`: how many times each test runs (default 1). `min_pass`: how many runs must pass in a test without its own `min_pass`, with the same values as the test's (default: all). `budget`: what each execution may spend in a test without its own [`budget`](#budget). `session`: `{args: {...}}` for every test; a suite's and a test's own win, key by key. |
 
 ## `agent`
 
@@ -34,6 +34,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 |---|---|---|
 | `name` | text | Required. |
 | `tests` | list | Required, not empty. |
+| `session` | mapping | `{args: {...}}` for every test of the suite. A test's own args win, key by key. |
 
 ## `tests[]`
 

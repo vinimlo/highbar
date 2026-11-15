@@ -115,6 +115,7 @@ def _parse_spec(raw: Any) -> Spec:
     require_type(suites_raw, list, "suites", "must be a list of suites")
     suites = [_parse_suite(s, f"suites[{i}]") for i, s in enumerate(suites_raw)]
     _check_unique_keys(suites)
+    suites = _with_inherited_args(suites, suites_raw, raw.get("defaults"))
     _check_args_used(raw["agent"], suites)
     _check_not_in_triggers(suites)
 
@@ -181,6 +182,24 @@ def _check_not_in_triggers(suites: list[Suite]) -> None:
                             f"{at}: '{match.group(0)}' is not read in a trigger: "
                             "use it in agent.request, agent.correlate or a session hook"
                         )
+
+
+def _with_inherited_args(suites: list[Suite], raw: list[Any], defaults: Any) -> list[Suite]:
+    """Each test's args over its suite's, over the defaults' (HB-9).
+
+    The most specific level wins key by key, as runs, min_pass and budget do, and a key
+    is replaced whole: a test's args can be read from one place per key, without merge
+    rules for nested objects.
+    """
+    mapping = as_dict(defaults)
+    base = _parse_session_args(mapping, "defaults") if mapping is not None else {}
+    combined: list[Suite] = []
+    for i, (suite, suite_raw) in enumerate(zip(suites, raw, strict=True)):
+        # _parse_suite already refused a suite that is not a mapping.
+        own = {**base, **_parse_session_args(suite_raw, f"suites[{i}]")}
+        tests = [replace(test, session_args={**own, **test.session_args}) for test in suite.tests]
+        combined.append(replace(suite, tests=tests))
+    return combined
 
 
 def _check_args_used(agent: dict[str, Any], suites: list[Suite]) -> None:
