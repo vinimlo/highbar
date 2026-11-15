@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import signal
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import replace
 from functools import partial
@@ -24,6 +24,7 @@ from highbar.engine.parser import parse_spec
 from highbar.engine.run_spec import load_session_hooks, run_spec
 from highbar.engine.runs import check_runs
 from highbar.engine.schema import SpecError
+from highbar.engine.selection import SelectionError, select
 from highbar.engine.session import SessionError, SessionHooks
 from highbar.engine.streak import DEFAULT_MAX_ERRORS, ErrorStreak
 from highbar.engine.usage import add_costs, add_up
@@ -90,6 +91,25 @@ def _total(summaries: list[RunSummary]) -> RunSummary:
     )
 
 
+# Options that can be given more than once take a list, so they are built here and not
+# in the signature (ruff B008), as typer documents.
+_SUITE = typer.Option(
+    None,
+    "--suite",
+    metavar="NAME",
+    help="Run only the suites with this name. Give it more than once for more suites.",
+)
+_KEYWORD = typer.Option(
+    None,
+    "-k",
+    metavar="TEXT",
+    help=(
+        "Run only the tests whose <suite>/<name> or id contains TEXT, ignoring case. "
+        "Give it more than once for any of them."
+    ),
+)
+
+
 @app.command()
 def run(
     spec_path: str = typer.Argument(
@@ -149,6 +169,8 @@ def run(
             f"{EXIT_REPEATED_ERRORS}."
         ),
     ),
+    suite: list[str] | None = _SUITE,
+    keyword: list[str] | None = _KEYWORD,
 ) -> None:
     """Run behavior tests against your agent."""
     paths = _discover_specs(spec_path)
@@ -162,6 +184,8 @@ def run(
             keep_traces=keep_traces,
             max_cost=max_cost,
             max_errors=max_errors,
+            suites=suite or (),
+            keywords=keyword or (),
         )
     except KeyboardInterrupt:
         # Anywhere in the run, parsing and hooks included. If an agent was up, the
@@ -246,6 +270,8 @@ def _run_all(
     keep_traces: bool,
     max_cost: float | None = None,
     max_errors: int = DEFAULT_MAX_ERRORS,
+    suites: Sequence[str] = (),
+    keywords: Sequence[str] = (),
 ) -> int:
     """Run every spec and return the exit code.
 
@@ -279,6 +305,12 @@ def _run_all(
     specs = _parse_all(paths, runs=runs, failures=failures)
     if specs is None:
         return _stopped(report, "spec_invalid", "; ".join(failures), EXIT_UNRUNNABLE)
+    # --suite and -k: the specs are whole above, so a typo anywhere still stops the run.
+    try:
+        specs = select(specs, suites=suites, keywords=keywords)
+    except SelectionError as e:
+        console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)
+        return _stopped(report, "usage_error", str(e), EXIT_UNRUNNABLE)
     specs = _sharing_secrets(specs)
     if report is not None:
         report.plan(specs)

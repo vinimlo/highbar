@@ -16,6 +16,7 @@
 - An optional `id` on a test, and a stable key for each one: its `id`, or `<suite>/<name>`.
 - `definition_sha256` on each test of the report, to tell whether two runs measured the same thing.
 - `highbar.run()` returns each test in `summary.tests` and the warnings in `summary.warnings`, and takes a `reporter`.
+- `highbar run --suite NAME` and `-k TEXT`: run part of the tests, by suite name or by a piece of a test's `<suite>/<name>` or `id`. A selection that picks no test, or a suite no spec has, stops the run before any agent starts, with exit code 2.
 
 ### Changed
 

@@ -73,6 +73,38 @@ def _summary(**counts: int) -> RunSummary:
     return RunSummary(duration_ms=10.0, **values)
 
 
+class TestSelection:
+    """HB-17: --suite and -k pick the tests before any agent starts."""
+
+    def test_hb17_only_the_picked_tests_run(self, project: Path) -> None:
+        other = project / "specs" / "menu" / "drinks.highbar.yaml"
+        other.write_text(textwrap.dedent(SPEC).replace("name: Menu", "name: Drinks"), "utf-8")
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--suite", "Drinks"])
+
+        assert result.exit_code == 0, result.output
+        (call,) = fake.return_value.run.call_args_list
+        assert [suite.name for suite in call.args[0].suites] == ["Drinks"]
+
+    def test_hb17_a_suite_no_spec_has_exits_2(self, project: Path) -> None:
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            result = runner.invoke(app, ["run", "specs/", "--suite", "Menus"])
+
+        assert result.exit_code == 2, result.output
+        assert "--suite 'Menus': no spec has a suite with that name" in result.output
+        fake.assert_not_called()
+
+    def test_hb17_a_selection_of_nothing_exits_2(self, project: Path) -> None:
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            result = runner.invoke(app, ["run", "specs/", "-k", "zzz"])
+
+        assert result.exit_code == 2, result.output
+        assert "no test matches -k zzz: nothing would be checked" in result.output
+        fake.assert_not_called()
+
+
 class TestExitCodes:
     def test_version_flag(self) -> None:
         result = runner.invoke(app, ["--version"])
