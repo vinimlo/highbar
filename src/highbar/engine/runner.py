@@ -536,9 +536,13 @@ class TestRunner:
             self._warn_undeclared()
             self._warn_unmetered()
         finally:
-            self._adapter.stop()
-            self._settle()
-            self._after_run()
+            try:
+                self._adapter.stop()
+                self._settle()
+            finally:
+                # A second Ctrl-C can land while the agent stops (review of #54): what
+                # the setup changed is put back even then.
+                self._after_run()
 
         summary = self.snapshot()
         self._reporter.on_run_end(summary)

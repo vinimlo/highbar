@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import signal
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,29 @@ def test_hb10_teardown_runs_when_a_signal_stops_the_run(
             cli.kill()
 
     assert cli.returncode == code
+    assert _events(project) == ["setup", "agent.start", "teardown"]
+
+
+@pytest.mark.timeout(60)
+def test_hb10_teardown_runs_after_a_second_ctrl_c_while_the_agent_stops(
+    project: _Project,
+) -> None:
+    """An agent that ignores SIGTERM keeps highbar in its grace before SIGKILL; a second
+    Ctrl-C lands there (review of #54)."""
+    spec = _spec(project, PASSES, PASSES, PASSES, args=("--slow-chat", "1", "--ignore-term"))
+
+    cli = _start(project, spec)
+    try:
+        _until_first_result(cli)
+        cli.send_signal(signal.SIGINT)
+        time.sleep(1)
+        cli.send_signal(signal.SIGINT)
+        cli.communicate(timeout=30)
+    finally:
+        if cli.poll() is None:
+            cli.kill()
+
+    assert cli.returncode == 130
     assert _events(project) == ["setup", "agent.start", "teardown"]
 
 

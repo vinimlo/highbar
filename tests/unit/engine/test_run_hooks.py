@@ -296,6 +296,23 @@ class TestRunnerRunHooks:
 
         assert events == ["run.setup", "agent.start", "message", "agent.stop", "run.teardown"]
 
+    def test_hb10_teardown_runs_when_stopping_the_agent_is_interrupted(self) -> None:
+        """A second Ctrl-C lands while the agent is being stopped (review of #54)."""
+        events: list[str] = []
+        adapter = MagicMock()
+        adapter.start.side_effect = lambda: events.append("agent.start")
+
+        def interrupted() -> None:
+            events.append("agent.stop")
+            raise KeyboardInterrupt
+
+        adapter.stop.side_effect = interrupted
+
+        with pytest.raises(KeyboardInterrupt):
+            _run(events, _RunHooks(events), adapter=adapter)
+
+        assert events == ["run.setup", "agent.start", "message", "agent.stop", "run.teardown"]
+
     def test_hb10_teardown_runs_when_the_agent_does_not_start(self) -> None:
         events: list[str] = []
         adapter = MagicMock()
