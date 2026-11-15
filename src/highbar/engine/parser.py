@@ -116,6 +116,7 @@ def _parse_spec(raw: Any) -> Spec:
     suites = [_parse_suite(s, f"suites[{i}]") for i, s in enumerate(suites_raw)]
     _check_unique_keys(suites)
     _check_args_used(raw["agent"], suites)
+    _check_not_in_triggers(suites)
 
     default_runs = 1
     default_min_pass: int | float | None = None
@@ -149,6 +150,37 @@ def _parse_spec(raw: Any) -> Spec:
         default_min_pass=default_min_pass,
         default_budget=default_budget,
     )
+
+
+# A test's own values, which a trigger does not read: it goes to the agent as written.
+_NOT_IN_TRIGGERS = ("test.args",)
+
+
+def _check_not_in_triggers(suites: list[Suite]) -> None:
+    """``{{test.args.<path>}}`` in a trigger stops the spec (HB-9).
+
+    A trigger is sent as written, braces included, so the agent would get a message
+    nobody meant to send, and the test could pass on it. Names highbar does not own
+    stay text, as before.
+    """
+    for i, suite in enumerate(suites):
+        for j, test in enumerate(suite.tests):
+            where = f"suites[{i}].tests[{j}]"
+            if test.turns is None:
+                triggers = [(f"{where}.trigger", test.trigger or "")]
+            else:
+                triggers = [
+                    (f"{where}.turns[{k}].trigger", turn.trigger)
+                    for k, turn in enumerate(test.turns)
+                ]
+            for at, trigger in triggers:
+                for match in placeholders.PLACEHOLDER.finditer(trigger):
+                    name = match.group(1)
+                    if any(name == own or name.startswith(f"{own}.") for own in _NOT_IN_TRIGGERS):
+                        raise SpecError(
+                            f"{at}: '{match.group(0)}' is not read in a trigger: "
+                            "use it in agent.request, agent.correlate or a session hook"
+                        )
 
 
 def _check_args_used(agent: dict[str, Any], suites: list[Suite]) -> None:

@@ -132,7 +132,7 @@ suites:
             - name: get_ticket
 ```
 
-Every <code v-pre>{{test.args.&lt;path&gt;}}</code> the agent uses must have a value in every test, and not `null`: the spec does not load otherwise, and the message names the test and the key. Args that the agent does not use can differ from test to test. They are part of what a test measures, so they change its `definition_sha256`.
+Every <code v-pre>{{test.args.&lt;path&gt;}}</code> the agent uses must have a value in every test, and not `null`: the spec does not load otherwise, and the message names the test and the key. A trigger does not read them: it goes to the agent as written, so <code v-pre>{{test.args.&lt;path&gt;}}</code> in a trigger stops the spec too. Args that the agent does not use can differ from test to test. They are part of what a test measures, so they change its `definition_sha256`.
 
 ## Which records belong to a test
 

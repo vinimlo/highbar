@@ -44,6 +44,56 @@ def _test(trigger: str, extra: str = "") -> str:
 ARGS = "        session: {args: {customer: {id: 7}, stage: closed}}\n"
 
 
+TURN_WITH_ARG = (
+    "      - session: {args: {order: 3001}}\n"
+    "        turns:\n"
+    '          - trigger: "hi"\n'
+    '            expect: {response: {contains: "ok"}}\n'
+    '          - trigger: "order {{test.args.order}}?"\n'
+    '            expect: {response: {contains: "ok"}}\n'
+)
+
+
+class TestNotInATrigger:
+    """A trigger goes to the agent as written: an arg there would be sent as braces."""
+
+    @pytest.mark.parametrize(
+        ("tests", "at", "template"),
+        [
+            (
+                _test("order {{test.args.order}}?", "        session: {args: {order: 3001}}\n"),
+                "suites[0].tests[0].trigger",
+                "{{test.args.order}}",
+            ),
+            (TURN_WITH_ARG, "suites[0].tests[0].turns[1].trigger", "{{test.args.order}}"),
+            (_test("say {{ test.args }}"), "suites[0].tests[0].trigger", "{{ test.args }}"),
+        ],
+        ids=["a-trigger", "a-turn", "no-path"],
+    )
+    def test_hb9_an_arg_in_a_trigger_is_refused_at_load(
+        self, tmp_path: Path, tests: str, at: str, template: str
+    ) -> None:
+        with pytest.raises(SpecError) as caught:
+            parse_spec(_spec(tmp_path, WITH_SESSION, _suites(tests)))
+
+        assert str(caught.value).endswith(
+            f"{at}: '{template}' is not read in a trigger: "
+            "use it in agent.request, agent.correlate or a session hook"
+        )
+
+    def test_hb9_other_braces_in_a_trigger_stay_text(self, tmp_path: Path) -> None:
+        """Names highbar does not own are the agent's text, as before."""
+        (test,) = (
+            parse_spec(
+                _spec(tmp_path, WITH_SESSION, _suites(_test("hello {{name}} {{test.argsx}}")))
+            )
+            .suites[0]
+            .tests
+        )
+
+        assert test.trigger == "hello {{name}} {{test.argsx}}"
+
+
 class TestTheSpec:
     def test_hb9_a_test_takes_session_args(self, tmp_path: Path) -> None:
         spec = parse_spec(_spec(tmp_path, WITH_SESSION, _suites(_test("a", ARGS), _test("b"))))
