@@ -505,7 +505,8 @@ def _expand_env(value: Any, where: str, found: dict[str, str]) -> Any:
 
     A missing variable is an error that names it: an empty token would send
     ``Authorization: Bearer `` and read as the agent refusing a correct request.
-    Each value expanded goes in ``found``, to be masked in every message.
+    Each value expanded where a secret goes (``_secret_place``) goes in ``found``, to be
+    masked in every message.
     """
     if (mapping := as_dict(value)) is not None:
         return {key: _expand_env(item, f"{where}.{key}", found) for key, item in mapping.items()}
@@ -518,10 +519,111 @@ def _expand_env(value: Any, where: str, found: dict[str, str]) -> Any:
         name = match.group(1)
         if name not in os.environ:
             raise SpecError(f"{where}: environment variable {name} is not set")
-        found[os.environ[name]] = name
-        return os.environ[name]
+        expanded = os.environ[name]
+        if _secret_place(where, value, match.start()):
+            found[expanded] = name
+        return expanded
 
     return _ENV_VAR.sub(variable, value)
+
+
+# Where tokens go: everything highbar sends to the agent or to a session hook, besides
+# the URL. A command hook's line is how it passes its own token on.
+_SECRET_BLOCKS = ("agent.request", "agent.session")
+_URLS = ("agent.endpoint", "agent.health")
+
+
+def _secret_place(where: str, text: str, at: int) -> bool:
+    """Whether ``${NAME}`` at ``at`` in ``text``, the value at ``where``, is a secret (HB-6).
+
+    A token goes in a header, a body, a session hook or a URL's query, and those values
+    are masked. The traces path, the start command, ``correlate`` and a URL's host and
+    path are shown: masked, they made the trace file's "does not exist" unreadable.
+    A value masked in one place is masked everywhere it appears.
+    """
+    for block in _SECRET_BLOCKS:
+        if where == block or where.startswith((f"{block}.", f"{block}[")):
+            return True
+    return where in _URLS and _secret_in_url(text, at)
+
+
+def _secret_in_url(url: str, at: int) -> bool:
+    """A variable in a URL's userinfo (a password), query (an API key) or fragment is a
+    secret; the scheme, host, port and path are shown.
+
+    The URL is read twice. As the spec wrote it: a variable before an ``@`` (the first of
+    ``@ / ? #`` after it, in the spec's own text) is a password, and one after a ``?`` or
+    ``#`` is a query or a fragment, whatever its value holds, so a ``/`` in a password
+    does not make it a host. With its values in, as it is sent: a ``?``, ``#`` or ``//``
+    that a value brings moves the parts as it would for the agent, and a variable whose
+    value touches a secret part is a secret. A value with an ``@`` in it, and a URL that
+    is not ``scheme://host`` with nothing odd in it (a space, a control character, a
+    backslash), cannot be read the way every client would read it: all its variables are
+    secrets.
+    """
+    if any("@" in os.environ.get(m.group(1), "") for m in _ENV_VAR.finditer(url)):
+        return True
+    if _secret_as_written(url, at):
+        return True
+    whole, spans = _url_with_values(url)
+    regions = _secret_regions(whole)
+    if regions is None:
+        return True
+    start, end = spans[at]
+    return any(start < stop and begin < end for begin, stop in regions)
+
+
+def _secret_as_written(url: str, at: int) -> bool:
+    """Whether the spec's own text, its values left out, puts the variable at ``at``
+    before an ``@`` or after a ``?`` or ``#``."""
+    match = _ENV_VAR.match(url, at)
+    after = _ENV_VAR.sub("", url[match.end() :]) if match else ""
+    before = _ENV_VAR.sub("", url[:at])
+    if "?" in before or "#" in before:
+        return True
+    delimiter = re.search(r"[@/?#]", after)
+    return delimiter is not None and delimiter.group() == "@"
+
+
+def _url_with_values(url: str) -> tuple[str, dict[int, tuple[int, int]]]:
+    """``url`` with each ``${NAME}`` replaced, and where each one's value lands in it."""
+    pieces: list[str] = []
+    spans: dict[int, tuple[int, int]] = {}
+    length = written = 0
+    for match in _ENV_VAR.finditer(url):
+        pieces.append(url[written : match.start()])
+        length += match.start() - written
+        value = os.environ.get(match.group(1), "")
+        spans[match.start()] = (length, length + len(value))
+        pieces.append(value)
+        length += len(value)
+        written = match.end()
+    pieces.append(url[written:])
+    return "".join(pieces), spans
+
+
+def _secret_regions(url: str) -> list[tuple[int, int]] | None:
+    """Where ``url`` holds its userinfo and its query and fragment, or ``None`` when it
+    cannot be read with certainty."""
+    if any(c.isspace() or ord(c) < 32 or ord(c) == 127 or c == "\\" for c in url):
+        return None
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # an IPv6 host without its closing bracket
+        return None
+    host_at = url.find("//") + 2
+    if not parts.scheme or not parts.netloc:
+        return None
+    if url[host_at : host_at + len(parts.netloc)] != parts.netloc:
+        return None
+    path_at = host_at + len(parts.netloc)
+    if url[path_at : path_at + len(parts.path)] != parts.path:
+        return None
+    regions = [(path_at + len(parts.path), len(url))]
+    userinfo, at_sign, _ = parts.netloc.rpartition("@")
+    if at_sign:
+        regions.append((host_at, host_at + len(userinfo) + 1))
+    return regions
 
 
 def _required_text(raw: dict[str, Any], key: str) -> str:

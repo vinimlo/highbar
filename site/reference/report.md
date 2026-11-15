@@ -13,7 +13,7 @@ jq -r '.specs[].tests[] | [.id, .counts.passed, .counts.failed, .counts.error] |
 ```
 
 ::: warning The file holds what the agent said
-Responses and tool arguments go in whole, so treat it like a trace file from `--keep-traces`. Values from `${VAR}` are masked everywhere, the same way as in the output. A tool's `result` and `context` have no field of their own, but a `result` can still get in: a failed check quotes it in `errors`, and a <code v-pre>{{previous.*}}</code> template puts it in `turns[].trigger`. The session's values appear where `agent.correlate` uses them.
+Responses and tool arguments go in whole, so treat it like a trace file from `--keep-traces`. Values from `${VAR}` where a secret goes (a header, a body, a session hook, a URL's query) are masked everywhere, the same way as in the output. A tool's `result` and `context` have no field of their own, but a `result` can still get in: a failed check quotes it in `errors`, and a <code v-pre>{{previous.*}}</code> template puts it in `turns[].trigger`. The session's values appear where `agent.correlate` uses them.
 :::
 
 ## What the file says about the run
