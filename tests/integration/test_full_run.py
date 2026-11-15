@@ -5,6 +5,7 @@ the build node two suites at once both started it there, and one of them failed 
 """
 
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +26,8 @@ def _spec(directory: Path) -> Path:
     # If the fixture stops saying these, this has to learn what it says now.
     assert str(SPEC_PORT) in text and SPEC_START in text
     text = text.replace(str(SPEC_PORT), str(port)).replace(
-        SPEC_START, f'start: "{sys.executable} {FIXTURES / "agent.py"} {port}"'
+        SPEC_START,
+        f'start: "{shlex.quote(sys.executable)} {shlex.quote(str(FIXTURES / "agent.py"))} {port}"',
     )
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "spec.highbar.yaml"
@@ -83,11 +85,24 @@ def test_cli_runs_3_shows_3_of_3(tmp_path: Path) -> None:
     assert "3/3" in result.stdout
 
 
+def _its_own_port(spec: str) -> str:
+    """The one port the spec's agent and endpoints use, checked to be not the fixed one."""
+    (port,) = set(re.findall(r"localhost:(\d+)/", spec))
+    assert port != str(SPEC_PORT)
+    assert re.search(rf"agent\.py'? {port}\"", spec), spec
+    return port
+
+
 def test_hb42_each_full_run_listens_on_a_port_of_its_own(tmp_path: Path) -> None:
     """Two suites at once on the build node both started this agent on 8111 (HB-42)."""
     for name in ("a", "b"):
-        spec = _spec(tmp_path / name).read_text(encoding="utf-8")
+        _its_own_port(_spec(tmp_path / name).read_text(encoding="utf-8"))
 
-        assert "8111" not in spec
-        (port,) = set(re.findall(r"localhost:(\d+)/", spec))
-        assert f"agent.py {port}" in spec
+
+def test_hb42_a_free_port_with_8111_in_it_is_still_a_port_of_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """58111 says 8111 too: the check is on the port, not the digits (review of #59)."""
+    monkeypatch.setattr(sys.modules[__name__], "free_port", lambda: 58111)
+
+    assert _its_own_port(_spec(tmp_path).read_text(encoding="utf-8")) == "58111"
