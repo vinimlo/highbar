@@ -44,6 +44,9 @@ expect:
 | `imatches`, `not_imatches` | the same, ignoring case. `(?i)` at the start of a pattern does the same in `matches`. |
 | `lt`, `lte`, `gt`, `gte` | is a number below, at most, above, or at least the operand. |
 | `len`, `len_lte` | is a list of exactly, or at most, that many items. |
+| `in` | equals one of the listed values: `plan: {in: [basic, pro]}`. |
+| `contains_all` | contains each listed item, as `contains` does: every piece of text, or every item of a list. |
+| `any`, `all` | is a list where some item, or every item, matches the operand. The operand is any expected value: an object compared as `params` is, or a matcher. |
 
 A value that has no text form (an object, a list) never satisfies a negative matcher: "it does not contain the card number" is not evidence when there is no text to look at.
 
@@ -60,7 +63,23 @@ expect:
         documents: {len_lte: 3}
 ```
 
-They apply to values of `params` and `result`. A reply and an error are text, so `response` and `error` refuse them. A literal object whose keys are all matcher names is read as a matcher: to compare `{lt: 5}` itself, write `{equals: {lt: 5}}`.
+`any` and `all` reach into the items of a list, so a test can say what one of the documents must be, or what each of them must be:
+
+```yaml test
+trigger: "What is the refund policy?"
+expect:
+  function_calls:
+    - name: retrieve
+      result:
+        documents:
+          len_lte: 3
+          any: {id: "policy-7", chunks: [0, 1, 2]}
+          all: {score: {gte: 0.5}}
+```
+
+`all` fails on an empty list: every item of nothing matched, and nothing was checked. `in` and `contains_all` need a list with at least one value.
+
+These matchers apply to values of `params` and `result`; `response` and `error` refuse them. A reply and an error are text, where a bound or a length could never hold. A literal object whose keys are all matcher names is read as a matcher: to compare `{lt: 5}` itself, write `{equals: {lt: 5}}`.
 
 ### A call that failed
 

@@ -18,7 +18,9 @@ import yaml
 
 from highbar._narrow import as_dict, as_list
 from highbar.assertions._match import (
+    LENGTH_KEYS,
     MATCHER_KEYS,
+    NUMBER_KEYS,
     REGEX_KEYS,
     TEXT_MATCHER_KEYS,
     validate_expected,
@@ -706,13 +708,18 @@ def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
 
 
 def _refuse_bounds_on_text(raw: dict[Any, Any], where: str, what: str) -> None:
-    """A bound on a number or a list length, where the value is always text, never holds."""
+    """Refuse the matchers that only values of params and result have.
+
+    A bound on a number or a list length, where the value is always text, never holds.
+    """
     for key in raw:
-        if key in MATCHER_KEYS and key not in TEXT_MATCHER_KEYS:
+        if key in NUMBER_KEYS or key in LENGTH_KEYS:
             raise SpecError(
                 f"{where}: '{key}' does not apply to {what}, which is text; "
                 "bounds and lengths go in the values of params and result"
             )
+        if key in MATCHER_KEYS and key not in TEXT_MATCHER_KEYS:
+            raise SpecError(f"{where}: '{key}' works only in the values of params and result")
 
 
 def _has_template(value: Any) -> bool:

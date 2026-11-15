@@ -334,3 +334,118 @@ class TestHugeBounds:
         validate_expected({"n": {"lte": huge}}, "params")
         assert subset_match({"n": {"lte": huge}}, {"n": 10**300})
         assert not subset_match({"n": {"gt": huge}}, {"n": 1.0})
+
+
+class TestOneOf:
+    """HB-7: `in` holds when the value equals one of the listed values."""
+
+    def test_in_is_one_of(self) -> None:
+        assert subset_match({"plan": {"in": ["basic", "pro"]}}, {"plan": "pro"})
+        assert not subset_match({"plan": {"in": ["basic", "pro"]}}, {"plan": "Pro"})
+        assert subset_match({"n": {"in": [1, 2]}}, {"n": 2})
+
+    def test_in_compares_whole_values(self) -> None:
+        assert subset_match({"opts": {"in": [{"size": "L"}]}}, {"opts": {"size": "L"}})
+        assert not subset_match({"opts": {"in": [{"size": "L"}]}}, {"opts": {"size": "L", "x": 1}})
+
+    def test_hb7_in_fails_on_a_missing_value(self) -> None:
+        assert not subset_match({"plan": {"in": ["basic", "pro"]}}, {"other": "pro"})
+
+
+class TestContainsAll:
+    """HB-7: `contains_all` is `contains` for each item of its list."""
+
+    def test_on_a_list_every_item_is_there(self) -> None:
+        expected = {"ids": {"contains_all": ["t-1", "t-7"]}}
+
+        assert subset_match(expected, {"ids": ["t-7", "t-2", "t-1"]})
+        assert not subset_match(expected, {"ids": ["t-7", "t-2"]})
+
+    def test_on_text_every_piece_is_there(self) -> None:
+        expected = {"note": {"contains_all": ["refund", "1042"]}}
+
+        assert subset_match(expected, {"note": "refund for order 1042"})
+        assert not subset_match(expected, {"note": "refund for order 1043"})
+
+    @pytest.mark.parametrize("actual", [None, {"a": "refund"}])
+    def test_hb7_a_value_it_cannot_read_fails(self, actual: object) -> None:
+        assert not subset_match({"note": {"contains_all": ["refund"]}}, {"note": actual})
+
+
+class TestEachItem:
+    """HB-7: `any` and `all` match the items of a list, like a value of params."""
+
+    def test_any_needs_one_item_that_matches(self) -> None:
+        docs = {
+            "documents": [
+                {"id": "t-1", "chunks": [0, 1, 2]},
+                {"id": "t-7", "chunks": [3]},
+            ]
+        }
+
+        assert subset_match({"documents": {"any": {"id": "t-1", "chunks": [0, 1, 2]}}}, docs)
+        assert not subset_match({"documents": {"any": {"id": "t-1", "chunks": [0, 1]}}}, docs)
+        assert subset_match({"documents": {"any": {"id": {"matches": "^t-[0-9]$"}}}}, docs)
+
+    def test_all_needs_every_item_to_match(self) -> None:
+        expected = {"documents": {"all": {"status": "published"}}}
+
+        assert subset_match(
+            expected, {"documents": [{"status": "published"}, {"status": "published", "n": 1}]}
+        )
+        assert not subset_match(
+            expected, {"documents": [{"status": "published"}, {"status": "draft"}]}
+        )
+
+    def test_items_can_be_scalars_and_matchers(self) -> None:
+        assert subset_match({"scores": {"all": {"gte": 0.5}}}, {"scores": [0.5, 0.9]})
+        assert not subset_match({"scores": {"all": {"gte": 0.5}}}, {"scores": [0.5, 0.4]})
+        assert subset_match({"tags": {"any": {"icontains": "drink"}}}, {"tags": ["Cold Drink"]})
+
+    def test_hb7_all_on_an_empty_list_fails(self) -> None:
+        """Every item of nothing matched, and nothing was checked: not evidence."""
+        assert not subset_match({"documents": {"all": {"status": "published"}}}, {"documents": []})
+
+    @pytest.mark.parametrize("key", ["any", "all"])
+    @pytest.mark.parametrize("actual", [None, "published", {"status": "published"}])
+    def test_hb7_a_value_that_is_not_a_list_fails(self, key: str, actual: object) -> None:
+        assert not subset_match(
+            {"documents": {key: {"status": "published"}}}, {"documents": actual}
+        )
+
+    def test_combines_with_a_length(self) -> None:
+        expected = {"documents": {"len_lte": 3, "all": {"status": "published"}}}
+
+        assert subset_match(expected, {"documents": [{"status": "published"}]})
+        assert not subset_match(expected, {"documents": [{"status": "published"}] * 4})
+
+
+class TestListOperands:
+    """HB-7: the operands of in, contains_all, any and all are checked at load time."""
+
+    @pytest.mark.parametrize("key", ["in", "contains_all"])
+    @pytest.mark.parametrize("operand", [[], "pro", None, {"a": 1}])
+    def test_hb7_in_and_contains_all_need_a_non_empty_list(self, key: str, operand: object) -> None:
+        """`in: []` can never hold, and `contains_all: []` always does."""
+        with pytest.raises(ValueError, match=rf"params\.plan: '{key}' needs a non-empty list"):
+            validate_expected({"plan": {key: operand}}, "params")
+
+    @pytest.mark.parametrize("key", ["any", "all"])
+    def test_hb7_a_bad_matcher_inside_any_or_all_is_found(self, key: str) -> None:
+        with pytest.raises(ValueError, match=rf"result\.documents\.{key}\.id: invalid regex"):
+            validate_expected({"documents": {key: {"id": {"matches": "("}}}}, "result")
+
+    @pytest.mark.parametrize("key", ["any", "all"])
+    def test_hb7_a_misspelled_matcher_inside_any_or_all_is_found(self, key: str) -> None:
+        with pytest.raises(ValueError, match="did you mean 'contains'"):
+            validate_expected({"documents": {key: {"id": {"contain": "t-"}}}}, "result")
+
+    def test_well_formed_list_matchers_pass(self) -> None:
+        validate_expected(
+            {
+                "plan": {"in": ["basic", "pro"]},
+                "ids": {"contains_all": ["t-1"]},
+                "documents": {"any": {"id": "t-1"}, "all": {"chunks": {"len_lte": 3}}},
+            },
+            "result",
+        )

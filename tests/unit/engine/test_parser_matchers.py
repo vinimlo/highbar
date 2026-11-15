@@ -164,3 +164,27 @@ class TestArgumentNamesAreNotMatchers:
         call = parse_spec(path).suites[0].tests[0].expect.function_calls[0]
 
         assert call.params == {"n": {"lte": int(huge)}}
+
+
+class TestListMatchersAreForParamsAndResult:
+    @pytest.mark.parametrize(
+        ("key", "operand"),
+        [("in", '["a"]'), ("contains_all", '["a"]'), ("any", '"a"'), ("all", '"a"')],
+    )
+    def test_hb7_response_refuses_a_list_matcher(
+        self, tmp_path: Path, key: str, operand: str
+    ) -> None:
+        path = _spec_with_expect(tmp_path, f"{{response: {{{key}: {operand}}}}}")
+
+        with pytest.raises(
+            ValueError, match=rf"response: '{key}' works only in the values of params and result"
+        ):
+            parse_spec(path)
+
+    def test_hb7_error_refuses_a_list_matcher(self, tmp_path: Path) -> None:
+        path = _spec_with_expect(
+            tmp_path, '{function_calls: [{name: get_order, error: {in: ["Timeout"]}}]}'
+        )
+
+        with pytest.raises(ValueError, match=r"error: 'in' works only in the values of params"):
+            parse_spec(path)
