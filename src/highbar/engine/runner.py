@@ -259,15 +259,29 @@ def _tag_hint(correlate: Mapping[Any, Any]) -> str:
     )
 
 
-def _merged_errors(results: list[TestResult]) -> list[str]:
-    """The errors of a phrasing's runs; one that repeats says in how many runs."""
+def _merged_errors(results: list[TestResult], conditions: Mapping[str, str]) -> list[str]:
+    """The errors of a phrasing's runs, one line per condition (HB-27).
+
+    A response check's message ends with the agent's reply, which an LLM changes on every
+    run. Grouped by what the message says apart from it (``conditions``), a condition is
+    one line that says in how many runs it failed, with the reply of the first of them.
+    The same text in each run keeps its form. Each execution keeps its own message.
+    """
     if len(results) == 1:
         return list(results[0].errors)
-    seen: dict[str, int] = {}
-    for result in results:
-        for error in dict.fromkeys(result.errors):
-            seen[error] = seen.get(error, 0) + 1
-    return [f"{error} ({n} of {len(results)} runs)" for error, n in seen.items()]
+    groups: dict[str, list[tuple[int, str]]] = {}
+    for run, result in enumerate(results, start=1):
+        mine: dict[str, str] = {}
+        for error in result.errors:
+            mine.setdefault(conditions.get(error, error), error)
+        for key, error in mine.items():
+            groups.setdefault(key, []).append((run, error))
+    lines: list[str] = []
+    for failed in groups.values():
+        (run, first), count = failed[0], f"{len(failed)} of {len(results)} runs"
+        same = all(error == first for _, error in failed)
+        lines.append(f"{first} ({count})" if same else f"{first} ({count}; reply from run {run})")
+    return lines
 
 
 @dataclass
@@ -456,6 +470,9 @@ class TestRunner:
         # The session.args of the test that runs now (HB-9), for each of its executions.
         self._args: Mapping[str, Any] = {}
         self._history: Sequence[Mapping[str, str]] = ()
+        # What each failure message says apart from the agent's reply (HB-27): a
+        # phrasing's runs that fail the same condition with other replies are one line.
+        self._conditions: dict[str, str] = {}
         # Where the next read starts: each record is read once, and none is missed
         # between two tests (a late call is often written right there).
         self._cursor = 0
@@ -942,12 +959,16 @@ class TestRunner:
         )
 
     def _check(self, tools: list[Trace], response: str, expect: Expect) -> list[str]:
-        return [
-            r.message
+        failed = [
+            r
             for assertion in self._assertions
             for r in assertion.evaluate(tools, response, expect)
             if not r.passed
         ]
+        for r in failed:
+            if r.condition is not None:
+                self._conditions[r.message] = r.condition
+        return [r.message for r in failed]
 
     def _learn_inventory(self) -> None:
         """What the agent declared before the first test: tools register at import (D4).
@@ -1227,7 +1248,7 @@ class TestRunner:
             gate.phrasings.append(kinds[index])
             statuses.append(phrasing_status(gate.runs[-1], min_pass))
             passed = sum(1 for r in results if r.passed)
-            errors.extend(label + error for error in _merged_errors(results))
+            errors.extend(label + error for error in _merged_errors(results, self._conditions))
             if runs > 1 and test.variations and passed < min_pass:
                 errors.append(f"{label}{passed}/{runs} runs passed (min {min_pass})")
             for r in results:
@@ -1355,6 +1376,9 @@ class TestRunner:
             result = self._run_turn(turn.trigger, turn.expect, start, all_traces, values, execution)
             all_traces.extend(result.traces)
             all_errors.extend(prefix + error for error in result.errors)
+            for error in result.errors:
+                if prefix and error in self._conditions:
+                    self._conditions[prefix + error] = prefix + self._conditions[error]
             statuses.append(result.status)
 
             if not result.passed:
