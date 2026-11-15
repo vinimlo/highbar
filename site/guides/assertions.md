@@ -169,6 +169,7 @@ expect_status: failed
 - The test passes when it ends exactly in that state, `failed` or `error`. The terminal marks it `✓ a broken get_order fails the test (expected failed)`, on one line.
 - It fails when it passes, with `passed, but expect_status is failed: this negative control no longer catches what it was written for`. It also fails when it ends in the other state (`ended error, but expect_status is failed`): a control that expects a failure and could not verify anything proves nothing.
 - The state is the test's, after `runs` and `min_pass`, and after late calls: a late call that fails a control makes it pass, and the run says so in a warning.
-- `error` is any state highbar could not verify, an agent that timed out included. An agent that writes no trace record at all is not one: the run stops with exit code 2 at the first test that needs a record, and no control is judged.
+- `error` is any state highbar could not verify, an agent that timed out included.
+- A run that cannot observe the agent at all stops before its first message, with exit code 2, and no control is judged. That is a managed agent (`agent.start`) whose SDK never writes its `hello`, or an attached agent whose `agent.traces` file does not exist. The check runs only when a test of the spec needs a record. An attached agent whose trace file exists but stays empty does not stop the run: each test that needs a record ends in `error`, so a control expecting `error` passes.
 - In the [report](/reference/report#each-test), `status` is the judged one and `expect_status` says what was expected. The phrasings and executions keep what happened, and so do `errors`.
 
