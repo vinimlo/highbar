@@ -300,3 +300,114 @@ class TestRun:
         assert Expect(
             check=CHECK, function_calls=[FunctionCallExpect(name="x")]
         ).requires_observation
+
+
+def _records_nothing(message: str, test_id: str) -> Window:
+    """An agent that writes no record: highbar cannot tell what it called."""
+    return Window()
+
+
+class _Reads(_Checks):
+    """A guardrail of the author's own: the turn fails if the agent deleted the account."""
+
+    def __init__(self, *, swallow: bool = False) -> None:
+        super().__init__([])
+        self.swallow = swallow
+
+    def check(self, target: str, ctx: CheckContext) -> list[str]:
+        self.seen.append(ctx)
+        try:
+            return [f"called {t.fn}" for t in ctx.tools if t.fn == "delete_account"]
+        except Exception:
+            if self.swallow:
+                return []
+            raise
+
+
+ONLY_CHECKED = Expect(check=CHECK)
+
+
+class TestUnobserved:
+    """Review of #55: an empty ctx.tools said "called nothing" of a turn nobody saw."""
+
+    def test_hb12_reading_the_tools_of_a_turn_highbar_did_not_observe_is_an_error(
+        self,
+    ) -> None:
+        summary = _run(
+            [Case(trigger="close my account", expect=ONLY_CHECKED)],
+            Replying(["done"], _records_nothing),
+            session=_Reads(),
+        )
+
+        (test,) = summary.tests
+        assert test.status is Status.ERROR
+        (error,) = test.errors
+        assert error.startswith("expect.check read ctx.tools of a turn highbar did not observe: ")
+
+    def test_hb12_a_check_that_swallows_the_refusal_is_still_an_error(self) -> None:
+        summary = _run(
+            [Case(trigger="close my account", expect=ONLY_CHECKED)],
+            Replying(["done"], _records_nothing),
+            session=_Reads(swallow=True),
+        )
+
+        assert summary.tests[0].status is Status.ERROR
+
+    def test_hb12_the_turns_are_refused_too(self) -> None:
+        class ReadsTurns(_Checks):
+            def check(self, target: str, ctx: CheckContext) -> list[str]:
+                return [] if len(ctx.turns) else ["no turn record"]
+
+        summary = _run(
+            [Case(trigger="close my account", expect=ONLY_CHECKED)],
+            Replying(["done"], _records_nothing),
+            session=ReadsTurns([]),
+        )
+
+        (test,) = summary.tests
+        assert test.status is Status.ERROR
+        assert test.errors[0].startswith("expect.check read ctx.turns of a turn")
+
+    def test_hb12_a_check_of_its_own_state_needs_no_record(self) -> None:
+        summary = _run(
+            [Case(trigger="close my account", expect=ONLY_CHECKED)],
+            Replying(["done"], _records_nothing),
+            session=_Checks([]),
+        )
+
+        assert summary.tests[0].status is Status.PASSED
+
+    def test_hb12_another_tests_record_does_not_vouch_for_this_turn(self) -> None:
+        def someone_else(message: str, test_id: str) -> Window:
+            return Window(turns=[TurnRecord(ts=1.0, context={"test": "another-execution"})])
+
+        summary = _run(
+            [Case(trigger="close my account", expect=ONLY_CHECKED)],
+            Replying(["done"], someone_else),
+            session=_Reads(),
+        )
+
+        assert summary.tests[0].status is Status.ERROR
+
+    def test_hb12_a_turn_with_a_record_of_its_own_is_read(self) -> None:
+        summary = _run(
+            [Case(trigger="close my account", expect=ONLY_CHECKED)],
+            Replying(["done"], _calls("delete_account")),
+            session=_Reads(),
+        )
+
+        (test,) = summary.tests
+        assert test.status is Status.FAILED
+        assert test.errors == ("called delete_account",)
+
+    def test_hb12_an_untagged_window_counts_once_highbar_saw_the_sdks_hello(self) -> None:
+        """As for highbar's own checks: a fresh file the agent's SDK said hello in."""
+        guarded = Expect(function_calls=[], check=CHECK)
+
+        summary = _run(
+            [Case(trigger="close my account", expect=guarded)],
+            Replying(["done"], _records_nothing),
+            session=_Reads(),
+        )
+
+        assert summary.tests[0].status is Status.PASSED

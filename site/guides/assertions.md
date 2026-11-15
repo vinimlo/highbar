@@ -162,6 +162,7 @@ def no_open_trainings(ctx):
 
 - It runs after highbar's own checks of the turn, once per execution. It is imported from the directory you run highbar in before any agent starts, and called in the thread the session hooks run in, with `agent.timeout` to return.
 - `ctx` has `test_id`, `test_name`, `spec_path`, `message` (the trigger as sent), `response`, `session`, `args` and `history`. It also has `tools` and `turns`, the trace records highbar counted as this turn's. A record written after the turn's window is not in them.
+- `tools` and `turns` are there only when highbar observed the turn: a record of its own, or an untagged window its own tool checks would read. Otherwise reading them leaves the turn `error`, even when the function catches it, since an empty list would say the agent called nothing. With no `agent.traces` in an attached spec, nothing is observed.
 - It returns a list of failure messages. An empty list is a pass, and each message becomes a line of the test's failure. Anything else leaves the turn `error`, unless highbar's own checks already failed it: an exception, a timeout, or `None` from a function that forgot its `return`.
 - In a multi-turn test, each turn's `expect` has its own. `check` alone is enough for a test to assert something, and it needs no trace record: a test that checks only a state of its own observes nothing.
 - No model is called, so the same state gives the same answer. The function's name is part of what the test measures (`definition_sha256`).

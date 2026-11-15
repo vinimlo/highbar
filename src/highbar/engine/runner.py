@@ -130,6 +130,7 @@ class _TurnLog:
     late: list[Trace] = field(default_factory=list[Trace])
     records: list[Usage] = field(default_factory=list[Usage])  # the usage of its `turn` records
     turns: list[TurnRecord] = field(default_factory=list[TurnRecord])  # those records (HB-12)
+    unobserved: str | None = None  # why expect.check cannot read them: no record of its own
     untagged: list[Usage] = field(default_factory=list[Usage])  # read next to it, no context
     suspected: list[Usage] = field(default_factory=list[Usage])  # counted for the next test
     budget: Budget | None = None
@@ -982,6 +983,9 @@ class TestRunner:
         """
         if self._session is None:
             raise RuntimeError(f"expect.check {target}: its function was never loaded")
+        why = log.unobserved
+        tools = sessions.Unobserved("tools", why) if why else tuple(log.tools)
+        turns = sessions.Unobserved("turns", why) if why else tuple(log.turns)
         ctx = sessions.CheckContext(
             test_id=values.test_id,
             test_name=values.test_name,
@@ -991,16 +995,21 @@ class TestRunner:
             session=dict(values.session),
             args=dict(values.args),
             history=tuple(values.history),
-            tools=tuple(log.tools),
-            turns=tuple(log.turns),
+            tools=tools,
+            turns=turns,
         )
+        error: str | None = None
         try:
             failures = self._session.check(target, ctx)
         except Exception as e:
-            reason = str(e) if isinstance(e, SessionError) else f"expect.check: {e!r}"
+            failures, error = [], str(e) if isinstance(e, SessionError) else f"expect.check: {e!r}"
+        # Read and caught, the records of a turn nobody saw still leave it unverified.
+        refused = [r for r in (tools, turns) if isinstance(r, sessions.Unobserved)]
+        error = next((r.message for r in refused if r.read), error)
+        if error is not None:
             execution.passed = False
             status = Status.FAILED if result.status is Status.FAILED else Status.ERROR
-            return replace(result, status=status, errors=[*result.errors, reason])
+            return replace(result, status=status, errors=[*result.errors, error])
         if not failures:
             return result
         execution.passed = False
@@ -1555,7 +1564,11 @@ class TestRunner:
             traces = window.tools
             log.tools = list(traces)
             log.records = stray if self._managed else []
-            log.turns = list(window.turns) if self._managed else []
+            log.turns = list(window.turns)
+            if expect.check is not None and not (self._managed and observes):
+                # highbar's own checks read an untagged window only in that case (a fresh
+                # file whose hello it waited for): expect.check reads what they read.
+                log.unobserved = self._not_observed_attached(window, execution.correlate)
             if log.records:
                 self._warn_once(NO_CONTEXT_USAGE_WARNING, execution.correlate)
             errors = self._check(traces, response, expect)
@@ -1571,6 +1584,8 @@ class TestRunner:
             log.tools = list(traces)
             log.records = self._read_usage(classified.mine.turns)
             log.turns = list(classified.mine.turns)
+            if expect.check is not None and not (classified.mine.tools or classified.mine.turns):
+                log.unobserved = self._not_observed(classified, execution.correlate)
             errors = self._check(traces, response, expect)
             if untagged:
                 with_them = self._check([*traces, *untagged], response, expect)

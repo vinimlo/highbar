@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.integration.test_attach_mode import _Attached
 from tests.integration.test_report import _free_port, _Project
 
 CHECKS = """\
@@ -55,3 +56,32 @@ def test_hb12_its_failure_is_the_tests(project: _Project) -> None:
     assert "no order row for 'place order 1042'" in result.stdout
     (test,) = project.data()["specs"][0]["tests"]
     assert test["status"] == "failed"
+
+
+NO_DELETE = """\
+def no_delete(ctx):
+    return [f"called {t.fn}" for t in ctx.tools if t.fn == "delete_account"]
+"""
+
+
+@pytest.mark.timeout(40)
+def test_hb12_an_attached_agent_with_no_trace_file_is_not_vouched_for(tmp_path: Path) -> None:
+    """Review of #55: no `traces`, so highbar reads no record; ctx.tools is not "nothing"."""
+    attached = _Attached(tmp_path)
+    try:
+        attached.start()
+        (tmp_path / "evals_checks.py").write_text(NO_DELETE, encoding="utf-8")
+        (tmp_path / "agent.highbar.yaml").write_text(
+            f'agent:\n  endpoint: "http://127.0.0.1:{attached.port}/chat"\n'
+            "suites:\n  - name: S\n    tests:\n"
+            '      - trigger: "close my account"\n'
+            '        expect: {check: {python: "evals_checks:no_delete"}}\n',
+            encoding="utf-8",
+        )
+
+        result = attached.run("agent.highbar.yaml")
+    finally:
+        attached.stop()
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "expect.check read ctx.tools of a turn highbar did not observe" in result.stdout

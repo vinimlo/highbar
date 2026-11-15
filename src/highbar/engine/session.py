@@ -44,7 +44,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TextIO, cast
+from typing import Any, NoReturn, TextIO, cast
 
 import httpx
 
@@ -82,7 +82,8 @@ class CheckContext:
     """What an ``expect.check`` function gets of the turn it checks (HB-12).
 
     ``tools`` and ``turns`` are the records highbar counted as this turn's, as its own
-    checks read them; a record written after the turn's window is not in them.
+    checks read them; a record written after the turn's window is not in them. Of a turn
+    highbar did not observe, they are ``Unobserved``: reading them is an error.
     """
 
     test_id: str
@@ -99,6 +100,47 @@ class CheckContext:
 
 class SessionError(RuntimeError):
     """A hook failed; the message starts with the hook: ``session.setup``, for one."""
+
+
+class Unobserved(Sequence[Any]):
+    """``ctx.tools`` or ``ctx.turns`` of a turn highbar has no record of.
+
+    An empty list would say the agent called nothing, and a guardrail of the author's
+    would pass against an agent nobody saw (review of #55). Reading it raises instead,
+    and ``read`` stays set when the check catches that, so the turn is still unverified.
+    """
+
+    def __init__(self, name: str, why: str) -> None:
+        why = why.removeprefix("not observed: ")
+        self.message = f"expect.check read ctx.{name} of a turn highbar did not observe: {why}"
+        self.read = False
+
+    def _refuse(self) -> NoReturn:
+        self.read = True
+        raise SessionError(self.message)
+
+    def __len__(self) -> NoReturn:
+        self._refuse()
+
+    def __getitem__(self, index: Any) -> NoReturn:
+        self._refuse()
+
+    def __iter__(self) -> NoReturn:
+        self._refuse()
+
+    def __contains__(self, value: object) -> NoReturn:
+        self._refuse()
+
+    def __bool__(self) -> NoReturn:
+        self._refuse()
+
+    def __eq__(self, other: object) -> NoReturn:
+        self._refuse()
+
+    __hash__ = None  # pyright: ignore[reportAssignmentType]
+
+    def __repr__(self) -> str:
+        return "<not observed>"
 
 
 class RunHookError(SessionError):
