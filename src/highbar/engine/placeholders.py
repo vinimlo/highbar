@@ -22,6 +22,7 @@ from typing import Any
 from highbar._narrow import as_dict, as_list
 from highbar.engine.paths import PathError, get_path
 from highbar.engine.schema import SpecError
+from highbar.engine.templates import no_path_message
 
 PLACEHOLDER = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
 
@@ -63,6 +64,9 @@ def check_placeholders(
         return
     for match in PLACEHOLDER.finditer(value):
         name = match.group(1)
+        if name == "session":
+            # As in a trigger. It loaded, and only failed when the request was built.
+            raise SpecError(f"{where}: '{{{{session}}}}' {no_path_message('session')}")
         kind = _kind(name)
         if kind not in ALL or (kind == "session" and name == "session."):
             known = ["message", "test.id", "test.name", "session.<key>"]

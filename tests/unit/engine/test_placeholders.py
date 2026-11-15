@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from highbar.engine.placeholders import PlaceholderError, Values, render, uses_placeholder
+from highbar.engine.placeholders import (
+    ALL,
+    PlaceholderError,
+    Values,
+    check_placeholders,
+    render,
+    uses_placeholder,
+)
+from highbar.engine.schema import SpecError
 
 VALUES = Values(
     message="cancel order 7",
@@ -66,3 +74,12 @@ def test_hb20_a_null_session_value_is_an_error_here_too(value: str) -> None:
         PlaceholderError, match=r"^\{\{session\.token\}\}: the value is null: the session setup"
     ):
         render({"auth": value}, values)
+
+
+@pytest.mark.parametrize("value", ["{{session}}", "{{ session }}"])
+def test_hb20_session_with_no_path_does_not_load_here_either(value: str) -> None:
+    """It loaded, and only failed at run time as `{{session.session}}: no key 'session'`."""
+    with pytest.raises(
+        SpecError, match=r"^agent\.request\.body\.x: '\{\{session\}\}' names no value"
+    ):
+        check_placeholders({"x": value}, "agent.request.body", allowed=ALL, has_session=True)
