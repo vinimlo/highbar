@@ -111,11 +111,15 @@ class JsonReport:
             "specs": self._specs,
         }
 
-    def _write(self, body: dict[str, Any]) -> None:
+    def _render(self, body: dict[str, Any]) -> bytes:
+        """The file's bytes for ``body``: JSON here, another format in a subclass."""
         # default=str: a value in agent.correlate may be a date from YAML. A surrogate the
         # agent sent has no UTF-8 form, and becomes the JSON escape it came from.
         text = json.dumps(_finite(body), ensure_ascii=False, indent=2, allow_nan=False, default=str)
-        data = (text + "\n").encode("utf-8", "backslashreplace")
+        return (text + "\n").encode("utf-8", "backslashreplace")
+
+    def _write(self, body: dict[str, Any]) -> None:
+        data = self._render(body)
         temporary: str | None = None
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)

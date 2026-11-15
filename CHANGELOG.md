@@ -22,6 +22,7 @@
 - An optional `id` on a test, and a stable key for each one: its `id`, or `<suite>/<name>`.
 - `definition_sha256` on each test of the report, to tell whether two runs measured the same thing.
 - `highbar.run()` returns each test in `summary.tests` and the warnings in `summary.warnings`, and takes a `reporter`.
+- `highbar run --report junit=<file>`: the report as JUnit XML, for the CI tools that read it, with the JSON report's lifecycle. Each spec is a `testsuite` and each test a `testcase`, with a `failure` or an `error`. A run that did not finish, stopped halfway, or exited with an error code while no test failed gets one more case, `highbar.run`, with an `error`: zero failed cases would read as a pass.
 
 ### Changed
 

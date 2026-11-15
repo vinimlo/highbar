@@ -178,6 +178,21 @@ A turn's `usage` has the fields of the [trace contract](/reference/trace-contrac
 
 Which turns are counted follows the results: a turn that ran is counted whether or not the test passed, and the test in progress when a run stops is left out. Usage recorded after a test's window closed counts for that test.
 
+## JUnit XML
+
+`--report junit=<file>` writes the same report as JUnit XML, for the CI tools that read that format (test summaries in a pull request, a dashboard of test history). It is replaced before the first message and written on every way out, like the JSON file.
+
+```console
+highbar run --report junit=.highbar/reports/junit.xml
+```
+
+- Each spec is a `testsuite`, named by its key, and each test a `testcase`, with its suite as `classname` and its duration as `time`, in seconds.
+- A failed test has a `failure`, and a test that could not be verified an `error`, with its first error as `message` and all of them as the text.
+- A run that did not finish, stopped halfway, or exited with an error code while no test failed (a spec that does not load, an agent that does not start, `--max-cost`) gets one more case, `highbar.run`, with an `error` that says why. A JUnit reader counts cases, and zero failed cases would read as a pass.
+- Text that XML cannot hold, such as a NUL or a terminal escape in a reply, is written as its escape (`\x1b`).
+
+JUnit has no place for usage, phrasings or executions: keep the JSON report for those. One `--report` per run.
+
 ## Comparing runs
 
 A test is the pair `(specs[].key, tests[].id)`: the same `id` can appear in two specs.
