@@ -191,3 +191,34 @@ class TestListMatchersAreForParamsAndResult:
 
         with pytest.raises(ValueError, match=r"error: 'in' works only in the values of params"):
             parse_spec(path)
+
+
+class TestEmptyOperandsAtLoad:
+    @pytest.mark.parametrize(
+        ("params", "error"),
+        [
+            ('{q: {contains: ""}}', r"params\.q: 'contains' cannot be empty"),
+            ('{q: {matches: ""}}', r"params\.q: 'matches' cannot be empty"),
+        ],
+    )
+    def test_hb36_an_operand_that_cannot_fail_is_refused(
+        self, tmp_path: Path, params: str, error: str
+    ) -> None:
+        with pytest.raises(ValueError, match=error):
+            parse_spec(_spec_with_params(tmp_path, params))
+
+    def test_hb36_an_error_matcher_with_an_empty_text_is_refused(self, tmp_path: Path) -> None:
+        path = _spec_with_expect(
+            tmp_path, '{function_calls: [{name: get_order, error: {contains: ""}}]}'
+        )
+
+        with pytest.raises(ValueError, match=r"error: 'contains' cannot be empty"):
+            parse_spec(path)
+
+    def test_hb36_an_empty_object_as_an_argument_loads(self, tmp_path: Path) -> None:
+        """Review of #31: `{opts: {}}` checks that opts is there and is an object."""
+        parse_spec(_spec_with_params(tmp_path, "{opts: {}, filters: {range: {}}}"))
+
+    def test_hb36_params_with_no_keys_still_load(self, tmp_path: Path) -> None:
+        """The top of params is argument names: none at all is a call with any arguments."""
+        parse_spec(_spec_with_params(tmp_path, "{}"))

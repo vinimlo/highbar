@@ -36,6 +36,7 @@
 
 ### Upgrading from 0.1.0
 
+- An empty text in a matcher of `params`, `result` or `error` (`contains: ""`, `matches: ""`, and their `i` and `not_` forms) no longer loads: the positive ones held on any value, the negative ones on none. `response` already refused them. Write `{equals: ""}` to compare with an empty text.
 - An object in a value of `params` or `result` whose keys are all among `lt`, `lte`, `gt`, `gte`, `len`, `len_lte`, `in`, `contains_all`, `any` and `all` (with the older matcher names) is now a matcher, not a literal to compare. To compare such an object as it is, wrap it: `{equals: {lt: 5}}`. The keys right under `params` and `result` are always argument names, so an argument called `gt`, `len` or `in` is compared as before.
 - A spec with two tests of the same key no longer parses. The key is `<suite>/<name>`, and a test without a name uses its trigger, or its number of turns for a multi-turn test. So this reaches two such tests in one suite, in two suites with the same name, and in two suites without a name. Give one an `id` or a different `name`. The key is what tells them apart in a report, and numbering them would tie it to their position.
 ## 0.1.0

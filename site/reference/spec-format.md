@@ -139,4 +139,4 @@ Used in `response`, in values of `params` and `result`, and in `error`:
 | `contains_all` | Contains each listed item, as `contains` does (a list with at least one). Only in `params` and `result`. |
 | `any` / `all` | A list where some item, or every item, matches the operand, which is any expected value. `all` fails on an empty list. Only in `params` and `result`. |
 
-Negative matchers fail on a value with no text form, such as an object or `null`. A bound fails on a value that is not a number (a numeric string and a boolean included), and a length on a value that is not a list. Templates (<code v-pre>{{previous.*}}</code>) are only allowed in triggers.
+Negative matchers fail on a value with no text form, such as an object or `null`. An empty text operand is refused; `equals` takes one. An empty object as a value checks that the key is there and holds an object. A bound fails on a value that is not a number (a numeric string and a boolean included), and a length on a value that is not a list. Templates (<code v-pre>{{previous.*}}</code>) are only allowed in triggers.
