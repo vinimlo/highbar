@@ -141,6 +141,124 @@ class TestParser:
             parse_spec(_spec(tmp_path, agent + 'session: {setup: "echo {}"}\n'))
 
 
+class TestMaskByPlace:
+    """HB-6: a value is masked by where it goes. A token goes in a header, a body or a
+    URL's query; a path, a host or a command line does not, and masking them made the
+    trace file's "does not exist" unreadable."""
+
+    def test_hb6_values_in_headers_bodies_queries_and_session_hooks_stay_masked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        names = ("H_TOKEN", "B_TOKEN", "Q_TOKEN", "U_TOKEN", "S_TOKEN", "C_TOKEN")
+        for name in names:
+            monkeypatch.setenv(name, f"{name.lower()}-s3cr3t")
+        path = _spec(
+            tmp_path,
+            """\
+            endpoint: "http://localhost:8000/chat?key=${Q_TOKEN}"
+            request:
+              headers: {Authorization: "Bearer ${H_TOKEN}"}
+              body: {message: "{{message}}", key: "${B_TOKEN}"}
+            session:
+              setup:
+                http:
+                  url: "http://localhost:9000/sessions?key=${U_TOKEN}"
+                  headers: {X-Key: "${S_TOKEN}"}
+              teardown: "cleanup --token ${C_TOKEN}"
+            """,
+        )
+
+        assert parse_spec(path).agent.secrets == {f"{name.lower()}-s3cr3t": name for name in names}
+
+    def test_hb6_the_traces_path_and_correlate_are_shown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRACES_DIR", "/var/lib/agent-traces")
+        monkeypatch.setenv("TENANT", "tenant-alpha")
+        path = _spec(
+            tmp_path,
+            """\
+            endpoint: "http://localhost:8000/chat"
+            traces: "${TRACES_DIR}/traces.jsonl"
+            correlate: {test: "{{test.id}}", tenant: "${TENANT}"}
+            """,
+        )
+
+        agent = parse_spec(path).agent
+        assert agent.traces == "/var/lib/agent-traces/traces.jsonl"
+        assert agent.secrets == {}
+
+    def test_hb6_the_start_command_is_shown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AGENT_CMD", "python3 agent.py")
+        path = _spec(
+            tmp_path,
+            """\
+            start: "${AGENT_CMD} --port 8000"
+            endpoint: "http://localhost:8000/chat"
+            """,
+        )
+
+        assert parse_spec(path).agent.secrets == {}
+
+    def test_hb6_a_url_shows_its_host_and_path_but_not_its_password_query_or_fragment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for name, value in (
+            ("AGENT_HOST", "agent.internal"),
+            ("API_PREFIX", "v1-chat"),
+            ("API_PASSWORD", "p4ssw0rd-value"),
+            ("API_KEY", "k3y-value"),
+            ("HEALTH_TOKEN", "h3alth-token"),
+        ):
+            monkeypatch.setenv(name, value)
+        path = _spec(
+            tmp_path,
+            """\
+            endpoint: "http://bot:${API_PASSWORD}@${AGENT_HOST}:8000/${API_PREFIX}?key=${API_KEY}"
+            health: "http://${AGENT_HOST}:8000/health#${HEALTH_TOKEN}"
+            """,
+        )
+
+        assert parse_spec(path).agent.secrets == {
+            "p4ssw0rd-value": "API_PASSWORD",
+            "k3y-value": "API_KEY",
+            "h3alth-token": "HEALTH_TOKEN",
+        }
+
+    @pytest.mark.parametrize(
+        ("value", "masked"),
+        [
+            (f"http://localhost:8000/chat?key={TOKEN}", True),
+            (f"http://bot:{TOKEN}@localhost:8000/chat", True),
+            ("http://localhost:8000/chat", False),
+        ],
+    )
+    def test_hb6_a_whole_url_from_one_variable_is_masked_when_it_carries_a_secret_part(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str, masked: bool
+    ) -> None:
+        monkeypatch.setenv("AGENT_URL", value)
+        path = _spec(tmp_path, 'endpoint: "${AGENT_URL}"\n')
+
+        assert parse_spec(path).agent.secrets == ({value: "AGENT_URL"} if masked else {})
+
+    def test_hb6_a_value_also_used_in_a_header_is_masked_in_the_traces_path_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AGENT_TOKEN", TOKEN)
+        path = _spec(
+            tmp_path,
+            """\
+            endpoint: "http://localhost:8000/chat"
+            traces: "/tmp/${AGENT_TOKEN}/traces.jsonl"
+            request: {headers: {Authorization: "Bearer ${AGENT_TOKEN}"}}
+            """,
+        )
+
+        assert parse_spec(path).agent.secrets == {TOKEN: "AGENT_TOKEN"}
+
+
 class TestOutput:
     def test_test_errors_and_warnings_are_masked(self) -> None:
         client = MagicMock()

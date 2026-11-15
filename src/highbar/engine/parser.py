@@ -505,7 +505,8 @@ def _expand_env(value: Any, where: str, found: dict[str, str]) -> Any:
 
     A missing variable is an error that names it: an empty token would send
     ``Authorization: Bearer `` and read as the agent refusing a correct request.
-    Each value expanded goes in ``found``, to be masked in every message.
+    Each value expanded where a secret goes (``_secret_place``) goes in ``found``, to be
+    masked in every message.
     """
     if (mapping := as_dict(value)) is not None:
         return {key: _expand_env(item, f"{where}.{key}", found) for key, item in mapping.items()}
@@ -518,10 +519,46 @@ def _expand_env(value: Any, where: str, found: dict[str, str]) -> Any:
         name = match.group(1)
         if name not in os.environ:
             raise SpecError(f"{where}: environment variable {name} is not set")
-        found[os.environ[name]] = name
-        return os.environ[name]
+        expanded = os.environ[name]
+        if _secret_place(where, value, match.start(), expanded):
+            found[expanded] = name
+        return expanded
 
     return _ENV_VAR.sub(variable, value)
+
+
+# Where tokens go: everything highbar sends to the agent or to a session hook, besides
+# the URL. A command hook's line is how it passes its own token on.
+_SECRET_BLOCKS = ("agent.request", "agent.session")
+_URLS = ("agent.endpoint", "agent.health")
+
+
+def _secret_place(where: str, text: str, at: int, value: str) -> bool:
+    """Whether ``${NAME}`` at ``at`` in ``text``, the value at ``where``, is a secret (HB-6).
+
+    A token goes in a header, a body, a session hook or a URL's query, and those values
+    are masked. The traces path, the start command, ``correlate`` and a URL's host and
+    path are shown: masked, they made the trace file's "does not exist" unreadable.
+    A value masked in one place is masked everywhere it appears.
+    """
+    for block in _SECRET_BLOCKS:
+        if where == block or where.startswith((f"{block}.", f"{block}[")):
+            return True
+    return where in _URLS and _secret_in_url(text, at, value)
+
+
+def _secret_in_url(url: str, at: int, value: str) -> bool:
+    """A variable in a URL's userinfo (a password), query (an API key) or fragment is a
+    secret, and so is one whose value carries any of them; the rest of a URL is shown."""
+    if any(mark in value for mark in "?#@"):
+        return True
+    query = min((i for i in (url.find("?"), url.find("#")) if i >= 0), default=len(url))
+    if at >= query:
+        return True
+    authority = url.find("://") + 3 if "://" in url else 0
+    path = url.find("/", authority, query)
+    userinfo_end = url.rfind("@", authority, query if path < 0 else path)
+    return authority <= at < userinfo_end
 
 
 def _required_text(raw: dict[str, Any], key: str) -> str:

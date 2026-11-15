@@ -192,6 +192,29 @@ def test_fr3_a_wrong_traces_path_exits_2_before_any_message(attached: _Attached)
 
 
 @pytest.mark.timeout(40)
+def test_hb6_a_missing_trace_file_named_by_a_variable_shows_its_path(
+    attached: _Attached, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One variable for the traces path in the compose file, the spec and the Makefile:
+    masked, it hid the very path the error is about."""
+    attached.start()
+    monkeypatch.setenv("HB_TRACES_DIR", "var-elsewhere")
+    spec = attached.spec()
+    path = attached.root / spec
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            '"var/traces.jsonl"', '"./${HB_TRACES_DIR}/traces.jsonl"'
+        ),
+        encoding="utf-8",
+    )
+
+    result = attached.run(spec)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"{attached.root / 'var-elsewhere' / 'traces.jsonl'} does not exist" in result.stdout
+
+
+@pytest.mark.timeout(40)
 def test_hb15_a_directory_as_the_trace_file_exits_2_with_its_name(attached: _Attached) -> None:
     """What Docker leaves when a bind mount names a file that is not there yet."""
     attached.start()

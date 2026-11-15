@@ -28,6 +28,7 @@
 
 ### Changed
 
+- A value from `${VAR}` is masked by where it goes. It stays masked in `agent.request`, in `agent.session` (every hook, a command line included) and in a URL's password, query and fragment, and in a URL wherever it sits when it carries a `?`, `#` or `@`. It is now shown in `agent.traces`, `agent.start`, `agent.correlate` and a URL's host, port and path, so a trace file that does not exist is named in full, a relative path too, and one variable can hold the traces path for the compose file, the spec and the Makefile. A value masked in one place is still masked everywhere it appears.
 - Every run waits `agent.settle_time` (500 ms by default) after its last test and reads the trace file once more, also when its spec checks only replies, so a `turn` recorded late still counts in the totals, in budgets and in `--max-cost`. A spec that checks only replies takes that much longer than in 0.1.0.
 - A `{{session.<path>}}` whose value is `null`, in the request, `correlate` or a session hook, is an `error` that says the setup returned no value for it, instead of going out as `null`.
 

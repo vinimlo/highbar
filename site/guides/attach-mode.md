@@ -51,7 +51,7 @@ agent:
 - A placeholder that is a whole value keeps its JSON type: a number stays a number. Inside a longer text it is inserted as text.
 - The body must send <code v-pre>{{message}}</code> somewhere, or every test would send the same request.
 - `X-Highbar-Test` is always sent, whatever the headers say.
-- `${NAME}` takes the value of an environment variable when the spec is loaded, under `agent` only. A value of 6 characters or more never appears in highbar's output: test errors, warnings and spec errors show `${NAME}` instead. A shorter value, such as a port, is rarely secret and is shown as it is. A header value with a newline or surrounding spaces (a token read from a file with its line break) is a spec error that does not show the value.
+- `${NAME}` takes the value of an environment variable when the spec is loaded, under `agent` only. A value where a secret goes never appears in highbar's output: test errors, warnings and spec errors show `${NAME}` instead. Those places are `request` (its headers and body), `session` (every hook, a command line included), and a URL's password, query and fragment, in `endpoint` and `health`. A value that carries a `?`, `#` or `@` is masked in a URL wherever it sits. The rest is shown: the `traces` path, `start`, `correlate`, and a URL's host, port and path, so a missing trace file is named in full. A value masked in one place is masked everywhere it appears. A value shorter than 6 characters, such as a port, is shown as it is. A header value with a newline or surrounding spaces (a token read from a file with its line break) is a spec error that does not show the value.
 
 ## The reply
 
