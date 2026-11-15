@@ -40,8 +40,12 @@ def _tool(fn: str, ended_at: float) -> str:
     )
 
 
-def _hello(*tools: str) -> str:
-    return _line({"v": 1, "type": "hello", "ts": 1.0, "pid": 1, "tools": list(tools)})
+def _hello(*tools: str, pid: int = 1) -> str:
+    return _line({"v": 1, "type": "hello", "ts": 1.0, "pid": pid, "tools": list(tools)})
+
+
+def _bye(pid: int) -> str:
+    return _line({"v": 1, "type": "bye", "ts": 9.0, "pid": pid})
 
 
 @pytest.fixture
@@ -112,6 +116,61 @@ class TestReadTogether:
 
         assert _glob(folder).declared() == frozenset({"get_order", "send_email"})
 
+    def test_hb15_a_process_that_said_bye_declares_nothing(self, folder: Path) -> None:
+        """An old build that declared refund and exited must not vouch for the running one,
+        which may call refund without recording it."""
+        (folder / "traces-7.jsonl").write_text(_hello("get_order", pid=7))
+        (folder / "traces-3.jsonl").write_text(_hello("get_order", "refund", pid=3) + _bye(3))
+
+        assert _glob(folder).declared() == frozenset({"get_order"})
+
+    def test_hb15_a_file_reused_by_a_new_process_declares_its_tools(self, folder: Path) -> None:
+        """In a container every main process is pid 1: the next one appends its hello."""
+        (folder / "traces-1.jsonl").write_text(
+            _hello("refund", pid=1) + _bye(1) + _hello("get_order", pid=1)
+        )
+
+        assert _glob(folder).declared() == frozenset({"get_order"})
+
+
+class TestOneFileEachTime:
+    """A link is a second name for a file: what it holds is read once (review of #52)."""
+
+    def test_hb15_a_link_to_a_file_is_read_once(self, folder: Path) -> None:
+        (folder / "traces-101.jsonl").write_text(_tool("lookup", 1.0))
+        (folder / "latest.jsonl").symlink_to(folder / "traces-101.jsonl")
+
+        window = _glob(folder).collect(since=0)
+
+        assert [tool.fn for tool in window.tools] == ["lookup"]
+
+    def test_hb15_a_link_made_during_the_run_reads_nothing_twice(self, folder: Path) -> None:
+        traces = folder / "traces-101.jsonl"
+        traces.write_text(_tool("before", 1.0))
+        collector = _glob(folder)
+        mark = collector.checkpoint()
+        # "a" sorts before "traces-101": the link must not take the file's place.
+        (folder / "a-latest.jsonl").symlink_to(traces)
+        with traces.open("a") as f:
+            f.write(_tool("after", 2.0))
+
+        window = collector.collect(since=mark)
+
+        assert [tool.fn for tool in window.tools] == ["after"]
+
+    def test_hb15_a_hard_link_made_during_the_run_reads_nothing_twice(self, folder: Path) -> None:
+        traces = folder / "traces-101.jsonl"
+        traces.write_text(_tool("before", 1.0))
+        collector = _glob(folder)
+        mark = collector.checkpoint()
+        (folder / "a-copy.jsonl").hardlink_to(traces)
+        with traces.open("a") as f:
+            f.write(_tool("after", 2.0))
+
+        window = collector.collect(since=mark)
+
+        assert [tool.fn for tool in window.tools] == ["after"]
+
 
 class TestWhatMatches:
     def test_hb15_missing_until_a_file_matches(self, tmp_path: Path) -> None:
@@ -131,3 +190,14 @@ class TestWhatMatches:
         assert isinstance(trace_collector("var/traces/*.jsonl"), GlobTraceCollector)
         assert isinstance(trace_collector("var/traces-?.jsonl"), GlobTraceCollector)
         assert isinstance(trace_collector("var/traces.jsonl"), FileTraceCollector)
+
+    def test_hb15_a_file_whose_name_has_a_bracket_is_that_file(self, tmp_path: Path) -> None:
+        """develop read it as a file: a path that names a file stays that file."""
+        traces = tmp_path / "tr[1]" / "traces.jsonl"
+        traces.parent.mkdir()
+        traces.write_text(_tool("lookup", 1.0))
+
+        collector = trace_collector(str(traces))
+
+        assert isinstance(collector, FileTraceCollector)
+        assert [tool.fn for tool in collector.collect(since=0).tools] == ["lookup"]

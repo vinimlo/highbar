@@ -14,7 +14,7 @@ The trace file is how an agent tells highbar what it did. The Python SDK writes 
 | Field | Type | |
 |---|---|---|
 | `v` | integer | `1`. A version newer than highbar reads is an error that says to upgrade highbar. |
-| `type` | string | Required: `"tool"`, `"turn"`, `"hello"` or `"tools"`. A line with another type, or none, is skipped, so emitters can add new types; a tool call written without `type` is lost. |
+| `type` | string | Required: `"tool"`, `"turn"`, `"hello"`, `"tools"` or `"bye"`. A line with another type, or none, is skipped, so emitters can add new types; a tool call written without `type` is lost. |
 | `ts` | number | When the record was written, in seconds since the epoch. |
 | `context` | object | Optional. What links the record to a test: `test` (the `X-Highbar-Test` header) and any key `agent.correlate` uses, like `conversation_id`. |
 
@@ -114,6 +114,18 @@ Write it once, when the agent starts. When highbar starts the agent and a test c
 ```
 
 A writer may write several. highbar joins those written since the writer's last `hello`, since earlier ones are another process's, and adds every name it sees in a `tool` record during the run. The Python SDK writes one each time a tool is decorated or declared, since its `hello` comes first. A name in a spec's `forbid` or `function_calls` that is in none of them makes the test an `error`: a guardrail on a tool the agent never records could not fail. A writer that declares nothing gets a warning instead, and older versions of highbar ignore the record.
+
+## `bye`: the writer ended
+
+| Field | Type | |
+|---|---|---|
+| `pid` | integer | The process that ended: the `pid` of its `hello`. |
+
+```json
+{"v": 1, "type": "bye", "ts": 1792987350.411, "pid": 94015}
+```
+
+Write it when the process exits. A `bye` with the `pid` of the file's last `hello` says that process ended, so the tools it declared no longer count: an old build's file must not vouch for a tool the code running now no longer records. A `bye` from another process, a forked child's, ends nothing. The Python SDK writes one at a clean exit; a process that is killed writes none. Older versions of highbar ignore the record.
 
 ## Matching records to a test
 

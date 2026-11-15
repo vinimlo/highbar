@@ -12,7 +12,7 @@ hb = highbar.Highbar()
 
 The object that writes the trace file.
 
-- `traces`: the file to append to. Without it, `HIGHBAR_TRACES_URL` is used, which highbar sets for an agent it starts. With neither, the SDK records nothing. `{pid}` in the path is the id of the process that writes, so a server and its workers each write a file of their own, which `agent.traces` reads through a glob.
+- `traces`: the file to append to. Without it, `HIGHBAR_TRACES_URL` is used, which highbar sets for an agent it starts. With neither, the SDK records nothing. `{pid}` in the path is the id of the process that writes, so a server and its workers each write a file of their own, which `agent.traces` reads through a glob. When a process exits cleanly, the SDK writes a `bye` record in its file, and highbar stops counting the tools it declared there.
 - `hb.enabled`: whether a trace file is set.
 - `hb.traces`: the file in use, or `None`.
 

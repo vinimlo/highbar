@@ -27,6 +27,8 @@ import heapq
 import json
 import math
 import os
+import stat
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,9 @@ _V0_FIELDS = frozenset(
 )
 
 _BACKWARD_CHUNK = 64 * 1024
+
+# Before the first `hello` of a file, no `bye` can end what it declared.
+_NO_HELLO = object()
 
 
 class TraceFormatError(ValueError):
@@ -122,25 +127,33 @@ class FileTraceCollector:
 
         Read once at the start of a run, from the whole file: an agent declares its
         tools when it starts, before the first test's cursor. Declarations before the
-        last `hello` are an earlier process's, whose tools may since have changed. Only
-        `hello` and `tools` lines are parsed, one at a time, and a line that cannot be
-        read is skipped: it is history, which no test reads.
+        last `hello` are an earlier process's, whose tools may since have changed. A
+        `bye` with the pid of the last `hello` says that process ended, so what it
+        declared says nothing about the code running now: None (review of #52). Only
+        `hello`, `tools` and `bye` lines are parsed, one at a time, and a line that
+        cannot be read is skipped: it is history, which no test reads.
         """
         current: set[str] | None = None
+        hello_pid: Any = _NO_HELLO
+        ended = False
         try:
             with open(self._path, "rb") as f:
                 for raw in f:
-                    if b'"hello"' not in raw and b'"tools"' not in raw:
+                    if b'"hello"' not in raw and b'"tools"' not in raw and b'"bye"' not in raw:
                         continue
                     try:
                         record = as_dict(json.loads(raw))
                     except ValueError:
                         continue
                     kind = record.get("type") if record is not None else None
-                    if record is None or kind not in ("hello", "tools"):
+                    if record is None or kind not in ("hello", "tools", "bye"):
+                        continue
+                    if kind == "bye":
+                        # Another process's end (a forked child's) ends nothing here.
+                        ended = ended or record.get("pid") == hello_pid
                         continue
                     if kind == "hello":
-                        current = None
+                        current, hello_pid, ended = None, record.get("pid"), False
                         if "tools" not in record:
                             continue
                     try:
@@ -152,7 +165,7 @@ class FileTraceCollector:
             return None
         except OSError as e:
             raise _unreadable(self._path, e) from None
-        return frozenset(current) if current is not None else None
+        return frozenset(current) if current is not None and not ended else None
 
     def _line_at(self, offset: int) -> int:
         """The 1-based number of the line that starts at byte ``offset``."""
@@ -166,8 +179,13 @@ def is_glob(path: str | Path) -> bool:
 
 
 def trace_collector(path: str | Path) -> FileTraceCollector | GlobTraceCollector:
-    """The collector for ``agent.traces``: one file, or every file a glob matches."""
-    return GlobTraceCollector(path) if is_glob(path) else FileTraceCollector(path)
+    """The collector for ``agent.traces``: one file, or every file a glob matches.
+
+    A path that names a file is that file, a ``[`` in its name or not, as before HB-15.
+    """
+    if is_glob(path) and not Path(path).is_file():
+        return GlobTraceCollector(path)
+    return FileTraceCollector(path)
 
 
 class GlobTraceCollector:
@@ -181,13 +199,16 @@ class GlobTraceCollector:
     is a number that stands for the offset of every file at that moment, and a file the
     glob starts to match later is read from its start. The records of a read are put in
     time order across files (a tool by when it ended, a turn and a hello by ``ts``), and
-    each file keeps its own order. A directory the glob matches is not a trace file.
+    each file keeps its own order. A directory the glob matches is not a trace file, and
+    a link is another name for a file it matches: each file is read once.
     """
 
     def __init__(self, pattern: str | Path) -> None:
         self._pattern = str(pattern)
         # Checkpoint 0 is every file from its start; each later one, the offsets it holds.
         self._marks: list[dict[Path, int]] = [{}]
+        # Every name a checkpoint has held an offset for: the name a file is read by.
+        self._known: set[Path] = set()
 
     @property
     def path(self) -> Path:
@@ -198,7 +219,8 @@ class GlobTraceCollector:
         return not self._files()
 
     def checkpoint(self) -> int:
-        return self._mark({file: FileTraceCollector(file).checkpoint() for file in self._files()})
+        files = self._files(self._known)
+        return self._mark({file: FileTraceCollector(file).checkpoint() for file in files})
 
     def collect(self, since: int) -> Window:
         """The records written in every file after checkpoint ``since``, in time order.
@@ -210,7 +232,7 @@ class GlobTraceCollector:
         windows: list[Window] = []
         ends: dict[Path, int] = {}
         problem: TraceFormatError | None = None
-        for file in self._files():
+        for file in self._files(self._known):
             reader = FileTraceCollector(file)
             try:
                 window = reader.collect(since=offsets.get(file, 0))
@@ -230,12 +252,37 @@ class GlobTraceCollector:
         declared = [names for names in found if names is not None]
         return frozenset[str]().union(*declared) if declared else None
 
-    def _files(self) -> list[Path]:
-        return sorted(path for path in map(Path, glob.glob(self._pattern)) if path.is_file())
+    def _files(self, known: Collection[Path] = ()) -> list[Path]:
+        """Each file the glob matches, once, by one of its names (review of #52).
+
+        A link, or a second hard link, names a file already matched: read under both
+        names, each record would count twice. The name the run already reads it by is
+        kept, so a link made during the run does not read the file again from its start;
+        else the name that is not a link, else the first.
+        """
+        names: dict[tuple[int, int], Path] = {}
+        for path in sorted(map(Path, glob.glob(self._pattern))):
+            try:
+                status = path.stat()
+            except OSError:
+                continue
+            if not stat.S_ISREG(status.st_mode):
+                continue
+            identity = (status.st_dev, status.st_ino)
+            kept = names.get(identity)
+            if kept is None or _rank(path, known) < _rank(kept, known):
+                names[identity] = path
+        return sorted(names.values())
 
     def _mark(self, offsets: dict[Path, int]) -> int:
         self._marks.append(offsets)
+        self._known.update(offsets)
         return len(self._marks) - 1
+
+
+def _rank(path: Path, known: Collection[Path]) -> tuple[bool, bool]:
+    """Which of two names of one file to read it by: lower first."""
+    return (path not in known, path.is_symlink())
 
 
 def _merged(windows: list[Window], *, end: int) -> Window:

@@ -7,6 +7,7 @@ nothing is written and a tool call costs one environment lookup.
 
 from __future__ import annotations
 
+import atexit
 import os
 import threading
 import time
@@ -92,6 +93,9 @@ class Highbar:
         self._hello_lock = threading.Lock()
         # The file each path last had a hello in: its device and inode (see _ensure_hello).
         self._hello_files: dict[str, tuple[int, int]] = {}
+        # The process that wrote each path's hello: only it may say bye there.
+        self._hello_pids: dict[str, int] = {}
+        atexit.register(self._bye)
         path = self.traces
         if path is not None:
             self._ensure_hello(path)
@@ -284,7 +288,22 @@ class Highbar:
             written = _identity(path)
             if written is not None:
                 self._hello_files[path] = written
+                self._hello_pids[path] = os.getpid()
             return False
+
+    def _bye(self) -> None:
+        """At a clean exit, a `bye` in each file this process wrote its `hello` in (HB-15).
+
+        highbar then stops counting the tools the process declared there: an old build's
+        file must not vouch for a tool the code running now no longer records. A forked
+        child inherits its parent's hellos and ends only its own. A process that is
+        killed (SIGKILL, ``os._exit``, a crash) writes none.
+        """
+        pid = os.getpid()
+        with self._hello_lock:
+            paths = [path for path, said in self._hello_pids.items() if said == pid]
+        for path in paths:
+            self._writer.write(path, {"type": "bye", "ts": time.time(), "pid": pid})
 
 
 def _identity(path: str) -> tuple[int, int] | None:

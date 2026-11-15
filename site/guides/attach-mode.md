@@ -30,7 +30,8 @@ HIGHBAR_TRACES_URL=/app/var/traces/traces-{pid}.jsonl
 
 - highbar reads every file the glob matches as one, and puts the records of each read in time order: a tool call by when it ended, a turn by its `ts`. A file that appears during the run, a worker started late, is read from its start.
 - Before the run, at least one file must match, or the run stops with exit code 2 and says so. The SDK creates its process's file when `Highbar()` is created. A directory the glob matches is not read; a `traces` that is a directory, with no glob, is still an error.
-- An old process's file still matches: highbar reads only what is written after the run starts, so it adds nothing to a test, but its declared tools still count. Clear the folder when the agent's tools change.
+- An old process's file still matches. highbar reads only what is written after the run starts, so it adds nothing to a test. Its declared tools no longer count once the process has ended: the SDK writes a `bye` record when a process exits cleanly. A process that is killed (`kill -9`, `os._exit`, a crash) writes none, and its file keeps vouching for the tools it declared, even one the code running now no longer records. Clear the folder before the agent's processes start, as in `rm -f var/traces/*.jsonl` before `docker compose up`, and never from inside one of them, which would delete the files of the others.
+- A link to a file the glob matches is read once, under the file's own name. A path that names a file is that file, even with a `[` in its name.
 
 ## The request
 
