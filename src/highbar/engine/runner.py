@@ -225,6 +225,16 @@ def _cost_of(usages: Iterable[Usage | None]) -> dict[str, float]:
     return totals.cost if totals is not None else {}
 
 
+def _too_slow(limit: float | None, took: float | None) -> list[str]:
+    """``expect.max_duration_ms`` against the time from the request to the reply (HB-18).
+
+    A failure, as a budget's is: it does not depend on a record, so it is never unknown.
+    """
+    if limit is None or took is None or took <= limit:
+        return []
+    return [f"the reply took {round(took)} ms, over max_duration_ms {limit:g}"]
+
+
 def _amounts(costs: Mapping[str, float]) -> str:
     return ", ".join(f"{amount(cost)} {name}" for name, cost in sorted(costs.items()))
 
@@ -1537,16 +1547,17 @@ class TestRunner:
                     )
 
         budget = self._budget_check(expect.budget, log.usage)
+        slow = _too_slow(expect.max_duration_ms, log.response_ms)
         if (unseen := self._unobservable(expect)) is not None:
             # A name highbar cannot see leaves the test unverified, unless the part of
             # the spec it can see fails on its own: a failure is a failure (combine()).
             message, observable = unseen
-            real = [*self._check(traces, response, observable), *budget.exceeded]
+            real = [*self._check(traces, response, observable), *budget.exceeded, *slow]
             if not real:
                 return unverified(message)
             errors = [*real, message]
         else:
-            errors = [*errors, *budget.exceeded]
+            errors = [*errors, *budget.exceeded, *slow]
 
         # The same for a budget: without usage nothing is known about it, and that only
         # leaves the test unverified when nothing else already failed it.

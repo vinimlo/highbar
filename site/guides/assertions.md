@@ -101,6 +101,20 @@ expect:
 
 Each condition that fails gets its own line in the output, ending with what the agent said, cut at 300 characters.
 
+## How long the reply takes: `max_duration_ms`
+
+`max_duration_ms` fails a test whose reply takes longer than that, so a slower search or a slower model shows up as a red test:
+
+```yaml test
+trigger: "Where is order 1042?"
+expect:
+  response:
+    contains: "1042"
+  max_duration_ms: 3000
+```
+
+The time is the one from the request highbar sends to the reply it reads. The session's setup, the settle time and the reading of the trace file are not in it. Over the limit, the test fails with `the reply took 4210 ms, over max_duration_ms 3000`. With `runs` and `min_pass`, a slow run counts as any other failed run. In a conversation, each turn's `expect` holds its own limit.
+
 ## What a failure says
 
 The message gives the most basic reason first:

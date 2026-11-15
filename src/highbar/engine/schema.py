@@ -44,7 +44,17 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
         {"id", "name", "trigger", "expect", "turns", "variations", "runs", "min_pass"}
     ),
     "turn": frozenset({"name", "trigger", "expect"}),
-    "expect": frozenset({"function_calls", "response", "ordered", "exclusive", "forbid", "budget"}),
+    "expect": frozenset(
+        {
+            "function_calls",
+            "response",
+            "ordered",
+            "exclusive",
+            "forbid",
+            "budget",
+            "max_duration_ms",
+        }
+    ),
     "budget": frozenset({"max_input_tokens", "max_cost"}),
     "function_call": frozenset({"name", "params", "result", "error"}),
     "response": MATCHER_KEYS,

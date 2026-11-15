@@ -562,6 +562,7 @@ def _asserts_something(expect: Expect) -> bool:
         or expect.response is not None
         or bool(expect.forbid)
         or expect.budget is not None
+        or expect.max_duration_ms is not None
     )
 
 
@@ -579,8 +580,8 @@ def _parse_expect(raw: Any, where: str) -> Expect:
     check_keys(raw, "expect", where)
     if not user_keys(raw):
         raise SpecError(
-            f"{where}: asserts nothing — use function_calls, response, forbid, budget, or "
-            "function_calls: [] to check that no tool is called"
+            f"{where}: asserts nothing — use function_calls, response, forbid, budget, "
+            "max_duration_ms, or function_calls: [] to check that no tool is called"
         )
 
     function_calls = None
@@ -612,10 +613,29 @@ def _parse_expect(raw: Any, where: str) -> Expect:
         response = _parse_response(raw["response"], where)
 
     budget = _parse_budget(raw["budget"], where) if "budget" in raw else None
+    duration = (
+        _parse_max_duration(raw["max_duration_ms"], where) if "max_duration_ms" in raw else None
+    )
 
     return Expect(
-        function_calls=function_calls, response=response, forbid=forbid, budget=budget, **flags
+        function_calls=function_calls,
+        response=response,
+        forbid=forbid,
+        budget=budget,
+        max_duration_ms=duration,
+        **flags,
     )
+
+
+def _parse_max_duration(raw: Any, where: str) -> float:
+    """How long the agent may take to answer, in milliseconds (HB-18)."""
+    number = isinstance(raw, (int, float)) and not isinstance(raw, bool)
+    # YAML reads `.inf` and `.nan` as numbers, and neither is a limit.
+    if not number or not 0 < raw < math.inf:
+        raise SpecError(
+            f"{where}: max_duration_ms must be a number of milliseconds above 0, got {raw!r}"
+        )
+    return raw
 
 
 def _parse_response(raw: Any, where: str) -> ResponseExpect:

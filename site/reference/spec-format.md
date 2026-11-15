@@ -60,8 +60,9 @@ Each test's key is unique in a spec. Two tests with the same key are a spec erro
 | `forbid` | list of tool names | Tools that must not be called. |
 | `response` | matchers | Conditions on the reply text. |
 | `budget` | mapping | What may be spent. See [`budget`](#budget). |
+| `max_duration_ms` | number | How long the agent may take to answer the message, in milliseconds above 0, from the request highbar sends to the reply it reads. Over it, the test fails. In a conversation, each turn has its own. |
 
-At least one of `function_calls`, `forbid`, `response` and `budget` is required.
+At least one of `function_calls`, `forbid`, `response`, `budget` and `max_duration_ms` is required.
 
 ## `budget`
 

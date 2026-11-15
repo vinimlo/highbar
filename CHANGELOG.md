@@ -16,6 +16,7 @@
 - An optional `id` on a test, and a stable key for each one: its `id`, or `<suite>/<name>`.
 - `definition_sha256` on each test of the report, to tell whether two runs measured the same thing.
 - `highbar.run()` returns each test in `summary.tests` and the warnings in `summary.warnings`, and takes a `reporter`.
+- `expect.max_duration_ms`: how long the agent may take to answer a message, from the request highbar sends to the reply it reads, per test or per turn. Over it, the test fails.
 
 ### Changed
 

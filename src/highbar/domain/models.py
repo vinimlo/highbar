@@ -240,6 +240,8 @@ class Expect:
     exclusive: bool = False  # no call beyond the expected ones
     forbid: tuple[str, ...] = ()  # tools that must not be called, failed or not
     budget: Budget | None = None  # per turn in a turn, per execution in a test
+    # How long the agent may take to answer the message, from request to reply (HB-18).
+    max_duration_ms: float | None = None
 
     @property
     def requires_observation(self) -> bool:
