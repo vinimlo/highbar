@@ -791,7 +791,12 @@ def _parse_correlate(raw: Any, has_session: bool) -> dict[str, Any]:
 
 def _check_url(url: str, key: str) -> None:
     """An http(s) URL with a host. Without a scheme, `localhost:8000/chat` reads as port 80."""
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # a bracket without its pair: urlsplit reads an IPv6 host (HB-41)
+        raise SpecError(
+            f'agent: {key} is not a valid URL (a "[" or "]" without its pair): {url!r}'
+        ) from None
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise SpecError(f"agent: {key} must be an http:// or https:// URL, got {url!r}")
     try:

@@ -173,6 +173,9 @@ class TestWrongTypes:
         [
             ("localhost:18733/chat", r"endpoint must be an http:// or https:// URL"),
             ("http://localhost:99999/chat", r"endpoint has an invalid port"),
+            # HB-41: urlsplit raised ValueError, and highbar exited 1 with a traceback.
+            ("http://[::1:8000/chat", r"endpoint is not a valid URL"),
+            ("http://::1]:8000/chat", r"endpoint is not a valid URL"),
         ],
     )
     def test_endpoint_must_be_an_http_url(
