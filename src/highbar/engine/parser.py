@@ -96,7 +96,9 @@ def _check_trigger_sessions(suites: list[Suite], *, has_session: bool) -> None:
                 (f"{where}.turns[{k}].trigger", turn.trigger)
                 for k, turn in enumerate(test.turns or [])
             ]
-            for at, trigger in triggers:
+            for k, (at, trigger) in enumerate(triggers):
+                # Of a conversation, only the last turn is paraphrased (HB-16).
+                paraphrased = test.variations and k == len(triggers) - 1
                 for template in pathless_templates(trigger):
                     kind = template.strip("{}")
                     raise SpecError(f"{at}: '{template}' {no_path_message(kind)}")
@@ -105,7 +107,7 @@ def _check_trigger_sessions(suites: list[Suite], *, has_session: bool) -> None:
                         raise SpecError(
                             f"{at}: '{placeholder}' needs agent.session, whose setup returns it"
                         )
-                    if test.variations:
+                    if paraphrased:
                         raise SpecError(
                             f"{where}: a trigger with '{placeholder}' cannot have variations: "
                             "a paraphrase can drop it or change it"
@@ -925,13 +927,18 @@ def _parse_test(raw: Any, where: str) -> Test:
     if "turns" in raw:
         if "trigger" in raw:
             raise SpecError(f"{where}: a test has either 'trigger' or 'turns', not both")
-        if raw.get("variations"):
-            # Paraphrasing turn 1 would leave the later turns answering a conversation
-            # that no longer happened. Multi-turn variations need a design of their own.
-            raise SpecError(f"{where}: 'variations' is not supported on multi-turn tests")
+        if "variations" in raw:
+            # Which turn's trigger the paraphrases replace is the whole question: a
+            # paraphrase of turn 1 leaves the later turns answering another conversation.
+            raise SpecError(
+                f"{where}: on a multi-turn test, 'variations' goes on its last turn "
+                "(turns[-1].variations), the one paraphrased"
+            )
         expect = _parse_conversation_expect(raw, where)
+        turns = _parse_turns(raw["turns"], where, budgeted=expect is not None)
         return Test(
-            turns=_parse_turns(raw["turns"], where, budgeted=expect is not None),
+            turns=turns,
+            variations=_last_turn_variations(raw["turns"], turns, where),
             expect=expect,
             name=name,
             id=_optional_id(raw, where),
@@ -1003,6 +1010,28 @@ def _parse_turn(raw: Any, where: str) -> Turn:
     # this" and then checks nothing, and is rejected in _parse_expect.
     expect = _parse_expect(raw["expect"], f"{where}.expect") if "expect" in raw else Expect()
     return Turn(trigger=trigger, expect=expect, name=_optional_name(raw, where))
+
+
+def _last_turn_variations(raw: list[Any], turns: list[Turn], where: str) -> int:
+    """How many paraphrases of a conversation's last turn its test asks for (HB-16).
+
+    Only that turn's trigger changes; the turns before it are sent as written. v0
+    paraphrases the last turn, the elliptic follow-up ("and the deadline?").
+    """
+    last = len(raw) - 1
+    for k, turn in enumerate(raw[:-1]):
+        if isinstance(turn, dict) and "variations" in turn:
+            raise SpecError(
+                f"{where}.turns[{k}]: 'variations' goes on the last turn only: the turns "
+                "after a paraphrase would answer a conversation that did not happen"
+            )
+    count = _parse_variations(raw[last].get("variations"), f"{where}.turns[{last}]")
+    if count and (template := placeholders.PLACEHOLDER.search(turns[last].trigger)):
+        raise SpecError(
+            f"{where}.turns[{last}]: a trigger with '{template.group(0)}' cannot have "
+            "variations: a paraphrase can drop it or change it"
+        )
+    return count
 
 
 def _asserts_something(expect: Expect) -> bool:

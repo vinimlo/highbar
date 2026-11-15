@@ -379,8 +379,9 @@ def _test_name(test: Test, variations_run: int | None = None) -> str:
     produced 3 of the 5 requested, saying "5 variations" overstates what was tested.
     """
     if test.turns:
-        return test.name or f"multi-turn ({len(test.turns)} turns)"
-    label = test.name or test.trigger or ""
+        label = test.name or f"multi-turn ({len(test.turns)} turns)"
+    else:
+        label = test.name or test.trigger or ""
     if test.variations:
         if variations_run is None or variations_run == test.variations:
             return f"{label} ({test.variations} variations)"
@@ -1324,40 +1325,43 @@ class TestRunner:
         runs, min_pass = resolve_runs(test, self._default_runs, self._default_min_pass)
         budget = self._budget_of(test)
 
-        kinds: list[tuple[str, str | None]] = [("conversation", None)]
         if test.turns:
-            phrasings = [("", test.turns)]
+            turns = list(test.turns)
         else:
             if test.trigger is None or test.expect is None:
                 raise ValueError("Single-turn test must have both 'trigger' and 'expect'")
             # The test's budget is its execution's, checked once, on the sum of its turns.
-            expect = replace(test.expect, budget=None)
-            triggers = [test.trigger]
-            if test.variations:
-                paraphrases = self._paraphrases(test.trigger, test.variations)
-                if isinstance(paraphrases, str):
-                    return TestResult(
-                        status=Status.ERROR,
-                        errors=[paraphrases],
-                        duration_ms=(time.time() - start) * 1000,
-                    )
-                triggers.extend(paraphrases)
-            kinds = [
-                ("trigger" if index == 0 else "variation", phrasing)
-                for index, phrasing in enumerate(triggers)
-            ]
-            phrasings = [
-                # The failing phrasing is the whole finding: without it the report says
-                # the intent broke but not which sentence broke it. Index 0 is the
-                # sentence the spec author wrote, not a generated one.
-                (
-                    f'[{"trigger" if index == 0 else "variation"}: "{phrasing}"] '
-                    if test.variations
-                    else "",
-                    [Turn(trigger=phrasing, expect=expect)],
+            turns = [Turn(trigger=test.trigger, expect=replace(test.expect, budget=None))]
+        # A paraphrase replaces the last turn's trigger, a single-turn test's only one; the
+        # turns before it are sent as written (HB-16).
+        last = turns[-1]
+        sentences = [last.trigger]
+        if test.variations:
+            earlier = [turn.trigger for turn in turns[:-1]]
+            paraphrases = self._paraphrases(last.trigger, test.variations, earlier)
+            if isinstance(paraphrases, str):
+                return TestResult(
+                    status=Status.ERROR,
+                    errors=[paraphrases],
+                    duration_ms=(time.time() - start) * 1000,
                 )
-                for index, phrasing in enumerate(triggers)
-            ]
+            sentences.extend(paraphrases)
+        first: tuple[str, str | None] = (
+            ("conversation", None) if test.turns else ("trigger", last.trigger)
+        )
+        kinds = [first, *(("variation", sentence) for sentence in sentences[1:])]
+        phrasings = [
+            # The failing phrasing is the whole finding: without it the report says
+            # the intent broke but not which sentence broke it. Index 0 is the
+            # sentence the spec author wrote, not a generated one.
+            (
+                f'[{"trigger" if index == 0 else "variation"}: "{sentence}"] '
+                if test.variations
+                else "",
+                [*turns[:-1], replace(last, trigger=sentence)],
+            )
+            for index, sentence in enumerate(sentences)
+        ]
 
         statuses: list[Status] = []
         errors: list[str] = []
@@ -1400,8 +1404,12 @@ class TestRunner:
             counts=gate.counts,
         )
 
-    def _paraphrases(self, trigger: str, count: int) -> list[str] | str:
-        """The generated paraphrases, or why there are none."""
+    def _paraphrases(self, trigger: str, count: int, earlier: list[str]) -> list[str] | str:
+        """The generated paraphrases, or why there are none.
+
+        ``earlier`` is the conversation before the turn paraphrased, its user messages:
+        "and the deadline?" means nothing alone.
+        """
         if self._variations is None:
             msg = (
                 f"Test asks for {count} variations but no variation generator is "
@@ -1412,7 +1420,12 @@ class TestRunner:
         # A missing cache, a missing key or a failed LLM call leaves this test unverified,
         # not a reason to abort the run and lose the results of every other test.
         try:
-            paraphrases = self._variations.generate(trigger, count)
+            if earlier:
+                paraphrases = self._variations.generate(trigger, count, context=earlier)
+            else:
+                # A single-turn test asks as before: a generator of its own may not take
+                # a context.
+                paraphrases = self._variations.generate(trigger, count)
         except Exception as e:
             self._last_variation_count = 0
             return f"Could not get variations: {e}"

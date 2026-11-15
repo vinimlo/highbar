@@ -43,10 +43,10 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 |---|---|---|
 | `trigger` | text | The message. Either `trigger` or `turns`. It can name a value of the session, <code v-pre>{{session.&lt;path&gt;}}</code>, when the agent has a `session`, in a test without `variations`. |
 | `expect` | mapping | What must hold. Required with `trigger`. With `turns`, it holds only a [`budget`](#budget), for the whole conversation. |
-| `turns` | list | A conversation: each turn has `trigger`, `expect` and an optional `name`. |
+| `turns` | list | A conversation: each turn has `trigger`, `expect` and an optional `name`. The last turn can have `variations`: paraphrases of its trigger, the turns before it as written. See [variations on the last turn](/guides/multi-turn#variations-on-the-last-turn). |
 | `name` | text | Shown in the output instead of the trigger. |
 | `id` | text | The test's key in a [report](/reference/report), for when the name or the trigger may change. Default: `<suite>/<name>`, where the name falls back to the trigger. |
-| `variations` | integer | How many paraphrases of the trigger to run as well. |
+| `variations` | integer | How many paraphrases of the trigger to run as well. On a multi-turn test it goes on the last turn instead. |
 | `runs` | integer ≥ 1 | How many times to run each phrasing. |
 | `min_pass` | integer ≥ 1, or fraction in (0, 1] | How many runs must pass. Default: `defaults.min_pass`, else all. A fraction is rounded up. |
 | `session` | mapping | `{args: {...}}`: a JSON object for this test's session hooks and <code v-pre>{{test.args.&lt;path&gt;}}</code>. See [a state of its own](/guides/attach-mode#a-state-of-its-own). |
