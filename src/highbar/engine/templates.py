@@ -1,10 +1,16 @@
-"""Template engine — resolves {{previous.*}} expressions in triggers."""
+"""Template engine — resolves {{previous.*}} expressions in triggers.
+
+``previous`` is what the earlier turns of the execution left: ``function_calls``, the
+tool calls of all of them, ``turns``, each one's ``response``, and ``response``, the
+reply of the turn right before (HB-20).
+"""
 
 from __future__ import annotations
 
 import json
 import re
-from dataclasses import fields
+from collections.abc import Sequence
+from dataclasses import dataclass, fields
 from typing import Any
 
 from highbar._narrow import as_dict, as_list
@@ -25,17 +31,29 @@ class TemplateError(ValueError):
     """
 
 
-def resolve_template(template: str, traces: list[Trace]) -> str:
-    """Replace all {{previous.*}} expressions with actual values from traces.
+@dataclass(frozen=True)
+class _Earlier:
+    """An earlier turn of the execution, as a template sees it."""
 
-    A string goes in as is; anything else (number, list, dict) as JSON, which is what
-    a person would type to the agent, not a Python repr.
+    number: int  # from 1, as "turn 2/3" counts them
+    response: str | None  # None when its reply was not read
+
+
+def resolve_template(
+    template: str, traces: list[Trace], responses: Sequence[str | None] = ()
+) -> str:
+    """Replace all {{previous.*}} expressions with actual values.
+
+    ``traces`` are the tool calls of the earlier turns and ``responses`` their replies,
+    in order. A string goes in as is; anything else (number, list, dict) as JSON, which
+    is what a person would type to the agent, not a Python repr.
     """
+    earlier = [_Earlier(number, reply) for number, reply in enumerate(responses, start=1)]
 
     def replacer(match: re.Match[str]) -> str:
         path = match.group(1)
         try:
-            value = _resolve_path(path, traces)
+            value = _resolve_path(path, traces, earlier)
         except _Missing as e:
             raise TemplateError(f"{{{{previous.{path}}}}}: {e}") from None
         if isinstance(value, str):
@@ -49,17 +67,32 @@ class _Missing(Exception):
     """A step of the path found nothing; the message says what was available."""
 
 
-def _resolve_path(path: str, traces: list[Trace]) -> Any:
+def _resolve_path(path: str, traces: list[Trace], earlier: list[_Earlier]) -> Any:
     """Resolve a dotted path like 'function_calls[0].result.order_id'."""
-    current: Any = {"function_calls": traces}
+    tokens = _tokenize_path(path)
+    current: Any = {"function_calls": traces, "response": None, "turns": earlier}
     name = "function_calls"
+    if tokens[0] == "response":
+        # The turn right before: `previous.response` is `previous.turns[-1].response`.
+        if not earlier:
+            raise _Missing("no earlier turn: the first message has no previous response")
+        current = earlier[-1]
 
-    for part in _tokenize_path(path):
+    for part in tokens:
         if isinstance(part, int):
-            current = _index(current, part, name, top_level=current is traces)
+            counted = "calls in earlier turns" if current is traces else None
+            if current is earlier:
+                counted = "earlier turns"
+            current = _index(current, part, name, counted=counted)
             continue
         name = part
-        if isinstance(current, Trace):
+        if isinstance(current, _Earlier):
+            if part != "response":
+                raise _Missing(f"no field '{part}' (fields: response)")
+            if current.response is None:
+                raise _Missing(f"turn {current.number} has no response: its reply was not read")
+            current = current.response
+        elif isinstance(current, Trace):
             if part not in _TRACE_FIELDS:
                 raise _Missing(f"no field '{part}' (fields: {', '.join(_TRACE_FIELDS)})")
             current = getattr(current, part)
@@ -71,16 +104,20 @@ def _resolve_path(path: str, traces: list[Trace]) -> Any:
         else:
             raise _Missing(f"cannot read '{part}' from a {type(current).__name__}")
 
+    if isinstance(current, _Earlier) or current is earlier:
+        # A turn as JSON would carry an unread reply out as "response": null, the very
+        # message the rule above refuses to send.
+        raise _Missing("a turn is not a value: end the path with .response")
     return current
 
 
-def _index(current: Any, index: int, name: str, *, top_level: bool) -> Any:
+def _index(current: Any, index: int, name: str, *, counted: str | None) -> Any:
     items = as_list(current)
     if items is None:
         raise _Missing(f"cannot index '{name}[{index}]' into a {type(current).__name__}")
     if index >= len(items):
-        if top_level:
-            raise _Missing(f"only {len(items)} calls in earlier turns")
+        if counted is not None:
+            raise _Missing(f"only {len(items)} {counted}")
         raise _Missing(f"only {len(items)} items in '{name}'")
     return items[index]
 

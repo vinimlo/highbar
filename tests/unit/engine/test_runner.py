@@ -290,6 +290,48 @@ class TestTestRunner:
         _, result = reporter.on_test_result.call_args[0]
         assert result.errors[0].startswith("turn 2/3 (refund order 7): ")
 
+    def test_hb20_a_turn_sends_what_the_agent_said_before(self) -> None:
+        runner, _, client, _, reporter = _make_runner()
+        client.send.side_effect = lambda trigger, **_: f"you wrote {trigger}"
+        test = Test(
+            turns=[
+                Turn(trigger="A or B?", expect=Expect()),
+                Turn(trigger="the second of: {{previous.response}}", expect=Expect()),
+                Turn(trigger="and first: {{previous.turns[0].response}}", expect=Expect()),
+            ]
+        )
+
+        runner.run(_make_spec([test]))
+
+        sent = [call.args[0] for call in client.send.call_args_list]
+        assert sent == [
+            "A or B?",
+            "the second of: you wrote A or B?",
+            "and first: you wrote A or B?",
+        ]
+        _, result = reporter.on_test_result.call_args[0]
+        assert result.status is Status.PASSED
+
+    def test_hb20_a_failure_label_shows_the_quoted_reply(self) -> None:
+        runner, _, client, _, reporter = _make_runner()
+        client.send.side_effect = lambda trigger, **_: "B"
+        assertion = MagicMock()
+        assertion.evaluate.side_effect = lambda traces, response, expect: [
+            AssertionResult(passed=len(assertion.evaluate.call_args_list) < 2, message="Expected X")
+        ]
+        runner._assertions = [assertion]
+        test = Test(
+            turns=[
+                Turn(trigger="A or B?", expect=Expect()),
+                Turn(trigger="why {{previous.response}}?", expect=Expect()),
+            ]
+        )
+
+        runner.run(_make_spec([test]))
+
+        _, result = reporter.on_test_result.call_args[0]
+        assert result.errors[0].startswith("turn 2/2 (why B?): ")
+
     def test_r2_turn_name_labels_the_failure(self) -> None:
         runner, _, _, _, reporter = _make_runner(
             assertion_results=[AssertionResult(passed=False, message="Expected X")]

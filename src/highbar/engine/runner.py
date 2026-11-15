@@ -352,12 +352,12 @@ def _test_name(test: Test, variations_run: int | None = None) -> str:
     return label
 
 
-def _turn_label(turn: Turn, previous_traces: list[Trace]) -> str:
+def _turn_label(turn: Turn, previous_traces: list[Trace], responses: list[str | None]) -> str:
     """The turn's ``name``, or the message it sends, cut at 80 characters."""
     if turn.name:
         return turn.name
     try:
-        trigger = resolve_template(turn.trigger, previous_traces)
+        trigger = resolve_template(turn.trigger, previous_traces, responses)
     except TemplateError:
         trigger = turn.trigger
     return truncate(trigger, 80)
@@ -1307,7 +1307,8 @@ class TestRunner:
         for number, turn in enumerate(turns, start=1):
             # Which turn broke is the finding: "Expected X" alone does not say where.
             prefix = (
-                f"turn {number}/{len(turns)} ({_turn_label(turn, all_traces)}): "
+                f"turn {number}/{len(turns)} "
+                f"({_turn_label(turn, all_traces, [log.response for log in execution.turns])}): "
                 if labelled
                 else ""
             )
@@ -1351,6 +1352,7 @@ class TestRunner:
     ) -> TestResult:
         """Send one message, read what the agent recorded for it, and check it."""
         execution.passed = False
+        earlier = [turn.response for turn in execution.turns]  # this execution's, so far
         log = _TurnLog(trigger=trigger, budget=expect.budget)
         execution.turns.append(log)
         # A budget on the whole execution reads the usage of each turn, whatever it expects.
@@ -1361,7 +1363,7 @@ class TestRunner:
             return TestResult(status=Status.ERROR, errors=[error], duration_ms=duration)
 
         try:
-            resolved_trigger = resolve_template(trigger, previous_traces)
+            resolved_trigger = resolve_template(trigger, previous_traces, earlier)
         except TemplateError as e:
             # Sending the raw "{{...}}" would test a message nobody meant to write; the
             # turn is unverified, and the rest of the run goes on.

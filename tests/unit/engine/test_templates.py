@@ -131,3 +131,53 @@ class TestHonestTemplates:
 
         with pytest.raises(TemplateError, match="invalid path"):
             resolve_template(template, [_trace({"m": [1, 2]})])
+
+
+class TestPreviousResponse:
+    """HB-20: a turn quotes what the agent said before ("that second one you said")."""
+
+    def test_hb20_previous_response_is_the_last_turns_reply(self) -> None:
+        template = "the second one you said: {{previous.response}}"
+
+        assert resolve_template(template, [], ["hi", "A or B"]) == "the second one you said: A or B"
+
+    def test_hb20_a_turn_by_its_index(self) -> None:
+        template = "{{previous.turns[0].response}} / {{ previous.turns[1].response }}"
+
+        assert resolve_template(template, [], ["first", "second"]) == "first / second"
+
+    def test_hb20_the_first_turn_has_no_previous_response(self) -> None:
+        with pytest.raises(TemplateError, match=r"\{\{previous\.response\}\}: no earlier turn"):
+            resolve_template("{{previous.response}}", [])
+
+    def test_hb20_a_reply_that_was_not_read_is_an_error_not_null(self) -> None:
+        """Sending "null" would test a message nobody meant to write."""
+        with pytest.raises(TemplateError, match=r"turn 2 has no response"):
+            resolve_template("{{previous.response}}", [], ["hi", None])
+        with pytest.raises(TemplateError, match=r"turn 1 has no response"):
+            resolve_template("{{previous.turns[0].response}}", [], [None, "ok"])
+
+    def test_hb20_a_turn_that_is_not_there(self) -> None:
+        with pytest.raises(TemplateError, match=r"only 2 earlier turns"):
+            resolve_template("{{previous.turns[2].response}}", [], ["a", "b"])
+
+    def test_hb20_an_unknown_field_of_a_turn_says_what_there_is(self) -> None:
+        with pytest.raises(TemplateError, match=r"no field 'reply' \(fields: response\)"):
+            resolve_template("{{previous.turns[0].reply}}", [], ["a"])
+
+    def test_hb20_an_unknown_name_lists_all_three(self) -> None:
+        with pytest.raises(TemplateError, match=r"keys: function_calls, response, turns"):
+            resolve_template("{{previous.reply}}", [], ["a"])
+
+    @pytest.mark.parametrize("path", ["turns", "turns[0]", "turns[1]"])
+    def test_hb20_a_turn_is_not_a_value_only_its_response_is(self, path: str) -> None:
+        """Review of #33: a turn as JSON carried an unread reply out as "response": null."""
+        template = "{{previous." + path + "}}"
+        for replies in (["a", None], ["a", "b"]):
+            with pytest.raises(TemplateError, match=r"end the path with \.response"):
+                resolve_template(template, [], replies)
+
+    def test_hb20_calls_still_resolve_next_to_responses(self) -> None:
+        template = "{{previous.function_calls[0].result.id}} after {{previous.response}}"
+
+        assert resolve_template(template, [_trace({"id": 7})], ["found it"]) == "7 after found it"
