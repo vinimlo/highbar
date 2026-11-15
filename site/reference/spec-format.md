@@ -26,7 +26,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `session` | mapping | none | `setup` and `teardown` hooks, each a command, `{python: "module:function"}` or `{http: {url, method, headers, body}}`. |
 | `correlate` | mapping | <code v-pre>{test: "{{test.id}}"}</code> | The context keys that link a trace record to a test. |
 
-`${NAME}` anywhere under `agent` is replaced by the environment variable when the spec is loaded; a missing variable is an error. Placeholders (<code v-pre>{{message}}</code>, <code v-pre>{{test.id}}</code>, <code v-pre>{{test.name}}</code>, <code v-pre>{{session.&lt;path&gt;}}</code>) are allowed in `request`, `correlate`, session commands and the URL, headers and body of an HTTP hook. See [attach mode and sessions](/guides/attach-mode).
+`${NAME}` anywhere under `agent` is replaced by the environment variable when the spec is loaded; a missing variable is an error. Placeholders (<code v-pre>{{message}}</code>, <code v-pre>{{test.id}}</code>, <code v-pre>{{test.name}}</code>, <code v-pre>{{test.args.&lt;path&gt;}}</code>, <code v-pre>{{session.&lt;path&gt;}}</code>) are allowed in `request`, `correlate`, session commands and the URL, headers and body of an HTTP hook. See [attach mode and sessions](/guides/attach-mode).
 
 ## `suites[]`
 
@@ -47,6 +47,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `variations` | integer | How many paraphrases of the trigger to run as well. |
 | `runs` | integer ≥ 1 | How many times to run each phrasing. |
 | `min_pass` | integer ≥ 1, or fraction in (0, 1] | How many runs must pass. Default: `defaults.min_pass`, else all. A fraction is rounded up. |
+| `session` | mapping | `{args: {...}}`: a JSON object for this test's session hooks and <code v-pre>{{test.args.&lt;path&gt;}}</code>. See [a state of its own](/guides/attach-mode#a-state-of-its-own). |
 
 Each test's key is unique in a spec. Two tests with the same key are a spec error: give one an `id` or a different `name`.
 

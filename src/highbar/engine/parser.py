@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 from dataclasses import replace
+from datetime import date
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -37,7 +38,8 @@ from highbar.domain.models import (
     stable_key,
 )
 from highbar.engine import placeholders
-from highbar.engine.placeholders import check_placeholders, uses_placeholder
+from highbar.engine.paths import PathError, get_path
+from highbar.engine.placeholders import args_used, check_placeholders, uses_placeholder
 from highbar.engine.schema import SpecError, check_keys, require_type, user_keys
 from highbar.engine.secrets import redact
 
@@ -113,6 +115,7 @@ def _parse_spec(raw: Any) -> Spec:
     require_type(suites_raw, list, "suites", "must be a list of suites")
     suites = [_parse_suite(s, f"suites[{i}]") for i, s in enumerate(suites_raw)]
     _check_unique_keys(suites)
+    _check_args_used(raw["agent"], suites)
 
     default_runs = 1
     default_min_pass: int | float | None = None
@@ -146,6 +149,72 @@ def _parse_spec(raw: Any) -> Spec:
         default_min_pass=default_min_pass,
         default_budget=default_budget,
     )
+
+
+def _check_args_used(agent: dict[str, Any], suites: list[Suite]) -> None:
+    """Every ``{{test.args.<path>}}`` the agent uses has a value in every test (HB-9).
+
+    Found when the spec loads, not when a test's request would go out without it. A
+    ``null`` is refused too: the agent would get ``null`` for a value never given.
+    """
+    uses = [
+        use
+        for part in ("request", "correlate", "session")
+        for use in args_used(agent.get(part), f"agent.{part}")
+    ]
+    for i, suite in enumerate(suites):
+        for j, test in enumerate(suite.tests):
+            for at, path in uses:
+                try:
+                    value = get_path(test.session_args, path)
+                except PathError as e:
+                    reason = str(e)
+                else:
+                    if value is not None:
+                        continue
+                    reason = "the value is null"
+                raise SpecError(
+                    f"suites[{i}].tests[{j}].session.args: {at} uses "
+                    f"'{{{{test.args.{path}}}}}': {reason}"
+                )
+
+
+def _parse_session_args(raw: dict[str, Any], where: str) -> dict[str, Any]:
+    """A test's own ``session: {args: {...}}`` (HB-9), for its hooks and its request."""
+    if "session" not in raw:
+        return {}
+    where = f"{where}.session"
+    session = raw["session"]
+    require_type(session, dict, where, "must be a mapping with 'args'")
+    check_keys(session, "test_session", where)
+    if "args" not in session:
+        raise SpecError(f"{where}: needs 'args', the values its hooks and its request read")
+    args = session["args"]
+    require_type(args, dict, f"{where}.args", "must be a mapping")
+    _json_value(args, f"{where}.args")
+    return dict(args)
+
+
+def _json_value(value: Any, where: str) -> None:
+    """``value`` is what JSON can say, with text keys: what a request or a hook carries."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise SpecError(f"{where}: {value} is not JSON")
+        return
+    if (mapping := as_dict(value)) is not None:
+        for key, item in mapping.items():
+            if not isinstance(key, str):
+                raise SpecError(f"{where}: the key {key!r} is not text (quote it)")
+            _json_value(item, f"{where}.{key}")
+        return
+    if (items := as_list(value)) is not None:
+        for index, item in enumerate(items):
+            _json_value(item, f"{where}[{index}]")
+        return
+    kind = "a date" if isinstance(value, date) else f"a {type(value).__name__}"
+    raise SpecError(f"{where}: {kind} is not JSON (quote it to keep it as text)")
 
 
 def _parse_runs(raw: Any, where: str) -> int:
@@ -541,6 +610,7 @@ def _parse_test(raw: Any, where: str) -> Test:
             expect=expect,
             name=name,
             id=_optional_id(raw, where),
+            session_args=_parse_session_args(raw, where),
             **_parse_repetition(raw, where),
         )
 
@@ -558,6 +628,7 @@ def _parse_test(raw: Any, where: str) -> Test:
         variations=variations,
         name=name,
         id=_optional_id(raw, where),
+        session_args=_parse_session_args(raw, where),
         **_parse_repetition(raw, where),
     )
 

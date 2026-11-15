@@ -432,6 +432,8 @@ class TestRunner:
         self._warnings: list[str] = []
         self._run_start = time.time()
         self._test_index = 0
+        # The session.args of the test that runs now (HB-9), for each of its executions.
+        self._args: Mapping[str, Any] = {}
         # Where the next read starts: each record is read once, and none is missed
         # between two tests (a late call is often written right there).
         self._cursor = 0
@@ -1117,6 +1119,7 @@ class TestRunner:
         """
         start = time.time()
         name = test.plain_name
+        self._args = test.session_args
         runs, min_pass = resolve_runs(test, self._default_runs, self._default_min_pass)
         budget = self._budget_of(test)
 
@@ -1237,7 +1240,7 @@ class TestRunner:
         ``labelled`` prefixes each error with the turn it came from (multi-turn tests).
         """
         context = SessionContext(
-            test_id=uuid.uuid4().hex, test_name=name, spec_path=self._spec_path
+            test_id=uuid.uuid4().hex, test_name=name, spec_path=self._spec_path, args=self._args
         )
         execution = _Execution(
             self._test_index,
@@ -1284,7 +1287,11 @@ class TestRunner:
         execution: _Execution,
     ) -> TestResult:
         values = Values(
-            message=None, test_id=context.test_id, test_name=context.test_name, session=session
+            message=None,
+            test_id=context.test_id,
+            test_name=context.test_name,
+            session=session,
+            args=context.args,
         )
         all_traces: list[Trace] = []
         all_errors: list[str] = []
