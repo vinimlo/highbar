@@ -134,6 +134,8 @@ suites:
 
 Every <code v-pre>{{test.args.&lt;path&gt;}}</code> the agent uses must have a value in every test, and not `null`: the spec does not load otherwise, and the message names the test and the key. A trigger does not read them: it goes to the agent as written, so <code v-pre>{{test.args.&lt;path&gt;}}</code> in a trigger stops the spec too. Args that the agent does not use can differ from test to test. They are part of what a test measures, so they change its `definition_sha256`.
 
+The same `session: {args: {...}}` can go in a suite, for each of its tests, and in `defaults`, for every test. The most specific level wins key by key (a test over its suite, a suite over `defaults`), as `runs`, `min_pass` and `budget` do, and a key is replaced whole: a test that writes `customer: {id: 8}` does not keep the `name` that `defaults` gave `customer`. The check above reads each test's combined args, and so does its `definition_sha256`: args a test inherits hash as if it wrote them.
+
 ## Which records belong to a test
 
 A test counts the trace records whose `context` matches `agent.correlate`. The default, <code v-pre>{test: "{{test.id}}"}</code>, matches the test id that `highbar.asgi.Middleware` and `hb.turn()` put in every record. When the test id cannot reach the code that records the calls, correlate on what can, like the conversation the session opened (as above).

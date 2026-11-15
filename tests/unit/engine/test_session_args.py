@@ -243,3 +243,79 @@ class TestTheRun:
         ctx = SessionContext(test_id="a", test_name="n", spec_path="s", args={"stage": "closed"})
 
         assert hooks.setup(ctx) == {"stage": "closed"}
+
+
+class TestLevels:
+    """HB-9 v1: args in defaults and in a suite; the most specific level wins, key by key."""
+
+    def test_hb9_defaults_args_reach_every_test(self, tmp_path: Path) -> None:
+        body = "defaults:\n  session: {args: {stage: open}}\n" + _suites(
+            _test("a"), _test("b", "        session: {args: {stage: closed}}\n")
+        )
+
+        first, second = parse_spec(_spec(tmp_path, WITH_SESSION, body)).suites[0].tests
+
+        assert (first.session_args, second.session_args) == ({"stage": "open"}, {"stage": "closed"})
+
+    def test_hb9_a_suite_over_defaults_and_a_test_over_its_suite(self, tmp_path: Path) -> None:
+        body = (
+            "defaults:\n  session: {args: {a: 1, b: 1}}\n"
+            "suites:\n  - name: S\n    session: {args: {b: 2, c: 2}}\n    tests:\n"
+            + _test("a", "        session: {args: {c: 3}}\n")
+            + "  - name: T\n    tests:\n"
+            + _test("b")
+        )
+
+        s, t = parse_spec(_spec(tmp_path, WITH_SESSION, body)).suites
+
+        assert s.tests[0].session_args == {"a": 1, "b": 2, "c": 3}
+        assert t.tests[0].session_args == {"a": 1, "b": 1}
+
+    def test_hb9_a_key_is_replaced_whole_not_merged(self, tmp_path: Path) -> None:
+        """No deep merge: what a test's args are can be read from one place per key."""
+        body = "defaults:\n  session: {args: {customer: {id: 7, name: Ana}}}\n" + _suites(
+            _test("a", "        session: {args: {customer: {id: 8}}}\n")
+        )
+
+        test = parse_spec(_spec(tmp_path, WITH_SESSION, body)).suites[0].tests[0]
+
+        assert test.session_args == {"customer": {"id": 8}}
+
+    def test_hb9_the_load_check_reads_the_combined_args(self, tmp_path: Path) -> None:
+        agent = WITH_SESSION + 'correlate: {s: "{{test.args.stage}}"}\n'
+        body = "defaults:\n  session: {args: {stage: open}}\n" + _suites(_test("a"), _test("b"))
+
+        parse_spec(_spec(tmp_path, agent, body))
+
+        with pytest.raises(
+            SpecError, match=r"suites\[0\]\.tests\[0\]\.session\.args: agent\.correlate\.s"
+        ):
+            parse_spec(_spec(tmp_path, agent, _suites(_test("a"))))
+
+    @pytest.mark.parametrize(
+        ("body", "message"),
+        [
+            (
+                "defaults:\n  session: {args: {when: 2026-11-15}}\n" + _suites(_test("a")),
+                r"defaults\.session\.args\.when: a date is not JSON",
+            ),
+            (
+                "suites:\n  - name: S\n    session: {argz: {a: 1}}\n    tests:\n" + _test("a"),
+                r"suites\[0\]\.session: unknown key 'argz' — did you mean 'args'",
+            ),
+        ],
+    )
+    def test_hb9_args_at_each_level_are_checked_the_same(
+        self, tmp_path: Path, body: str, message: str
+    ) -> None:
+        with pytest.raises(SpecError, match=message):
+            parse_spec(_spec(tmp_path, WITH_SESSION, body))
+
+    def test_hb9_inherited_args_hash_as_if_written_in_the_test(self, tmp_path: Path) -> None:
+        inherited = "defaults:\n  session: {args: {stage: open}}\n" + _suites(_test("a"))
+        written = _suites(_test("a", "        session: {args: {stage: open}}\n"))
+
+        (one,) = parse_spec(_spec(tmp_path, WITH_SESSION, inherited)).suites[0].tests
+        (other,) = parse_spec(_spec(tmp_path, WITH_SESSION, written)).suites[0].tests
+
+        assert one.definition_sha256 == other.definition_sha256
