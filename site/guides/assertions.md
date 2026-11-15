@@ -155,7 +155,7 @@ The message gives the most basic reason first:
 
 ## A test that must fail: `expect_status`
 
-A negative control proves the plumbing: a tool that fails must fail the test, and an agent highbar cannot observe must leave it unverified. Without a way to say so, the run is red when the control works, and it gets checked by hand. `expect_status` says which state the test must end in:
+A negative control proves the plumbing: a tool that fails must fail the test, and a test highbar cannot verify, like a budget on usage the agent does not report, must end in `error`. Without a way to say so, the run is red when the control works, and it gets checked by hand. `expect_status` says which state the test must end in:
 
 ```yaml test
 name: "a broken get_order fails the test"
@@ -169,5 +169,6 @@ expect_status: failed
 - The test passes when it ends exactly in that state, `failed` or `error`. The terminal marks it `✓ a broken get_order fails the test (expected failed)`, on one line.
 - It fails when it passes, with `passed, but expect_status is failed: this negative control no longer catches what it was written for`. It also fails when it ends in the other state (`ended error, but expect_status is failed`): a control that expects a failure and could not verify anything proves nothing.
 - The state is the test's, after `runs` and `min_pass`, and after late calls: a late call that fails a control makes it pass, and the run says so in a warning.
+- `error` is any state highbar could not verify, an agent that timed out included. An agent that writes no trace record at all is not one: the run stops with exit code 2 at the first test that needs a record, and no control is judged.
 - In the [report](/reference/report#each-test), `status` is the judged one and `expect_status` says what was expected. The phrasings and executions keep what happened, and so do `errors`.
 
