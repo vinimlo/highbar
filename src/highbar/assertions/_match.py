@@ -265,6 +265,13 @@ def validate_expected(expected: Any, where: str) -> None:
         )
         raise ValueError(msg)
 
+    if not mapping:
+        # The subset of nothing holds on any object (HB-36).
+        msg = (
+            f"{where}: an empty object checks nothing; to compare with one, write {{equals: {{}}}}"
+        )
+        raise ValueError(msg)
+
     if not known:
         for key in unknown:
             intended = _NEAR_MISSES.get(_stem(key))
@@ -279,6 +286,13 @@ def validate_expected(expected: Any, where: str) -> None:
         return
 
     # A matcher. The operand of `equals` is a literal and is deliberately not inspected.
+    for key in TEXT_MATCHER_KEYS - {"equals"}:
+        if mapping.get(key) == "":
+            # "" is in every text and an empty pattern matches every text: a positive check
+            # that cannot fail, or a negative one that cannot pass, as `response` refuses.
+            msg = f"{where}: '{key}' cannot be empty"
+            raise ValueError(msg)
+
     for key in REGEX_KEYS:
         if key not in mapping:
             continue

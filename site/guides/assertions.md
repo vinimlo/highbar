@@ -50,6 +50,8 @@ expect:
 
 A value that has no text form (an object, a list) never satisfies a negative matcher: "it does not contain the card number" is not evidence when there is no text to look at.
 
+An empty text in a matcher (`contains: ""`, `matches: ""`) and an empty object as an expected value (`options: {}`) are refused when the spec loads: `""` is in every text, and `{}` holds on any object, so neither checks anything. To compare with an empty value, write `{equals: ""}` or `{equals: {}}`.
+
 Bounds and lengths hold only on what they measure. A bound fails on anything that is not a number, a numeric string (`"3"`) and `true` included, and a length fails on anything that is not a list, a string included: a value of the wrong type is a defect the bound is there to catch. Two conditions make a range:
 
 ```yaml test

@@ -469,3 +469,50 @@ class TestOperandsThatCannotFail:
     def test_hb7_an_empty_object_deeper_inside_any_or_all_is_refused(self, key: str) -> None:
         with pytest.raises(ValueError, match=rf"'{key}' needs something"):
             validate_expected({"documents": {"any": {"tags": {key: {}}}}}, "result")
+
+
+class TestEmptyOperands:
+    """HB-36: params and result refuse what `response` already refuses.
+
+    `""` is in every text and an empty pattern matches every text, so a positive matcher
+    with one holds on anything; a negative one can never hold. `{}` subset-matches
+    nothing, so it only says "this is an object".
+    """
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "contains",
+            "icontains",
+            "matches",
+            "imatches",
+            "not_contains",
+            "not_icontains",
+            "not_matches",
+            "not_imatches",
+        ],
+    )
+    def test_hb36_an_empty_text_operand_is_refused(self, key: str) -> None:
+        with pytest.raises(ValueError, match=rf"params\.q: '{key}' cannot be empty"):
+            validate_expected({"q": {key: ""}}, "params")
+
+    def test_hb36_equals_an_empty_text_is_still_a_check(self) -> None:
+        validate_expected({"q": {"equals": ""}}, "params")
+        assert not subset_match({"q": {"equals": ""}}, {"q": "x"})
+
+    def test_hb36_an_empty_object_is_refused(self) -> None:
+        with pytest.raises(ValueError, match=r"result\.order: an empty object checks nothing"):
+            validate_expected({"order": {}}, "result")
+
+    def test_hb36_an_empty_object_deeper_down_is_refused(self) -> None:
+        with pytest.raises(ValueError, match=r"result\.order\.items: an empty object"):
+            validate_expected({"order": {"items": {}}}, "result")
+
+    def test_hb36_equals_an_empty_object_is_still_a_check(self) -> None:
+        validate_expected({"order": {"equals": {}}}, "result")
+        assert subset_match({"order": {"equals": {}}}, {"order": {}})
+        assert not subset_match({"order": {"equals": {}}}, {"order": {"id": 1}})
+
+    def test_hb36_an_empty_list_compares_as_a_value(self) -> None:
+        validate_expected({"tags": []}, "params")
+        assert not subset_match({"tags": []}, {"tags": ["a"]})
