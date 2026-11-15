@@ -4,7 +4,7 @@ Bug reports, specs that should fail and don't, docs fixes and code are all welco
 
 ## Setup
 
-You need Python 3.12 or newer and [uv](https://docs.astral.sh/uv/).
+You need Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/vinimlo/highbar.git
@@ -22,7 +22,7 @@ make typecheck
 make test
 ```
 
-All four run in CI, on Python 3.12 and 3.13.
+All four run in CI, on Python 3.11, 3.12 and 3.13.
 
 ## How changes are made
 
