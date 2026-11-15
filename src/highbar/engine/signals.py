@@ -13,6 +13,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from types import FrameType
+from typing import Any
 
 HELD = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
@@ -21,7 +22,8 @@ HELD = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 def holding_signals() -> Iterator[None]:
     """Hold Ctrl-C, SIGTERM and SIGHUP while the block runs, then deliver the first.
 
-    Only the main thread can set handlers: elsewhere the block runs as it is.
+    Only the main thread can set handlers: elsewhere the block runs as it is. A handler
+    set outside Python cannot be put back from here, so that signal is not held.
     """
     if threading.current_thread() is not threading.main_thread():
         yield
@@ -31,12 +33,19 @@ def holding_signals() -> Iterator[None]:
     def hold(signum: int, frame: FrameType | None) -> None:
         held.append(signum)
 
-    previous = {sig: signal.signal(sig, hold) for sig in HELD}
+    # Each handler is noted before it is replaced, inside the try: a signal that lands
+    # while they are being set leaves none of them held for good (review of #62).
+    previous: dict[int, Any] = {}
     try:
+        for sig in HELD:
+            handler = signal.getsignal(sig)
+            if handler is None:
+                continue
+            previous[sig] = handler
+            signal.signal(sig, hold)
         yield
     finally:
         for sig, handler in previous.items():
-            # None: a handler set outside Python, which cannot be put back from here.
-            signal.signal(sig, signal.SIG_DFL if handler is None else handler)
+            signal.signal(sig, handler)
         if held:
             signal.raise_signal(held[0])
