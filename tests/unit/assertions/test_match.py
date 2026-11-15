@@ -217,3 +217,120 @@ class TestNotMatches:
     def test_invalid_regex_in_not_matches_is_rejected(self) -> None:
         with pytest.raises(ValueError, match=r"params.note: invalid regex in 'not_matches'"):
             validate_expected({"note": {"not_matches": "("}}, "params")
+
+
+class TestComparisons:
+    """HB-7: lt, lte, gt, gte compare numbers, and only numbers."""
+
+    def test_each_comparison_holds_on_its_side_of_the_bound(self) -> None:
+        assert subset_match({"n": {"lt": 3}}, {"n": 2})
+        assert not subset_match({"n": {"lt": 3}}, {"n": 3})
+        assert subset_match({"n": {"lte": 3}}, {"n": 3})
+        assert not subset_match({"n": {"lte": 3}}, {"n": 4})
+        assert subset_match({"n": {"gt": 3}}, {"n": 4})
+        assert not subset_match({"n": {"gt": 3}}, {"n": 3})
+        assert subset_match({"n": {"gte": 3}}, {"n": 3})
+        assert not subset_match({"n": {"gte": 3}}, {"n": 2})
+
+    def test_ints_and_floats_compare_with_each_other(self) -> None:
+        assert subset_match({"tokens": {"lte": 6000}}, {"tokens": 5999.5})
+        assert subset_match({"score": {"gte": 0.5}}, {"score": 1})
+
+    def test_a_range_is_two_conditions(self) -> None:
+        bounded = {"limit": {"gte": 1, "lte": 3}}
+
+        assert subset_match(bounded, {"limit": 2})
+        assert not subset_match(bounded, {"limit": 0})
+        assert not subset_match(bounded, {"limit": 4})
+
+    @pytest.mark.parametrize("key", ["lt", "lte", "gt", "gte"])
+    @pytest.mark.parametrize("actual", ["2", None, True, False, [1], {"n": 1}, float("nan")])
+    def test_hb7_a_value_that_is_not_a_number_fails(self, key: str, actual: object) -> None:
+        """A numeric string, a bool or a missing value is not evidence of a bound.
+
+        `True < 3` is true in Python, and `"2"` is what a model writes when the schema
+        says integer: either would make a bound green on a value it never checked.
+        """
+        assert not subset_match({"n": {key: 3}}, {"n": actual})
+
+    def test_hb7_a_missing_key_fails(self) -> None:
+        assert not subset_match({"n": {"lte": 3}}, {"other": 1})
+
+
+class TestLengths:
+    """HB-7: len and len_lte measure lists, and only lists."""
+
+    def test_len_is_the_exact_length(self) -> None:
+        assert subset_match({"docs": {"len": 2}}, {"docs": ["a", "b"]})
+        assert not subset_match({"docs": {"len": 2}}, {"docs": ["a"]})
+        assert subset_match({"docs": {"len": 0}}, {"docs": []})
+
+    def test_len_lte_is_a_ceiling(self) -> None:
+        assert subset_match({"docs": {"len_lte": 3}}, {"docs": [1, 2, 3]})
+        assert subset_match({"docs": {"len_lte": 3}}, {"docs": []})
+        assert not subset_match({"docs": {"len_lte": 3}}, {"docs": [1, 2, 3, 4]})
+
+    @pytest.mark.parametrize("key", ["len", "len_lte"])
+    @pytest.mark.parametrize("actual", ["ab", None, {"a": 1, "b": 2}, 2])
+    def test_hb7_a_value_that_is_not_a_list_fails(self, key: str, actual: object) -> None:
+        """A string has a length too, but a list that came as a string is the defect."""
+        assert not subset_match({"docs": {key: 2}}, {"docs": actual})
+
+    def test_combines_with_contains(self) -> None:
+        expected = {"ids": {"len_lte": 3, "contains": "t-7"}}
+
+        assert subset_match(expected, {"ids": ["t-1", "t-7"]})
+        assert not subset_match(expected, {"ids": ["t-1", "t-2"]})
+
+
+class TestComparisonOperands:
+    """HB-7: a bound that is not a number fails at `highbar validate`."""
+
+    @pytest.mark.parametrize("key", ["lt", "lte", "gt", "gte"])
+    @pytest.mark.parametrize("operand", [3, 0, -1, 2.5])
+    def test_accepts_a_number(self, key: str, operand: object) -> None:
+        validate_expected({"n": {key: operand}}, "params")
+
+    @pytest.mark.parametrize("key", ["lt", "lte", "gt", "gte"])
+    @pytest.mark.parametrize(
+        ("operand", "kind"), [("3", "str"), (True, "bool"), (None, "NoneType"), ([3], "list")]
+    )
+    def test_hb7_rejects_a_bound_that_is_not_a_number(
+        self, key: str, operand: object, kind: str
+    ) -> None:
+        with pytest.raises(ValueError, match=rf"params\.n: '{key}' needs a number, got {kind}"):
+            validate_expected({"n": {key: operand}}, "params")
+
+    @pytest.mark.parametrize("key", ["len", "len_lte"])
+    @pytest.mark.parametrize("operand", [0, 3])
+    def test_accepts_a_whole_length(self, key: str, operand: int) -> None:
+        validate_expected({"docs": {key: operand}}, "result")
+
+    @pytest.mark.parametrize("key", ["len", "len_lte"])
+    @pytest.mark.parametrize("operand", [-1, 2.5, "3", True, None])
+    def test_hb7_rejects_a_length_that_is_not_a_whole_number(
+        self, key: str, operand: object
+    ) -> None:
+        with pytest.raises(ValueError, match=rf"result\.docs: '{key}' needs a whole number"):
+            validate_expected({"docs": {key: operand}}, "result")
+
+    def test_hb7_a_literal_dict_with_these_keys_is_a_matcher_now(self) -> None:
+        """`{equals: {...}}` is the way to compare such a dict as a literal."""
+        assert not subset_match({"range": {"lt": 5}}, {"range": {"lt": 5}})
+        assert subset_match({"range": {"equals": {"lt": 5}}}, {"range": {"lt": 5}})
+
+    @pytest.mark.parametrize("key", ["lt", "lte", "gt", "gte"])
+    @pytest.mark.parametrize("operand", [float("inf"), float("-inf"), float("nan")])
+    def test_hb7_rejects_a_bound_that_is_not_finite(self, key: str, operand: float) -> None:
+        """`lte: .inf` holds for every number: a check that cannot fail."""
+        with pytest.raises(ValueError, match=rf"params\.n: '{key}' needs a finite number"):
+            validate_expected({"n": {key: operand}}, "params")
+
+
+class TestHugeBounds:
+    def test_hb7_an_int_beyond_float_range_is_a_valid_bound(self) -> None:
+        huge = int("9" * 400)
+
+        validate_expected({"n": {"lte": huge}}, "params")
+        assert subset_match({"n": {"lte": huge}}, {"n": 10**300})
+        assert not subset_match({"n": {"gt": huge}}, {"n": 1.0})
