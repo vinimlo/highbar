@@ -9,7 +9,7 @@ wheel="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-uv venv -q --python "${PYTHON_VERSION:-3.12}" "$work/venv"
+uv venv -q --python "${PYTHON_VERSION:-3.11}" "$work/venv"
 VIRTUAL_ENV="$work/venv" uv pip install -q "${wheel}[quickstart]"
 export PATH="$work/venv/bin:$PATH"
 

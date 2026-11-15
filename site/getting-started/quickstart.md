@@ -1,6 +1,6 @@
 # Quick start
 
-You need Python 3.12 or newer. A virtual environment keeps the example's packages apart from yours:
+You need Python 3.11 or newer. A virtual environment keeps the example's packages apart from yours:
 
 ```console
 python3 -m venv .venv

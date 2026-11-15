@@ -8,7 +8,7 @@ A green result means the behavior was verified. An agent that writes no traces c
 
 ## Quick start
 
-Python 3.12 or newer. `highbar init` writes a small support agent (FastAPI, no LLM) and its spec into the current directory, and `highbar run` starts it with the `python` on your PATH, so install in a virtual environment:
+Python 3.11 or newer. `highbar init` writes a small support agent (FastAPI, no LLM) and its spec into the current directory, and `highbar run` starts it with the `python` on your PATH, so install in a virtual environment:
 
 ```console
 python3 -m venv .venv

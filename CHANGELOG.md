@@ -18,6 +18,7 @@
 
 ### Changed
 
+- Python 3.11 is supported: `requires-python` is `>=3.11`, and CI runs on 3.11, 3.12 and 3.13. highbar used nothing that 3.12 added, so the code did not change; a session hook that imports an application still on 3.11 can now run in that application's image.
 - Every run waits `agent.settle_time` (500 ms by default) after its last test and reads the trace file once more, also when its spec checks only replies, so a `turn` recorded late still counts in the totals, in budgets and in `--max-cost`. A spec that checks only replies takes that much longer than in 0.1.0.
 
 ### Fixed
