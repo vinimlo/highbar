@@ -227,6 +227,34 @@ class TestCallConditions:
 
         assert got == [("unexpected calls: c", "unexpected calls")]
 
+    def test_hb27_a_failed_call_names_the_expectation_not_the_pick(self) -> None:
+        """With alternatives, which one the agent called changes per run (review of #60)."""
+        expect = Expect(function_calls=[FunctionCallExpect(name=["catalog", "categories"])])
+
+        got = _conditions([_call("categories", 1, error="TimeoutError: slow")], expect)
+
+        assert got == [
+            (
+                "'categories' was called but failed: TimeoutError: slow",
+                "one of ('catalog' or 'categories') was called but failed",
+            )
+        ]
+
+    def test_hb27_a_call_with_other_params_names_the_expectation_not_the_pick(self) -> None:
+        expect = Expect(
+            function_calls=[FunctionCallExpect(name=["catalog", "categories"], params={"id": 1})]
+        )
+
+        got = _conditions([_call("catalog", 1, args={"id": 2})], expect)
+
+        assert got == [
+            (
+                "'catalog' was called but didn't match: params: expected {'id': 1}, got {'id': 2}",
+                "one of ('catalog' or 'categories') was called but didn't match: "
+                "params: expected {'id': 1}",
+            )
+        ]
+
     def test_hb27_a_forbidden_tool_says_it_all(self) -> None:
         got = _conditions([_call("delete_account", 1)], Expect(forbid=["delete_account"]))
 
@@ -259,4 +287,34 @@ class TestCallGroups:
 
         assert list(summary.tests[0].errors) == [
             "Expected no function calls, but got: search (3 of 3 runs; as in run 1)"
+        ]
+
+    def test_hb27_alternatives_failing_with_another_pick_per_run_are_one_line(self) -> None:
+        """The reviewer's shape (review of #60): catalog fails in runs 1 and 3, categories in 2."""
+        names = iter(["catalog", "categories", "catalog"])
+
+        def script(message: str, test_id: str) -> Window:
+            return Window(
+                tools=[
+                    Trace(
+                        fn=next(names),
+                        args={},
+                        result=None,
+                        error="TimeoutError: slow",
+                        started_at=1.0,
+                        ended_at=1.1,
+                        context={"test": test_id},
+                    )
+                ],
+                turns=[TurnRecord(ts=1.0, context={"test": test_id})],
+            )
+
+        expect = Expect(function_calls=[FunctionCallExpect(name=["catalog", "categories"])])
+        summary = _run(
+            [Case(trigger="list the catalog", expect=expect, runs=3)],
+            Replying(["here", "here", "here"], script),
+        )
+
+        assert list(summary.tests[0].errors) == [
+            "'catalog' was called but failed: TimeoutError: slow (3 of 3 runs; as in run 1)"
         ]

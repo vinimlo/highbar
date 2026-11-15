@@ -167,9 +167,12 @@ def _unmet(
         missing = f"Expected call to {_describe(names)}"
         return f"{missing}, but the agent called: {called}", missing
 
+    # The condition names the expectation, the message the call: with alternatives,
+    # which one the agent picked changes from run to run (review of #60).
     if e.error is False and all(t.error is not None for t in candidates):
-        failed = f"'{candidates[0].fn}' was called but failed"
-        return f"{failed}: {candidates[0].error}", failed
+        failed = "was called but failed"
+        message = f"'{candidates[0].fn}' {failed}: {candidates[0].error}"
+        return message, f"{_describe(names)} {failed}"
 
     if any(satisfies(e, t) for t in candidates):
         # It fits, but another expectation needed the same call.
@@ -188,9 +191,9 @@ def _unmet(
         errors.append((f"result: expected {e.result}", f"{call.result}"))
     if not _error_matches(e.error, call.error):
         errors.append((f"error: expected {_expected_error(e.error)}", f"{call.error or 'none'}"))
-    head = f"'{call.fn}' was called but didn't match: "
-    message = head + "; ".join(f"{wanted}, got {got}" for wanted, got in errors)
-    return message, head + "; ".join(wanted for wanted, _ in errors)
+    head = "was called but didn't match: "
+    message = f"'{call.fn}' {head}" + "; ".join(f"{wanted}, got {got}" for wanted, got in errors)
+    return message, f"{_describe(names)} {head}" + "; ".join(wanted for wanted, _ in errors)
 
 
 def _shortfall(
