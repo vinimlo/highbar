@@ -130,5 +130,7 @@ Used in `response`, in values of `params` and `result`, and in `error`:
 | `not_contains` / `not_icontains` | Does not. |
 | `matches` / `not_matches` | A regular expression is found (Python `re.search`), or is not. **Case-sensitive.** Checked when the spec is loaded. |
 | `imatches` / `not_imatches` | The same, ignoring case. `(?i)` at the start of a pattern does the same in `matches`. |
+| `lt` / `lte` / `gt` / `gte` | A number below, at most, above, or at least the operand, which must be a finite number. Only in `params` and `result`. |
+| `len` / `len_lte` | A list of exactly, or at most, this many items (a whole number, 0 or more). Only in `params` and `result`. |
 
-Negative matchers fail on a value with no text form, such as an object or `null`. Templates (<code v-pre>{{previous.*}}</code>) are only allowed in triggers.
+Negative matchers fail on a value with no text form, such as an object or `null`. A bound fails on a value that is not a number (a numeric string and a boolean included), and a length on a value that is not a list. Templates (<code v-pre>{{previous.*}}</code>) are only allowed in triggers.

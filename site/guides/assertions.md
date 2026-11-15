@@ -42,8 +42,25 @@ expect:
 | `not_contains`, `not_icontains` | does not contain it. |
 | `matches`, `not_matches` | matches the regular expression somewhere (Python's `re.search`), or does not. **Case-sensitive:** `matches: "eleven years"` fails on "Eleven years" at the start of a sentence. |
 | `imatches`, `not_imatches` | the same, ignoring case. `(?i)` at the start of a pattern does the same in `matches`. |
+| `lt`, `lte`, `gt`, `gte` | is a number below, at most, above, or at least the operand. |
+| `len`, `len_lte` | is a list of exactly, or at most, that many items. |
 
 A value that has no text form (an object, a list) never satisfies a negative matcher: "it does not contain the card number" is not evidence when there is no text to look at.
+
+Bounds and lengths hold only on what they measure. A bound fails on anything that is not a number, a numeric string (`"3"`) and `true` included, and a length fails on anything that is not a list, a string included: a value of the wrong type is a defect the bound is there to catch. Two conditions make a range:
+
+```yaml test
+trigger: "Show me the three newest documents about refunds"
+expect:
+  function_calls:
+    - name: search_documents
+      params:
+        limit: {gte: 1, lte: 3}
+      result:
+        documents: {len_lte: 3}
+```
+
+They apply to values of `params` and `result`. A reply and an error are text, so `response` and `error` refuse them. A literal object whose keys are all matcher names is read as a matcher: to compare `{lt: 5}` itself, write `{equals: {lt: 5}}`.
 
 ### A call that failed
 

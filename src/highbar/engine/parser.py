@@ -17,7 +17,12 @@ from urllib.parse import urlsplit
 import yaml
 
 from highbar._narrow import as_dict, as_list
-from highbar.assertions._match import MATCHER_KEYS, REGEX_KEYS, validate_expected
+from highbar.assertions._match import (
+    MATCHER_KEYS,
+    REGEX_KEYS,
+    TEXT_MATCHER_KEYS,
+    validate_expected,
+)
 from highbar.domain.models import (
     AgentConfig,
     Budget,
@@ -620,11 +625,14 @@ def _parse_expect(raw: Any, where: str) -> Expect:
 
 def _parse_response(raw: Any, where: str) -> ResponseExpect:
     if raw is None or ((mapping := as_dict(raw)) is not None and not user_keys(mapping)):
-        raise SpecError(f"{where}: response has no matcher (use {', '.join(sorted(MATCHER_KEYS))})")
+        raise SpecError(
+            f"{where}: response has no matcher (use {', '.join(sorted(TEXT_MATCHER_KEYS))})"
+        )
     require_type(raw, dict, where, "response must be a mapping")
     response_where = f"{where}.response"
+    _refuse_bounds_on_text(raw, response_where, "the reply")
     check_keys(raw, "response", response_where)
-    matcher: dict[str, Any] = {key: value for key, value in raw.items() if key in MATCHER_KEYS}
+    matcher: dict[str, Any] = {key: value for key, value in raw.items() if key in TEXT_MATCHER_KEYS}
     for key, value in matcher.items():
         require_type(value, str, response_where, f"{key} must be a string")
         if not value and key != "equals":
@@ -679,7 +687,9 @@ def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
     if isinstance(raw, bool):
         return raw
     matcher = as_dict(raw)
-    if not matcher or not set(matcher) <= MATCHER_KEYS:
+    if matcher:
+        _refuse_bounds_on_text(matcher, f"{where}.error", "an error")
+    if not matcher or not set(matcher) <= TEXT_MATCHER_KEYS:
         raise SpecError(
             f"{where}.error: error must be true, false or a matcher such as "
             '{contains: "Timeout"}; a bare text would be ambiguous between equals and contains'
@@ -689,6 +699,16 @@ def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
     except ValueError as e:
         raise SpecError(str(e)) from None
     return matcher
+
+
+def _refuse_bounds_on_text(raw: dict[Any, Any], where: str, what: str) -> None:
+    """A bound on a number or a list length, where the value is always text, never holds."""
+    for key in raw:
+        if key in MATCHER_KEYS and key not in TEXT_MATCHER_KEYS:
+            raise SpecError(
+                f"{where}: '{key}' does not apply to {what}, which is text; "
+                "bounds and lengths go in the values of params and result"
+            )
 
 
 def _has_template(value: Any) -> bool:
