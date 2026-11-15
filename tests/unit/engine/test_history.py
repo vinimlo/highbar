@@ -31,6 +31,10 @@ HISTORY = (
 )
 
 
+# An agent with no state of its own: the conversation goes in every request (HB-24 v2).
+REQUEST_WITH_HISTORY = 'request:\n  body: {message: "{{message}}", messages: "{{test.history}}"}\n'
+
+
 def _suites(*tests: str) -> str:
     return "suites:\n  - name: S\n    tests:\n" + "".join(tests)
 
@@ -115,34 +119,53 @@ class TestTheSpec:
         )
 
     @pytest.mark.parametrize(
-        ("session", "problem"),
-        [
-            (
-                "",
-                "needs agent.session with a setup, which seeds it in the agent: without one "
-                "the test starts from an empty conversation",
-            ),
-            (
-                'session:\n  setup: "open"\n',
-                "agent.session.setup does not use '{{test.history}}': a command or HTTP setup "
-                "sees only its placeholders, so the test would start from an empty conversation",
-            ),
-        ],
+        "session",
+        ["", 'session:\n  setup: "open"\n'],
         ids=["no-setup", "a-setup-that-ignores-it"],
     )
-    def test_hb24_a_request_alone_does_not_seed_it_and_says_so(
-        self, tmp_path: Path, session: str, problem: str
+    def test_hb24_a_request_that_sends_it_hands_it_to_a_stateless_agent(
+        self, tmp_path: Path, session: str
     ) -> None:
-        """An agent that takes the conversation in each request: not seeding, in v0."""
-        request = 'request:\n  body: {message: "{{message}}", messages: "{{test.history}}"}\n'
-        agent = MANAGED + request + session
+        """v2: an agent with no state of its own takes the conversation in each request.
+
+        In a single-turn test that request is the only one, so it carries the whole
+        conversation before the message: it hands the history on, as a setup would."""
+        agent = MANAGED + REQUEST_WITH_HISTORY + session
+        spec = parse_spec(_spec(tmp_path, agent, _suites(_test("another one", HISTORY))))
+
+        (test,) = spec.suites[0].tests
+
+        assert len(test.history) == 2
+
+    def test_hb24_a_conversation_of_one_turn_is_a_single_turn_test(self, tmp_path: Path) -> None:
+        suites = _suites(
+            "      - turns:\n"
+            '          - trigger: "another one"\n'
+            '            expect: {response: {contains: "ok"}}\n' + HISTORY
+        )
+
+        spec = parse_spec(_spec(tmp_path, MANAGED + REQUEST_WITH_HISTORY, suites))
+
+        assert len(spec.suites[0].tests[0].history) == 2
+
+    def test_hb24_a_conversation_does_not_send_it_in_the_request(self, tmp_path: Path) -> None:
+        """From its second turn on, the request would carry the history without the turns
+        the test itself ran: the agent would answer a conversation that did not happen."""
+        suites = _suites(
+            "      - turns:\n"
+            '          - trigger: "another one"\n'
+            '            expect: {response: {contains: "ok"}}\n'
+            '          - trigger: "and a cookie"\n'
+            '            expect: {response: {contains: "ok"}}\n' + HISTORY
+        )
 
         with pytest.raises(SpecError) as caught:
-            parse_spec(_spec(tmp_path, agent, _suites(_test("another one", HISTORY))))
+            parse_spec(_spec(tmp_path, MANAGED + REQUEST_WITH_HISTORY, suites))
 
         assert str(caught.value).endswith(
-            f"suites[0].tests[0].history: {problem} "
-            "({{test.history}} in agent.request does not seed it)"
+            "suites[0].tests[0].history: '{{test.history}}' in agent.request hands it on only "
+            "in a single-turn test: from the second turn on, the request would carry it "
+            "without the turns this test ran. Seed it in agent.session's setup instead"
         )
 
     @pytest.mark.parametrize(

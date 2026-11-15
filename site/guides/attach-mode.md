@@ -168,6 +168,17 @@ highbar does not read the history: the session's setup receives it and seeds it 
 
 A test with a `history` needs `agent.session` with a `setup` that hands it on, and the spec does not load otherwise: the test would start from an empty conversation while saying it did not. A command or an HTTP setup sees only its placeholders, so it must use <code v-pre>{{test.history}}</code>. A Python setup gets `ctx.history`; what it does with it is up to the hook. The assertions, `variations` and `runs` apply to the turns the test runs, and the history is part of what the test measures, so it changes its `definition_sha256`.
 
+An agent with no state of its own takes the whole conversation in each request, and has nothing to seed. Send the history in the request instead, and the test needs no session:
+
+```yaml agent
+agent:
+  endpoint: "http://localhost:8000/api/chat"
+  request:
+    body: {message: "{{message}}", messages: "{{test.history}}"}
+```
+
+That works in a single-turn test only. In a conversation, from the second turn on, the request would carry the history without the turns the test itself ran, so the agent would answer a conversation that did not happen: the spec stops there, and the history goes in the session's setup.
+
 ## Which records belong to a test
 
 A test counts the trace records whose `context` matches `agent.correlate`. The default, <code v-pre>{test: "{{test.id}}"}</code>, matches the test id that `highbar.asgi.Middleware` and `hb.turn()` put in every record. When the test id cannot reach the code that records the calls, correlate on what can, like the conversation the session opened (as above).
