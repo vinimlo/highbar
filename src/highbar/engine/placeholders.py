@@ -2,7 +2,8 @@
 
 ``{{message}}`` is the trigger being sent, ``{{test.id}}`` the id of this test
 execution (also sent as ``X-Highbar-Test``), ``{{test.name}}`` the test's name,
-``{{test.args.<path>}}`` a value of the test's own ``session: {args: ...}`` (HB-9), and
+``{{test.args.<path>}}`` a value of the test's own ``session: {args: ...}`` (HB-9),
+``{{test.history}}`` its ``history`` as a list of ``{role, content}`` (HB-24), and
 ``{{session.<path>}}`` a value from the object the session setup returned.
 
 A value that is only a placeholder keeps the JSON type of what it resolves to: an
@@ -16,7 +17,7 @@ from __future__ import annotations
 import difflib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
@@ -27,11 +28,11 @@ from highbar.engine.schema import SpecError
 
 PLACEHOLDER = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
 
-ALL = frozenset({"message", "test.id", "test.name", "test.args", "session"})
+ALL = frozenset({"message", "test.id", "test.name", "test.args", "test.history", "session"})
 # Hooks run outside a message: no {{message}}; setup runs before the session exists.
 # A test's args are known before it: setup can use them.
-SETUP = frozenset({"test.id", "test.name", "test.args"})
-TEARDOWN = frozenset({"test.id", "test.name", "test.args", "session"})
+SETUP = frozenset({"test.id", "test.name", "test.args", "test.history"})
+TEARDOWN = frozenset({"test.id", "test.name", "test.args", "test.history", "session"})
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class Values:
     test_name: str
     session: Mapping[str, Any]
     args: Mapping[str, Any] = field(default_factory=dict[str, Any])
+    history: Sequence[Mapping[str, str]] = ()
 
 
 class PlaceholderError(ValueError):
@@ -86,13 +88,20 @@ def check_placeholders(
         name = match.group(1)
         kind = _kind(name)
         if kind not in ALL or name in ("session.", "test.args", "test.args."):
-            known = ["message", "test.id", "test.name", "test.args.<key>", "session.<key>"]
+            known = [
+                "message",
+                "test.id",
+                "test.name",
+                "test.args.<key>",
+                "test.history",
+                "session.<key>",
+            ]
             close = difflib.get_close_matches(name, known, n=1, cutoff=0.6)
             hint = f" — did you mean '{{{{{close[0]}}}}}'?" if close else ""
             raise SpecError(
                 f"{where}: unknown placeholder '{match.group(0)}'{hint} "
                 "(placeholders here: {{message}}, {{test.id}}, {{test.name}}, "
-                "{{test.args.<key>}}, {{session.<key>}})"
+                "{{test.args.<key>}}, {{test.history}}, {{session.<key>}})"
             )
         if kind not in allowed:
             raise SpecError(f"{where}: '{match.group(0)}' is not available here")
@@ -170,6 +179,8 @@ def _resolve(name: str, values: Values) -> Any:
         return values.test_id
     if name == "test.name":
         return values.test_name
+    if name == "test.history":
+        return [dict(message) for message in values.history]
     if _kind(name) == "test.args":
         try:
             return get_path(dict(values.args), name.removeprefix("test.args."))

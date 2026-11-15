@@ -136,6 +136,36 @@ Every <code v-pre>{{test.args.&lt;path&gt;}}</code> the agent uses must have a v
 
 The same `session: {args: {...}}` can go in a suite, for each of its tests, and in `defaults`, for every test. The most specific level wins key by key (a test over its suite, a suite over `defaults`), as `runs`, `min_pass` and `budget` do, and a key is replaced whole: a test that writes `customer: {id: 8}` does not keep the `name` that `defaults` gave `customer`. The check above reads each test's combined args, and so does its `definition_sha256`: args a test inherits hash as if it wrote them.
 
+### Starting in the middle of a conversation
+
+A test can start with the conversation already under way, and check only the turn that matters. Running the earlier turns live spends a call to the model on each and varies from run to run, which changes the context of the turn under test. Instead, `history` declares them:
+
+```yaml
+agent:
+  endpoint: "http://localhost:8000/api/chat"
+  traces: "var/traces.jsonl"
+  session:
+    setup:
+      http:
+        url: "http://localhost:8000/test/conversations"
+        body: {messages: "{{test.history}}"}
+suites:
+  - name: Orders
+    tests:
+      - trigger: "Another one of those, please"
+        history:
+          - {role: user, content: "A lemonade, please"}
+          - {role: assistant, content: "One lemonade coming."}
+        expect:
+          function_calls:
+            - name: add_to_order
+              params: {item: lemonade}
+```
+
+highbar does not read the history: the session's setup receives it and seeds it in the agent's own store before the message goes. A Python hook gets it as `ctx.history`, a list of `{role, content}`. <code v-pre>{{test.history}}</code> gives the whole list as JSON in a command, an HTTP hook or the request. A trigger does not read it: there it stops the spec, as args do. Each message has a `role`, `user` or `assistant`, and a `content`, the text as it was said: no `${VAR}` and no placeholder is read in it.
+
+A test with a `history` needs `agent.session` with a `setup` that hands it on, and the spec does not load otherwise: the test would start from an empty conversation while saying it did not. A command or an HTTP setup sees only its placeholders, so it must use <code v-pre>{{test.history}}</code>. A Python setup gets `ctx.history`; what it does with it is up to the hook. The assertions, `variations` and `runs` apply to the turns the test runs, and the history is part of what the test measures, so it changes its `definition_sha256`.
+
 ## Which records belong to a test
 
 A test counts the trace records whose `context` matches `agent.correlate`. The default, <code v-pre>{test: "{{test.id}}"}</code>, matches the test id that `highbar.asgi.Middleware` and `hb.turn()` put in every record. When the test id cannot reach the code that records the calls, correlate on what can, like the conversation the session opened (as above).

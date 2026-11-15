@@ -125,6 +125,7 @@ def _parse_spec(raw: Any) -> Spec:
     suites = _with_inherited_args(suites, suites_raw, raw.get("defaults"))
     _check_args_used(raw["agent"], suites)
     _check_not_in_triggers(suites)
+    _check_history_seeded(agent, suites)
 
     default_runs = 1
     default_min_pass: int | float | None = None
@@ -161,11 +162,17 @@ def _parse_spec(raw: Any) -> Spec:
 
 
 # A test's own values, which a trigger does not read: it goes to the agent as written.
-_NOT_IN_TRIGGERS = ("test.args",)
+# Each says where its value is read instead.
+_NOT_IN_TRIGGERS = {
+    "test.args": "use it in agent.request, agent.correlate or a session hook",
+    "test.history": (
+        "the session setup seeds it (ctx.history, or {{test.history}} in a command or HTTP setup)"
+    ),
+}
 
 
 def _check_not_in_triggers(suites: list[Suite]) -> None:
-    """``{{test.args.<path>}}`` in a trigger stops the spec (HB-9).
+    """``{{test.args.<path>}}`` or ``{{test.history}}`` in a trigger stops the spec (HB-9, HB-24).
 
     A trigger is sent as written, braces included, so the agent would get a message
     nobody meant to send, and the test could pass on it. Names highbar does not own
@@ -184,11 +191,11 @@ def _check_not_in_triggers(suites: list[Suite]) -> None:
             for at, trigger in triggers:
                 for match in placeholders.PLACEHOLDER.finditer(trigger):
                     name = match.group(1)
-                    if any(name == own or name.startswith(f"{own}.") for own in _NOT_IN_TRIGGERS):
-                        raise SpecError(
-                            f"{at}: '{match.group(0)}' is not read in a trigger: "
-                            "use it in agent.request, agent.correlate or a session hook"
-                        )
+                    for own, instead in _NOT_IN_TRIGGERS.items():
+                        if name == own or name.startswith(f"{own}."):
+                            raise SpecError(
+                                f"{at}: '{match.group(0)}' is not read in a trigger: {instead}"
+                            )
 
 
 def _with_inherited_args(suites: list[Suite], raw: list[Any], defaults: Any) -> list[Suite]:
@@ -235,6 +242,69 @@ def _check_args_used(agent: dict[str, Any], suites: list[Suite]) -> None:
                     f"suites[{i}].tests[{j}].session.args: {at} uses "
                     f"'{{{{test.args.{path}}}}}': {reason}"
                 )
+
+
+def _check_history_seeded(agent: AgentConfig, suites: list[Suite]) -> None:
+    """A test with a ``history`` needs a session setup that hands it to the agent (HB-24).
+
+    Without one, the test would start from an empty conversation while its spec says it
+    starts in the middle of one: a pass there would not mean what it says. A command or
+    an HTTP setup sees only its placeholders, so it must use ``{{test.history}}``; a
+    Python setup gets ``ctx.history``, and what it does with it cannot be read here.
+    """
+    setup = agent.session.setup if agent.session is not None else None
+    if setup is None:
+        problem = (
+            "needs agent.session with a setup, which seeds it in the agent: without one the "
+            "test starts from an empty conversation"
+        )
+    elif isinstance(setup, PythonHook) or uses_placeholder(_hook_parts(setup), "test.history"):
+        return
+    else:
+        problem = (
+            "agent.session.setup does not use '{{test.history}}': a command or HTTP setup "
+            "sees only its placeholders, so the test would start from an empty conversation"
+        )
+    request = agent.request
+    if uses_placeholder([request.headers, request.body], "test.history"):
+        problem += " ({{test.history}} in agent.request does not seed it)"
+    for i, suite in enumerate(suites):
+        for j, test in enumerate(suite.tests):
+            if test.history:
+                raise SpecError(f"suites[{i}].tests[{j}].history: {problem}")
+
+
+def _hook_parts(hook: CommandHook | HttpHook) -> list[Any]:
+    """What a command or an HTTP hook sends: where its placeholders can be."""
+    if isinstance(hook, CommandHook):
+        return list(hook.argv)
+    return [hook.url, hook.headers, hook.body]
+
+
+def _parse_history(raw: dict[str, Any], where: str) -> list[dict[str, str]]:
+    """A test's ``history`` (HB-24): the conversation before its first message."""
+    if "history" not in raw:
+        return []
+    where = f"{where}.history"
+    items = raw["history"]
+    require_type(items, list, where, "must be a list of {role, content}")
+    if not items:
+        raise SpecError(f"{where}: is empty (leave it out for a conversation from the start)")
+    messages: list[dict[str, str]] = []
+    for k, item in enumerate(items):
+        at = f"{where}[{k}]"
+        require_type(item, dict, at, "must be a mapping with role and content")
+        check_keys(item, "history_message", at)
+        for key in ("role", "content"):
+            if key not in item:
+                raise SpecError(f"{at}: needs '{key}'")
+        if item["role"] not in ("user", "assistant"):
+            raise SpecError(f"{at}.role: must be user or assistant, got {item['role']!r}")
+        require_type(item["content"], str, f"{at}.content", "must be text")
+        if not item["content"]:
+            raise SpecError(f"{at}.content: cannot be empty")
+        messages.append({"role": item["role"], "content": item["content"]})
+    return messages
 
 
 def _parse_session_args(raw: dict[str, Any], where: str) -> dict[str, Any]:
@@ -669,6 +739,7 @@ def _parse_test(raw: Any, where: str) -> Test:
             name=name,
             id=_optional_id(raw, where),
             session_args=_parse_session_args(raw, where),
+            history=_parse_history(raw, where),
             **_parse_repetition(raw, where),
         )
 
@@ -687,6 +758,7 @@ def _parse_test(raw: Any, where: str) -> Test:
         name=name,
         id=_optional_id(raw, where),
         session_args=_parse_session_args(raw, where),
+        history=_parse_history(raw, where),
         **_parse_repetition(raw, where),
     )
 

@@ -301,6 +301,9 @@ class Test:
     # Its own ``session: {args: ...}`` (HB-9): the state its hooks open, and
     # ``{{test.args.*}}`` in the request. A JSON object, checked when the spec loads.
     session_args: dict[str, Any] = field(default_factory=dict[str, Any])
+    # The conversation before its first message (HB-24): {role, content} each, for the
+    # session's setup to seed. highbar sends none of it.
+    history: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
 
     @property
     def requires_observation(self) -> bool:
@@ -331,6 +334,8 @@ class Test:
             # The state a test starts from is part of what it measures. Only when there
             # is one: the hash of every test without it stays what it was.
             definition["session_args"] = self.session_args
+        if self.history:
+            definition["history"] = self.history
         # ASCII, so a lone surrogate from YAML is an escape and not a failed encode.
         text = json.dumps(_canonical(definition), sort_keys=True, default=str)
         return hashlib.sha256(text.encode("ascii")).hexdigest()
