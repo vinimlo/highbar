@@ -39,6 +39,14 @@ The agent must create `highbar.Highbar()` after `HIGHBAR_TRACES_URL` is in its e
 
 `agent.traces` is relative to where you run highbar, not to the spec. Compare the path in the message with the file the agent writes. If they match, the file was deleted or rotated away while the agent ran: highbar's SDK writes it again only with its next record. Create it empty (`: > var/traces.jsonl`), or empty it instead of deleting it.
 
+**The attached agent's trace file is a directory.**
+
+```text
+  ✗ specs/support.highbar.yaml: agent.traces …/support/var/traces.jsonl is a directory, not a file, so no test can see what the agent does. Docker makes one when a bind mount names a file that does not exist yet: remove it, create the file and start the agent again
+```
+
+A bind mount such as `-v ./var/traces.jsonl:/app/traces.jsonl`, or a compose `volumes:` line, with no file at `./var/traces.jsonl` yet, makes an empty directory there. Stop the agent's container, remove the directory, create the file (`: > var/traces.jsonl`) and start it again. A trace file highbar cannot read for another reason, such as its permissions, is named the same way, with the reason.
+
 **The spec is invalid.** The message names the key and the likely fix: `unknown key 'orderd' — did you mean 'ordered'?`. Run `highbar validate` to check every spec without running anything.
 
 ## A test is `error`, not `failed`
