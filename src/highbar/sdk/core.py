@@ -98,8 +98,13 @@ class Highbar:
 
     @property
     def traces(self) -> str | None:
-        """The trace file right now: the one given, or ``HIGHBAR_TRACES_URL``."""
-        return self._explicit or os.environ.get(_ENV_VAR) or None
+        """The trace file right now: the one given, or ``HIGHBAR_TRACES_URL``.
+
+        ``{pid}`` in it is this process's id (HB-15): a server and its workers each write
+        a file of their own, which highbar reads together through a glob.
+        """
+        path = self._explicit or os.environ.get(_ENV_VAR) or None
+        return path.replace("{pid}", str(os.getpid())) if path else None
 
     @property
     def enabled(self) -> bool:

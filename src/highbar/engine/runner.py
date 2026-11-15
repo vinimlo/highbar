@@ -9,7 +9,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from highbar.adapters.file_collector import TraceFormatError
+from highbar.adapters.file_collector import TraceFormatError, is_glob
 from highbar.adapters.http_client import AgentResponseError, HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
 from highbar.assertions.response import truncate
@@ -1088,8 +1088,16 @@ class TestRunner:
         Checked before the first message: a wrong path would otherwise send every one,
         with whatever it does for real, to learn only that nothing could be observed.
         """
+        where = self._collector.path.absolute()
+        if is_glob(where):
+            return (
+                f"no file matches agent.traces {where}, so no test could see what the agent "
+                "does; nothing was sent. Check agent.traces (a relative path starts where "
+                "highbar runs): with {pid} in HIGHBAR_TRACES_URL, each process of the agent "
+                "writes its own file, from when the SDK starts in it"
+            )
         return (
-            f"the trace file {self._collector.path.absolute()} does not exist, so no test "
+            f"the trace file {where} does not exist, so no test "
             "could see what the agent does; nothing was sent. Check agent.traces (a "
             "relative path starts where highbar runs). If the path is right, the file was "
             "removed after the agent started, or its writer creates it only with its "

@@ -690,3 +690,31 @@ class TestInventoryFollowsTheFile:
         get_order("1")
         names = [json.loads(line) for line in traces.read_text().splitlines()]
         assert ["1", "get_order"] in [r.get("names") for r in names]
+
+
+class TestOneFilePerProcess:
+    """HB-15 v1: ``{pid}`` in the path gives each process a file of its own."""
+
+    def test_hb15_pid_in_the_path_gives_each_process_its_own_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(ENV, str(tmp_path / "traces-{pid}.jsonl"))
+        pid = [101]
+        monkeypatch.setattr(os, "getpid", lambda: pid[0])
+        hb = Highbar()
+
+        @hb.tool
+        def get_order(order_id: str) -> str:
+            return order_id
+
+        get_order("1042")
+        pid[0] = 202  # a worker forked after the module was imported
+        get_order("1043")
+
+        server, worker = tmp_path / "traces-101.jsonl", tmp_path / "traces-202.jsonl"
+        assert [r["args"] for r in _of(server, "tool")] == [{"order_id": "1042"}]
+        assert [r["args"] for r in _of(worker, "tool")] == [{"order_id": "1043"}]
+        # Each file starts as a new one: its process's hello, then what it records.
+        assert [r["pid"] for r in _of(worker, "hello")] == [202]
+        assert _of(worker, "tools")[0]["names"] == ["get_order"]
+        assert not (tmp_path / "traces-{pid}.jsonl").exists()

@@ -14,6 +14,24 @@ agent:
 - When a test checks tool calls or has a budget, the file must exist before the run. Otherwise the run stops with exit code 2 before sending anything, and the message shows the absolute path it looked for. highbar's SDK creates the file when `Highbar()` is created, and after the file is deleted, only with its next record. Create the file empty when it was deleted while the agent ran, or when its writer creates it only with its first record.
 - Other traffic may reach an attached agent, so a test counts only the trace records tagged as its own. See [correlation](#which-records-belong-to-a-test) below.
 
+### An agent with several processes
+
+A server and its queue workers can share one trace file only when every append lands whole, which a bind mount on macOS does not promise: a line cut by another process's line is an `error` for the test that reads it. Give each process a file of its own instead. With `{pid}` in `HIGHBAR_TRACES_URL` (or in `Highbar(traces=...)`), the SDK writes to a file named after the process, and `traces` takes a glob of them:
+
+```yaml agent
+agent:
+  endpoint: "http://localhost:8000/api/chat"
+  traces: "var/traces/*.jsonl"
+```
+
+```sh
+HIGHBAR_TRACES_URL=/app/var/traces/traces-{pid}.jsonl
+```
+
+- highbar reads every file the glob matches as one, and puts the records of each read in time order: a tool call by when it ended, a turn by its `ts`. A file that appears during the run, a worker started late, is read from its start.
+- Before the run, at least one file must match, or the run stops with exit code 2 and says so. The SDK creates its process's file when `Highbar()` is created. A directory the glob matches is not read; a `traces` that is a directory, with no glob, is still an error.
+- An old process's file still matches: highbar reads only what is written after the run starts, so it adds nothing to a test, but its declared tools still count. Clear the folder when the agent's tools change.
+
 ## The request
 
 By default highbar sends `POST {"message": "<trigger>"}`. Any other shape is configured with placeholders:

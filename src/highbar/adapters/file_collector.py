@@ -22,6 +22,8 @@ Rules of the contract (v1) that live here:
 
 from __future__ import annotations
 
+import glob
+import heapq
 import json
 import math
 import os
@@ -156,6 +158,95 @@ class FileTraceCollector:
         """The 1-based number of the line that starts at byte ``offset``."""
         with open(self._path, "rb") as f:
             return f.read(offset).count(b"\n") + 1
+
+
+def is_glob(path: str | Path) -> bool:
+    """Whether ``agent.traces`` names several files: a ``*``, ``?`` or ``[`` in it (HB-15)."""
+    return any(char in "*?[" for char in str(path))
+
+
+def trace_collector(path: str | Path) -> FileTraceCollector | GlobTraceCollector:
+    """The collector for ``agent.traces``: one file, or every file a glob matches."""
+    return GlobTraceCollector(path) if is_glob(path) else FileTraceCollector(path)
+
+
+class GlobTraceCollector:
+    """Reads the trace files a glob matches, one per process of the agent, as one (HB-15).
+
+    A server and its queue workers that share one file depend on appends that do not
+    interleave, which a bind mount on macOS does not promise. With ``{pid}`` in
+    ``HIGHBAR_TRACES_URL`` each process writes its own file, and this reads them all.
+
+    Each file is read by byte offset, as ``FileTraceCollector`` reads one. A checkpoint
+    is a number that stands for the offset of every file at that moment, and a file the
+    glob starts to match later is read from its start. The records of a read are put in
+    time order across files (a tool by when it ended, a turn and a hello by ``ts``), and
+    each file keeps its own order. A directory the glob matches is not a trace file.
+    """
+
+    def __init__(self, pattern: str | Path) -> None:
+        self._pattern = str(pattern)
+        # Checkpoint 0 is every file from its start; each later one, the offsets it holds.
+        self._marks: list[dict[Path, int]] = [{}]
+
+    @property
+    def path(self) -> Path:
+        return Path(self._pattern)
+
+    def missing(self) -> bool:
+        """No file matches: a wrong pattern, or no process of the agent has written yet."""
+        return not self._files()
+
+    def checkpoint(self) -> int:
+        return self._mark({file: FileTraceCollector(file).checkpoint() for file in self._files()})
+
+    def collect(self, since: int) -> Window:
+        """The records written in every file after checkpoint ``since``, in time order.
+
+        Raises ``TraceFormatError`` for the first line that cannot be read, with the
+        records of all the others, as one file does.
+        """
+        offsets = self._marks[since]
+        windows: list[Window] = []
+        ends: dict[Path, int] = {}
+        problem: TraceFormatError | None = None
+        for file in self._files():
+            reader = FileTraceCollector(file)
+            try:
+                window = reader.collect(since=offsets.get(file, 0))
+            except TraceFormatError as e:
+                problem = problem or e
+                window = e.window if e.window is not None else Window(end=reader.checkpoint())
+            windows.append(window)
+            ends[file] = window.end
+        merged = _merged(windows, end=self._mark(ends))
+        if problem is not None:
+            raise TraceFormatError(str(problem), merged)
+        return merged
+
+    def declared(self) -> frozenset[str] | None:
+        """The tools every process declared since its own last `hello`, together."""
+        found = [FileTraceCollector(file).declared() for file in self._files()]
+        declared = [names for names in found if names is not None]
+        return frozenset[str]().union(*declared) if declared else None
+
+    def _files(self) -> list[Path]:
+        return sorted(path for path in map(Path, glob.glob(self._pattern)) if path.is_file())
+
+    def _mark(self, offsets: dict[Path, int]) -> int:
+        self._marks.append(offsets)
+        return len(self._marks) - 1
+
+
+def _merged(windows: list[Window], *, end: int) -> Window:
+    """The records of several files' windows in time order, each file's order kept."""
+    return Window(
+        tools=list(heapq.merge(*(w.tools for w in windows), key=lambda tool: tool.ended_at)),
+        turns=list(heapq.merge(*(w.turns for w in windows), key=lambda turn: turn.ts)),
+        hellos=list(heapq.merge(*(w.hellos for w in windows), key=lambda hello: hello.ts)),
+        declarations=[names for w in windows for names in w.declarations],
+        end=end,
+    )
 
 
 class NoTraceCollector:

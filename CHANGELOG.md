@@ -25,6 +25,7 @@
 - `highbar run --report junit=<file>`: the report as JUnit XML, for the CI tools that read it, with the JSON report's lifecycle. Each spec is a `testsuite` and each test a `testcase`, with a `failure` or an `error`. A run that did not finish, stopped halfway, or exited with an error code while no test failed gets one more case, `highbar.run`, with an `error`: zero failed cases would read as a pass.
 - `highbar run --report markdown=<file>`: the report as a Markdown summary for a CI job's page (`$GITHUB_STEP_SUMMARY`): whether the run passed, the tests that did not with why, and the others folded. Text from the agent is escaped, and a long list is cut, so the page stays under GitHub's 1 MiB.
 - `--report` can be given more than once, one file per format, all from the same run.
+- `agent.traces` takes a glob (`var/traces/*.jsonl`): one trace file per process of an attached agent, read together in time order, so a server and its workers no longer share a file whose appends a bind mount may cut. The SDK puts the process id where the path says `{pid}`. A glob that matches no file stops the run before the first message, as a missing file does.
 
 ### Changed
 
