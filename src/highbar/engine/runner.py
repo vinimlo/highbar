@@ -286,7 +286,7 @@ def _merged_errors(results: list[TestResult], conditions: Mapping[str, str]) -> 
     for failed in groups.values():
         (run, first), count = failed[0], f"{len(failed)} of {len(results)} runs"
         same = all(error == first for _, error in failed)
-        lines.append(f"{first} ({count})" if same else f"{first} ({count}; reply from run {run})")
+        lines.append(f"{first} ({count})" if same else f"{first} ({count}; as in run {run})")
     return lines
 
 

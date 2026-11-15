@@ -41,7 +41,8 @@ class FunctionCallsAssertion:
         if not expect.function_calls:
             if traces:
                 called = ", ".join(t.fn for t in traces)
-                return [*results, _failed(f"Expected no function calls, but got: {called}")]
+                guardrail = "Expected no function calls"
+                return [*results, _failed(f"{guardrail}, but got: {called}", guardrail)]
             return [*results, AssertionResult(passed=True, message="")]
 
         expected = expect.function_calls
@@ -54,7 +55,7 @@ class FunctionCallsAssertion:
         if expect.ordered:
             in_order = _in_order(expected, traces)
             if in_order is None:
-                results.append(_failed(_out_of_order(expected, traces, assignment)))
+                results.append(_failed(*_out_of_order(expected, traces, assignment)))
             else:
                 assignment = in_order
 
@@ -62,7 +63,7 @@ class FunctionCallsAssertion:
             used = set(assignment)
             extra = [t.fn for c, t in enumerate(traces) if c not in used]
             if extra:
-                results.append(_failed(f"unexpected calls: {', '.join(extra)}"))
+                results.append(_failed(f"unexpected calls: {', '.join(extra)}", "unexpected calls"))
         return results
 
 
@@ -118,16 +119,17 @@ def _in_order(expected: list[FunctionCallExpect], traces: list[Trace]) -> list[i
 
 def _out_of_order(
     expected: list[FunctionCallExpect], traces: list[Trace], assignment: list[int | None]
-) -> str:
+) -> tuple[str, str]:
     wanted = [_label(e) for e in expected]
     matched = sorted(
         (c for c in assignment if c is not None), key=lambda c: (traces[c].started_at, c)
     )
     got = [traces[c].fn for c in matched]
-    message = f"calls matched but out of order: expected {', '.join(wanted)}; got {', '.join(got)}"
+    condition = f"calls matched but out of order: expected {', '.join(wanted)}"
+    message = f"{condition}; got {', '.join(got)}"
     if got == wanted:
         message += " (they overlap: each call must start after the one before it ends)"
-    return message
+    return message, condition
 
 
 def _per_expectation(
@@ -136,9 +138,12 @@ def _per_expectation(
     results: list[AssertionResult] = []
     seen: set[str] = set()
     for index, (e, call) in enumerate(zip(expected, assignment, strict=True)):
-        message = "" if call is not None else _unmet(e, index, expected, traces, assignment)
+        message, condition = (
+            ("", None) if call is not None else _unmet(e, index, expected, traces, assignment)
+        )
         # Two expectations short of the same calls say the same thing once.
-        results.append(AssertionResult(passed=not message or message in seen, message=message))
+        passed = not message or message in seen
+        results.append(AssertionResult(passed=passed, message=message, condition=condition))
         seen.add(message)
     return results
 
@@ -149,16 +154,22 @@ def _unmet(
     expected: list[FunctionCallExpect],
     traces: list[Trace],
     assignment: list[int | None],
-) -> str:
-    """Why an expected call has no call to serve it, the most basic reason first."""
+) -> tuple[str, str]:
+    """Why an expected call has no call to serve it, the most basic reason first.
+
+    With it, the condition that failed apart from what the agent did, which changes
+    from run to run: a phrasing's runs are grouped by it (HB-27).
+    """
     names = e.accepted_names
     candidates = [t for t in traces if t.fn in names]
     if not candidates:
         called = ", ".join(t.fn for t in traces) or "nothing"
-        return f"Expected call to {_describe(names)}, but the agent called: {called}"
+        missing = f"Expected call to {_describe(names)}"
+        return f"{missing}, but the agent called: {called}", missing
 
     if e.error is False and all(t.error is not None for t in candidates):
-        return f"'{candidates[0].fn}' was called but failed: {candidates[0].error}"
+        failed = f"'{candidates[0].fn}' was called but failed"
+        return f"{failed}: {candidates[0].error}", failed
 
     if any(satisfies(e, t) for t in candidates):
         # It fits, but another expectation needed the same call.
@@ -170,17 +181,21 @@ def _unmet(
     taken = {c for c in assignment if c is not None}
     free = [t for c, t in enumerate(traces) if t.fn in names and c not in taken]
     call = (free or candidates)[0]
-    errors: list[str] = []
+    errors: list[tuple[str, str]] = []  # what was expected, and what the call had
     if e.params and not subset_match(e.params, call.args):
-        errors.append(f"params: expected {e.params}, got {call.args}")
+        errors.append((f"params: expected {e.params}", f"{call.args}"))
     if e.result and not subset_match(e.result, call.result):
-        errors.append(f"result: expected {e.result}, got {call.result}")
+        errors.append((f"result: expected {e.result}", f"{call.result}"))
     if not _error_matches(e.error, call.error):
-        errors.append(f"error: expected {_expected_error(e.error)}, got {call.error or 'none'}")
-    return f"'{call.fn}' was called but didn't match: {'; '.join(errors)}"
+        errors.append((f"error: expected {_expected_error(e.error)}", f"{call.error or 'none'}"))
+    head = f"'{call.fn}' was called but didn't match: "
+    message = head + "; ".join(f"{wanted}, got {got}" for wanted, got in errors)
+    return message, head + "; ".join(wanted for wanted, _ in errors)
 
 
-def _shortfall(index: int, expected: list[FunctionCallExpect], traces: list[Trace]) -> str:
+def _shortfall(
+    index: int, expected: list[FunctionCallExpect], traces: list[Trace]
+) -> tuple[str, str]:
     """How many calls the expectations sharing names with this one need, and got.
 
     Sharing is transitive: with [a, a|b, b], all three compete for calls to a and b.
@@ -201,10 +216,11 @@ def _shortfall(index: int, expected: list[FunctionCallExpect], traces: list[Trac
     fit = [t for t in traces if any(satisfies(expected[g], t) for g in group)]
     failed = [t for t in traces if t.fn in names and t.error is not None and t not in fit]
     label = " or ".join(f"'{name}'" for name in names)
-    message = f"expected {len(group)} calls to {label}, got {len(fit)} that fit"
+    condition = f"expected {len(group)} calls to {label}"
+    message = f"{condition}, got {len(fit)} that fit"
     if failed:
         message += f"; {len(failed)} more failed: " + "; ".join(t.error or "" for t in failed[:3])
-    return message
+    return message, condition
 
 
 def _error_matches(expected: bool | dict[str, Any], actual: str | None) -> bool:
@@ -223,8 +239,8 @@ def _expected_error(expected: bool | dict[str, Any]) -> str:
     return f"a failure matching {expected}"
 
 
-def _failed(message: str) -> AssertionResult:
-    return AssertionResult(passed=False, message=message)
+def _failed(message: str, condition: str | None = None) -> AssertionResult:
+    return AssertionResult(passed=False, message=message, condition=condition)
 
 
 def _label(e: FunctionCallExpect) -> str:

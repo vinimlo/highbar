@@ -11,8 +11,18 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
-from highbar.domain.models import Expect, ResponseExpect, Status, Turn
+from highbar.domain.models import (
+    Expect,
+    FunctionCallExpect,
+    ResponseExpect,
+    Status,
+    Trace,
+    Turn,
+    TurnRecord,
+    Window,
+)
 from highbar.domain.models import Test as Case
 from tests.unit.engine.test_outcomes import Replying, _run
 
@@ -59,9 +69,9 @@ class TestGroups:
 
         lines = [
             "Response does not match pattern '^Order'. Got: 'sorry, try again (1)' "
-            "(5 of 5 runs; reply from run 1)",
+            "(5 of 5 runs; as in run 1)",
             "Response matches forbidden pattern 'sorry' (found 'sorry'). "
-            "Got: 'sorry, try again (1)' (5 of 5 runs; reply from run 1)",
+            "Got: 'sorry, try again (1)' (5 of 5 runs; as in run 1)",
         ]
         (test,) = summary.tests
         assert test.status is Status.FAILED
@@ -76,7 +86,7 @@ class TestGroups:
 
         assert list(summary.tests[0].errors) == [
             "Response contains forbidden text 'sorry'. Got: 'sorry, no stock' "
-            "(2 of 3 runs; reply from run 2)"
+            "(2 of 3 runs; as in run 2)"
         ]
 
     def test_hb27_the_same_text_keeps_its_form(self) -> None:
@@ -96,9 +106,9 @@ class TestGroups:
         )
 
         assert list(summary.tests[0].errors) == [
-            "Response does not contain 'ok'. Got: 'no 1' (2 of 2 runs; reply from run 1)",
+            "Response does not contain 'ok'. Got: 'no 1' (2 of 2 runs; as in run 1)",
             "Response does not contain 'thanks' (ignoring case). Got: 'no 1' "
-            "(2 of 2 runs; reply from run 1)",
+            "(2 of 2 runs; as in run 1)",
         ]
 
     def test_hb27_each_execution_keeps_its_own_message(self) -> None:
@@ -126,5 +136,127 @@ class TestGroups:
 
         assert list(summary.tests[0].errors) == [
             "turn 2/2 (place my order): Response does not contain 'placed'. "
-            "Got: 'sorry 1' (2 of 2 runs; reply from run 1)"
+            "Got: 'sorry 1' (2 of 2 runs; as in run 1)"
+        ]
+
+
+def _call(fn: str, start: float, **fields: object) -> Trace:
+    return Trace(
+        fn=fn,
+        args=dict(fields.get("args", {})),  # type: ignore[call-overload]
+        result=fields.get("result"),
+        error=fields.get("error"),  # type: ignore[arg-type]
+        started_at=start,
+        ended_at=start + 0.1,
+    )
+
+
+def _conditions(traces: list[Trace], expect: Expect) -> list[tuple[str, str | None]]:
+    failed = FunctionCallsAssertion().evaluate(traces, "", expect)
+    return [(r.message, r.condition) for r in failed if not r.passed]
+
+
+class TestCallConditions:
+    """HB-27 v1: a call check's message names what the agent did, which changes per run."""
+
+    def test_hb27_a_guardrail(self) -> None:
+        got = _conditions([_call("search", 1)], Expect(function_calls=[]))
+
+        assert got == [
+            ("Expected no function calls, but got: search", "Expected no function calls")
+        ]
+
+    def test_hb27_a_call_never_made(self) -> None:
+        expect = Expect(function_calls=[FunctionCallExpect(name="lookup")])
+
+        got = _conditions([_call("search", 1)], expect)
+
+        assert got == [
+            ("Expected call to 'lookup', but the agent called: search", "Expected call to 'lookup'")
+        ]
+
+    def test_hb27_a_call_that_failed(self) -> None:
+        expect = Expect(function_calls=[FunctionCallExpect(name="lookup")])
+
+        got = _conditions([_call("lookup", 1, error="TimeoutError: slow")], expect)
+
+        assert got == [
+            ("'lookup' was called but failed: TimeoutError: slow", "'lookup' was called but failed")
+        ]
+
+    def test_hb27_a_call_with_other_params(self) -> None:
+        expect = Expect(function_calls=[FunctionCallExpect(name="lookup", params={"id": 1})])
+
+        got = _conditions([_call("lookup", 1, args={"id": 2})], expect)
+
+        assert got == [
+            (
+                "'lookup' was called but didn't match: params: expected {'id': 1}, got {'id': 2}",
+                "'lookup' was called but didn't match: params: expected {'id': 1}",
+            )
+        ]
+
+    def test_hb27_too_few_calls_that_fit(self) -> None:
+        two = [FunctionCallExpect(name="search"), FunctionCallExpect(name="search")]
+
+        got = _conditions([_call("search", 1)], Expect(function_calls=two))
+
+        assert got == [
+            ("expected 2 calls to 'search', got 1 that fit", "expected 2 calls to 'search'")
+        ]
+
+    def test_hb27_calls_out_of_order(self) -> None:
+        expect = Expect(
+            function_calls=[FunctionCallExpect(name="a"), FunctionCallExpect(name="b")],
+            ordered=True,
+        )
+
+        got = _conditions([_call("b", 1), _call("a", 2)], expect)
+
+        assert got == [
+            (
+                "calls matched but out of order: expected a, b; got b, a",
+                "calls matched but out of order: expected a, b",
+            )
+        ]
+
+    def test_hb27_unexpected_calls(self) -> None:
+        expect = Expect(function_calls=[FunctionCallExpect(name="a")], exclusive=True)
+
+        got = _conditions([_call("a", 1), _call("c", 2)], expect)
+
+        assert got == [("unexpected calls: c", "unexpected calls")]
+
+    def test_hb27_a_forbidden_tool_says_it_all(self) -> None:
+        got = _conditions([_call("delete_account", 1)], Expect(forbid=["delete_account"]))
+
+        assert got == [("forbidden tool 'delete_account' was called", None)]
+
+
+class TestCallGroups:
+    def test_hb27_a_guardrail_broken_with_other_calls_per_run_is_one_line(self) -> None:
+        names = iter(["search", "lookup", "search"])
+
+        def script(message: str, test_id: str) -> Window:
+            return Window(
+                tools=[
+                    Trace(
+                        fn=next(names),
+                        args={},
+                        result=None,
+                        started_at=1.0,
+                        ended_at=1.1,
+                        context={"test": test_id},
+                    )
+                ],
+                turns=[TurnRecord(ts=1.0, context={"test": test_id})],
+            )
+
+        summary = _run(
+            [Case(trigger="tell me a joke", expect=Expect(function_calls=[]), runs=3)],
+            Replying(["ha", "ha", "ha"], script),
+        )
+
+        assert list(summary.tests[0].errors) == [
+            "Expected no function calls, but got: search (3 of 3 runs; as in run 1)"
         ]
