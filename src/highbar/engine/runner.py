@@ -40,7 +40,7 @@ from highbar.domain.models import (
     stable_key,
 )
 from highbar.domain.protocols import Assertion, Reporter, TraceCollector, VariationGenerator
-from highbar.engine import observation
+from highbar.engine import observation, signals
 from highbar.engine import session as sessions
 from highbar.engine.observation import (
     AgentNotObservedError,
@@ -713,14 +713,20 @@ class TestRunner:
 
     def _after_run(self) -> None:
         """agent.run's teardown. Its failure is a warning: the results stand, but what the
-        setup changed may still be as the run left it."""
+        setup changed may still be as the run left it.
+
+        A signal that lands while it runs waits for its end (within agent.timeout), then
+        goes where it would have gone: a Ctrl-C there would leave the setup's change in
+        place. The warning is told first.
+        """
         if self._session is None:
             return
-        try:
-            self._session.after_run()
-        except Exception as e:
-            reason = str(e) if isinstance(e, SessionError) else f"{type(e).__name__}: {e}"
-            self._warn(f"{reason}; check by hand what it was to undo")
+        with signals.holding_signals():
+            try:
+                self._session.after_run()
+            except Exception as e:
+                reason = str(e) if isinstance(e, SessionError) else f"{type(e).__name__}: {e}"
+                self._warn(f"{reason}; check by hand what it was to undo")
 
     def _warn(self, message: str) -> None:
         self._warnings.append(message)

@@ -98,7 +98,7 @@ agent:
 
 - Each is a command, `{python: "module:function"}` or `{http: {url, method, headers, body}}`, like a session hook. They belong to no test, so they take no placeholder, and a Python one is called with no argument. `${NAME}` in them is masked, as in `session`.
 - A `setup` that fails stops the run before the agent starts, with exit code 2. Nothing is sent, and its `teardown` does not run.
-- Once the `setup` finished, the `teardown` runs on every way out: at the end, when `--max-cost` stops the run, when the agent does not start, on Ctrl-C and on SIGTERM. A `teardown` that fails is a warning above the summary: the results stand, and what it was to put back may still be as the run left it.
+- Once the `setup` finished, the `teardown` runs on every way out: at the end, when `--max-cost` stops the run, when the agent does not start, on Ctrl-C and on SIGTERM. A Ctrl-C, SIGTERM or SIGHUP that lands while the `teardown` runs waits for it to end, within `agent.timeout`, and then stops highbar as it would have. A `teardown` that fails is a warning above the summary: the results stand, and what it was to put back may still be as the run left it.
 - Each has `agent.timeout` to finish. With several specs, each spec runs its own, around its own agent.
 
 ## A session per test
