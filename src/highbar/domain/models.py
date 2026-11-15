@@ -284,6 +284,8 @@ class Test:
     min_pass: int | float | None = None
     # What joins this test across reports; without it, the key is suite/name (D15).
     id: str | None = None
+    # Labels for --tag, its suite's and its own (HB-17). Like name and id, out of the hash.
+    tags: tuple[str, ...] = ()
 
     @property
     def requires_observation(self) -> bool:

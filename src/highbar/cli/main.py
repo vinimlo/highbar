@@ -99,6 +99,15 @@ _SUITE = typer.Option(
     metavar="NAME",
     help="Run only the suites with this name. Give it more than once for more suites.",
 )
+_TAG = typer.Option(
+    None,
+    "--tag",
+    metavar="NAME",
+    help=(
+        "Run only the tests with this tag, their suite's or their own. Give it more than "
+        "once for any of them."
+    ),
+)
 _KEYWORD = typer.Option(
     None,
     "-k",
@@ -171,6 +180,7 @@ def run(
     ),
     suite: list[str] | None = _SUITE,
     keyword: list[str] | None = _KEYWORD,
+    tag: list[str] | None = _TAG,
 ) -> None:
     """Run behavior tests against your agent."""
     paths = _discover_specs(spec_path)
@@ -186,6 +196,7 @@ def run(
             max_errors=max_errors,
             suites=suite or (),
             keywords=keyword or (),
+            tags=tag or (),
         )
     except KeyboardInterrupt:
         # Anywhere in the run, parsing and hooks included. If an agent was up, the
@@ -272,6 +283,7 @@ def _run_all(
     max_errors: int = DEFAULT_MAX_ERRORS,
     suites: Sequence[str] = (),
     keywords: Sequence[str] = (),
+    tags: Sequence[str] = (),
 ) -> int:
     """Run every spec and return the exit code.
 
@@ -309,7 +321,7 @@ def _run_all(
     specs = _sharing_secrets(specs)
     # --suite and -k: the specs are whole above, so a typo anywhere still stops the run.
     try:
-        specs = select(specs, suites=suites, keywords=keywords)
+        specs = select(specs, suites=suites, keywords=keywords, tags=tags)
     except SelectionError as e:
         console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)
         return _stopped(report, "usage_error", str(e), EXIT_UNRUNNABLE)

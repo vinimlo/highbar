@@ -111,3 +111,53 @@ class TestNothingPicked:
         assert str(caught.value) == (
             "no test matches --suite Support -k cancel -k refund: nothing would be checked"
         )
+
+
+TAGGED = Spec(
+    agent=AGENT,
+    suites=[
+        Suite(
+            name="Orders",
+            tests=[
+                Case(trigger="where is my order", expect=OK, tags=("smoke", "orders")),
+                Case(trigger="cancel it", expect=OK, tags=("orders", "slow")),
+            ],
+        ),
+        Suite(name="Menu", tests=[Case(trigger="show the menu", expect=OK)]),
+    ],
+)
+
+
+class TestTags:
+    """HB-17 v1: ``tags:`` in a suite and a test, picked with ``--tag``."""
+
+    def test_hb17_a_tag_picks_the_tests_that_have_it(self) -> None:
+        picked = select([("a.highbar.yaml", TAGGED)], suites=(), keywords=(), tags=["smoke"])
+
+        assert _picked(picked) == ["a.highbar.yaml:Orders/where is my order"]
+
+    def test_hb17_tag_given_twice_picks_either(self) -> None:
+        picked = select(
+            [("a.highbar.yaml", TAGGED)], suites=(), keywords=(), tags=["smoke", "slow"]
+        )
+
+        assert len(_picked(picked)) == 2
+
+    def test_hb17_tag_and_k_together_pick_both_ways(self) -> None:
+        picked = select(
+            [("a.highbar.yaml", TAGGED)], suites=(), keywords=["cancel"], tags=["orders"]
+        )
+
+        assert _picked(picked) == ["a.highbar.yaml:Orders/cancel it"]
+
+    def test_hb17_a_tag_no_test_has_is_named(self) -> None:
+        with pytest.raises(SelectionError) as caught:
+            select([("a.highbar.yaml", TAGGED)], suites=(), keywords=(), tags=["smok"])
+
+        assert str(caught.value) == (
+            "--tag 'smok': no test has that tag — did you mean 'smoke'? (tags: orders, slow, smoke)"
+        )
+
+    def test_hb17_with_no_tags_anywhere_it_says_so(self) -> None:
+        with pytest.raises(SelectionError, match=r"\(tags: none\)$"):
+            select(SPECS, suites=(), keywords=(), tags=["smoke"])

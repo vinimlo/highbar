@@ -18,6 +18,7 @@ Runs the tests of a spec file, or of every `*.highbar.yaml` under a directory. W
 | `--max-errors N` | Stop the run once N executions in a row fail for the same cause of the agent's infrastructure, and exit with 4. 5 by default; 0 never stops. |
 | `--suite NAME` | Run only the suites with this name. Repeat it for more suites. See [part of the tests](#part-of-the-tests). |
 | `-k TEXT` | Run only the tests whose `<suite>/<name>` or `id` contains TEXT, ignoring case. Repeat it for any of several. |
+| `--tag NAME` | Run only the tests with this tag, their suite's or their own. Repeat it for any of several. |
 
 All specs are parsed and validated before any agent starts. With several specs, each one prints its own summary, and a total follows at the end. When the turns report [usage](/reference/trace-contract#usage-tokens-and-cost), a summary ends with its tokens and cost, and says `incomplete`, with what is missing, when they are only part of the sum:
 
@@ -28,16 +29,38 @@ All specs are parsed and validated before any agent starts. With several specs, 
 
 ### Part of the tests
 
-`--suite` and `-k` run part of the tests, for a quick loop on the ones you are changing, or a short gate on each pull request with the whole suite at night:
+`--suite`, `-k` and `--tag` run part of the tests, for a quick loop on the ones you are changing, or a short gate on each pull request with the whole suite at night:
 
 ```console
 highbar run specs/ --suite Orders
 highbar run specs/ -k cancel -k refund
+highbar run specs/ --tag smoke
 ```
 
-`--suite` takes a suite's name as written. `-k` takes a piece of `<suite>/<name>`, or of the test's `id`, and ignores case; it is not an expression. Given more than once, either of them picks any of its values, and given together, a test must be in one of the suites and match one of the pieces. Every spec is still parsed and validated whole, so a typo anywhere stops the run. A spec with no test picked is left out, and its agent does not start. The report lists only the tests picked.
+`--suite` takes a suite's name as written. `-k` takes a piece of `<suite>/<name>`, or of the test's `id`, and ignores case; it is not an expression. `--tag` takes a tag as written: a test has the `tags` of its suite and its own.
 
-A selection that picks no test stops the run before any agent starts, with exit code 2, since a run that checks nothing must not pass. So does a `--suite` that no spec has, with the closest name.
+```yaml
+agent:
+  start: "uv run python agent.py"
+  endpoint: "http://localhost:8000/chat"
+suites:
+  - name: Orders
+    tags: [orders]
+    tests:
+      - trigger: "Where is order 1042?"
+        tags: [smoke]
+        expect:
+          response:
+            contains: "1042"
+      - trigger: "Cancel order 1042"
+        expect:
+          function_calls:
+            - name: cancel_order
+```
+
+Here `--tag orders` runs both tests and `--tag smoke` only the first. Given more than once, each option picks any of its values, and given together, a test must match each option given. Every spec is still parsed and validated whole, so a typo anywhere stops the run. A spec with no test picked is left out, and its agent does not start. The report lists only the tests picked.
+
+A selection that picks no test stops the run before any agent starts, with exit code 2, since a run that checks nothing must not pass. So does a `--suite` that no spec has, or a `--tag` that no test has, with the closest name.
 
 ### `--max-cost`
 

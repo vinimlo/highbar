@@ -34,6 +34,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 |---|---|---|
 | `name` | text | Required. |
 | `tests` | list | Required, not empty. |
+| `tags` | list of texts | Labels for [`--tag`](/reference/cli#part-of-the-tests). Each of the suite's tests has them, before its own. |
 
 ## `tests[]`
 
@@ -47,6 +48,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `variations` | integer | How many paraphrases of the trigger to run as well. |
 | `runs` | integer ≥ 1 | How many times to run each phrasing. |
 | `min_pass` | integer ≥ 1, or fraction in (0, 1] | How many runs must pass. Default: `defaults.min_pass`, else all. A fraction is rounded up. |
+| `tags` | list of texts | Labels for [`--tag`](/reference/cli#part-of-the-tests), added to its suite's. Like `name` and `id`, they are not part of what the test measures. |
 
 Each test's key is unique in a spec. Two tests with the same key are a spec error: give one an `id` or a different `name`.
 

@@ -39,9 +39,9 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "request": frozenset({"method", "headers", "body"}),
     "session": frozenset({"setup", "teardown"}),
     "python_hook": frozenset({"python"}),
-    "suite": frozenset({"name", "tests"}),
+    "suite": frozenset({"name", "tests", "tags"}),
     "test": frozenset(
-        {"id", "name", "trigger", "expect", "turns", "variations", "runs", "min_pass"}
+        {"id", "name", "trigger", "expect", "turns", "variations", "runs", "min_pass", "tags"}
     ),
     "turn": frozenset({"name", "trigger", "expect"}),
     "expect": frozenset({"function_calls", "response", "ordered", "exclusive", "forbid", "budget"}),

@@ -112,6 +112,18 @@ class TestSelection:
         (call,) = fake.call_args_list
         assert "secret-a-123" in call.kwargs["secrets"]
 
+    def test_hb17_a_tag_picks_its_tests(self, project: Path) -> None:
+        tagged = textwrap.dedent(SPEC).replace("name: Menu", "name: Drinks\n    tags: [smoke]")
+        (project / "specs" / "menu" / "drinks.highbar.yaml").write_text(tagged, "utf-8")
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--tag", "smoke"])
+
+        assert result.exit_code == 0, result.output
+        (call,) = fake.return_value.run.call_args_list
+        assert [suite.name for suite in call.args[0].suites] == ["Drinks"]
+
     def test_hb17_a_suite_no_spec_has_exits_2(self, project: Path) -> None:
         with patch("highbar.engine.run_spec.TestRunner") as fake:
             result = runner.invoke(app, ["run", "specs/", "--suite", "Menus"])
