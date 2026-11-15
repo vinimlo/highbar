@@ -9,7 +9,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from highbar.adapters.file_collector import TraceFormatError, is_glob
+from highbar.adapters import file_collector
+from highbar.adapters.file_collector import TraceFormatError
 from highbar.adapters.http_client import AgentResponseError, HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
 from highbar.assertions.response import truncate
@@ -1089,7 +1090,7 @@ class TestRunner:
         with whatever it does for real, to learn only that nothing could be observed.
         """
         where = self._collector.path.absolute()
-        if is_glob(where):
+        if file_collector.is_glob(where):
             return (
                 f"no file matches agent.traces {where}, so no test could see what the agent "
                 "does; nothing was sent. Check agent.traces (a relative path starts where "
