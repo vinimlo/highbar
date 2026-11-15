@@ -57,6 +57,6 @@ turns:
 
 <code v-pre>{{previous.response}}</code> is the reply of the turn right before, and <code v-pre>{{previous.turns[N].response}}</code> the reply of the Nth earlier turn, counted from 0. The reply goes in whole, as `agent.response` read it. A path ends on `.response`: a turn, or the list of turns, is not a value. A trigger can also name a value of the session, <code v-pre>{{session.&lt;path&gt;}}</code> ([attach mode and sessions](/guides/attach-mode)).
 
-A path that does not resolve makes that test an `error` that names the path and what was there instead, and the rest of the run goes on. So does a reply that was not read: the turn is an `error`, and the text `null` is never sent. In the first turn there is no previous response.
+A path that does not resolve makes that test an `error` that names the path and what was there instead, and the rest of the run goes on. So does a reply that was not read: the turn is an `error`, and the text `null` is never sent. A value that is `null` is an `error` too, and <code v-pre>{{previous}}</code> or <code v-pre>{{session}}</code> with no path does not load. In the first turn there is no previous response.
 
 Variations do not apply to multi-turn tests.

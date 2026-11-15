@@ -212,3 +212,42 @@ class TestSessionInTrigger:
         text = "{{test.id}} and {{foo}} stay"
 
         assert resolve_template(text, [], (), {"k": "v"}) == text
+
+
+class TestNoValueGoesOutAsAValue:
+    """Review of #36: a null, or a template with no path, never goes out as text."""
+
+    def test_hb20_a_null_session_value_is_an_error_not_the_text_null(self) -> None:
+        """Sent as "Where is order null?", it would fail the agent for the setup's fault."""
+        with pytest.raises(
+            TemplateError, match=r"^\{\{session\.order\}\}: the value is null: the session setup"
+        ):
+            resolve_template("Where is order {{session.order}}?", [], (), {"order": None})
+
+    def test_hb20_a_null_from_an_earlier_call_is_an_error(self) -> None:
+        template = "Refund {{previous.function_calls[0].result.order_id}}"
+
+        with pytest.raises(
+            TemplateError,
+            match=r"^\{\{previous\.function_calls\[0\]\.result\.order_id\}\}: the value is null",
+        ):
+            resolve_template(template, [_trace({"order_id": None})])
+
+    def test_hb20_a_null_inside_an_object_stays_json(self) -> None:
+        """Only the value named is checked: an object goes as JSON, with its nulls."""
+        assert (
+            resolve_template("{{session.user}}", [], (), {"user": {"id": None}}) == '{"id": null}'
+        )
+
+    @pytest.mark.parametrize(
+        "template",
+        ["{{session}}", "{{ session }}", "{{session.}}", "{{previous}}", "{{previous.}}"],
+    )
+    def test_hb20_a_template_with_no_path_is_an_error(self, template: str) -> None:
+        with pytest.raises(TemplateError, match=r"^\{\{(session|previous)\}\}: names no value"):
+            resolve_template(f"hi {template}", [], ["a reply"], {"k": "v"})
+
+    def test_hb20_a_template_ends_at_its_own_closing_braces(self) -> None:
+        """`(.+?)` crossed a `}}`: this came out as one path, `}} {{ session`."""
+        with pytest.raises(TemplateError, match=r"^\{\{session\}\}: names no value"):
+            resolve_template("{{session.}} {{ session }}", [], (), {"k": "v"})

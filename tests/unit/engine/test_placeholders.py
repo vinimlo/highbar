@@ -55,3 +55,14 @@ def test_non_text_values_pass_through() -> None:
 def test_uses_placeholder() -> None:
     assert uses_placeholder({"a": ["x {{ message }}"]}, "message")
     assert not uses_placeholder({"a": "{{test.id}}"}, "message")
+
+
+@pytest.mark.parametrize("value", ["{{session.token}}", "Bearer {{session.token}}"])
+def test_hb20_a_null_session_value_is_an_error_here_too(value: str) -> None:
+    """Review of #36: as in a trigger, a null most likely means the setup gave no value."""
+    values = Values(message="m", test_id="t", test_name="n", session={"token": None})
+
+    with pytest.raises(
+        PlaceholderError, match=r"^\{\{session\.token\}\}: the value is null: the session setup"
+    ):
+        render({"auth": value}, values)

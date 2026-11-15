@@ -123,6 +123,13 @@ def _resolve(name: str, values: Values) -> Any:
         return values.test_name
     path = name.removeprefix("session.")
     try:
-        return get_path(dict(values.session), path)
+        value = get_path(dict(values.session), path)
     except PathError as e:
         raise PlaceholderError(f"{{{{session.{path}}}}}: {e}") from None
+    if value is None:
+        # As in a trigger: most likely the setup gave no value, and sending null (or
+        # the text "null") would fail the agent for the setup's fault.
+        raise PlaceholderError(
+            f"{{{{session.{path}}}}}: the value is null: the session setup returned no value for it"
+        )
+    return value
