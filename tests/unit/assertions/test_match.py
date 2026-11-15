@@ -475,8 +475,8 @@ class TestEmptyOperands:
     """HB-36: params and result refuse what `response` already refuses.
 
     `""` is in every text and an empty pattern matches every text, so a positive matcher
-    with one holds on anything; a negative one can never hold. `{}` subset-matches
-    nothing, so it only says "this is an object".
+    with one holds on anything; a negative one can never hold. `{}` is different: as a
+    value it still says "this argument is there and is an object", which can fail.
     """
 
     @pytest.mark.parametrize(
@@ -500,13 +500,18 @@ class TestEmptyOperands:
         validate_expected({"q": {"equals": ""}}, "params")
         assert not subset_match({"q": {"equals": ""}}, {"q": "x"})
 
-    def test_hb36_an_empty_object_is_refused(self) -> None:
-        with pytest.raises(ValueError, match=r"result\.order: an empty object checks nothing"):
-            validate_expected({"order": {}}, "result")
+    def test_hb36_an_empty_object_loads_and_checks_presence_and_type(self) -> None:
+        """Review of #31: `{order: {}}` is "order is there and is an object"."""
+        validate_expected({"order": {}}, "result")
+        assert subset_match({"order": {}}, {"order": {"id": 1}})
+        assert not subset_match({"order": {}}, {"total": 3})
+        assert not subset_match({"order": {}}, {"order": "1"})
+        assert not subset_match({"order": {}}, {"order": None})
 
-    def test_hb36_an_empty_object_deeper_down_is_refused(self) -> None:
-        with pytest.raises(ValueError, match=r"result\.order\.items: an empty object"):
-            validate_expected({"order": {"items": {}}}, "result")
+    def test_hb36_an_empty_object_deeper_down_loads_and_checks(self) -> None:
+        validate_expected({"order": {"items": {}}}, "result")
+        assert subset_match({"order": {"items": {}}}, {"order": {"items": {"a": 1}}})
+        assert not subset_match({"order": {"items": {}}}, {"order": {"items": ["a"]}})
 
     def test_hb36_equals_an_empty_object_is_still_a_check(self) -> None:
         validate_expected({"order": {"equals": {}}}, "result")

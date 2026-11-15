@@ -199,7 +199,6 @@ class TestEmptyOperandsAtLoad:
         [
             ('{q: {contains: ""}}', r"params\.q: 'contains' cannot be empty"),
             ('{q: {matches: ""}}', r"params\.q: 'matches' cannot be empty"),
-            ("{opts: {}}", r"params\.opts: an empty object checks nothing"),
         ],
     )
     def test_hb36_an_operand_that_cannot_fail_is_refused(
@@ -215,6 +214,10 @@ class TestEmptyOperandsAtLoad:
 
         with pytest.raises(ValueError, match=r"error: 'contains' cannot be empty"):
             parse_spec(path)
+
+    def test_hb36_an_empty_object_as_an_argument_loads(self, tmp_path: Path) -> None:
+        """Review of #31: `{opts: {}}` checks that opts is there and is an object."""
+        parse_spec(_spec_with_params(tmp_path, "{opts: {}, filters: {range: {}}}"))
 
     def test_hb36_params_with_no_keys_still_load(self, tmp_path: Path) -> None:
         """The top of params is argument names: none at all is a call with any arguments."""

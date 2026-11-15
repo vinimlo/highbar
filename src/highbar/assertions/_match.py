@@ -265,13 +265,6 @@ def validate_expected(expected: Any, where: str) -> None:
         )
         raise ValueError(msg)
 
-    if not mapping:
-        # The subset of nothing holds on any object (HB-36).
-        msg = (
-            f"{where}: an empty object checks nothing; to compare with one, write {{equals: {{}}}}"
-        )
-        raise ValueError(msg)
-
     if not known:
         for key in unknown:
             intended = _NEAR_MISSES.get(_stem(key))
