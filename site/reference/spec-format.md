@@ -20,7 +20,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `startup_timeout` | ms | 15000 | How long a started agent has to become ready. |
 | `settle_time` | ms | 500 | How long after a reply highbar waits before reading the trace file. |
 | `timeout` | ms | 60000 | Each reply, and each session hook. |
-| `traces` | path | none | The trace file of an attached agent. Required when a test checks tool calls in attach mode. |
+| `traces` | path or glob | none | The trace file of an attached agent, or a glob of files, one per process (`var/traces/*.jsonl`), read together in time order. A path that names a file is that file, even with a `[` in it. See [several processes](/guides/attach-mode#an-agent-with-several-processes). Required when a test checks tool calls in attach mode. |
 | `request` | mapping | <code v-pre>POST {"message": "{{message}}"}</code> | `method`, `headers`, `body`. |
 | `response` | dotted path | first of `response`, `message`, `content`, `text`, `reply` | Where the reply text is in the JSON body. |
 | `session` | mapping | none | `setup` and `teardown` hooks, each a command, `{python: "module:function"}` or `{http: {url, method, headers, body}}`. |

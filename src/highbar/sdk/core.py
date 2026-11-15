@@ -7,6 +7,7 @@ nothing is written and a tool call costs one environment lookup.
 
 from __future__ import annotations
 
+import atexit
 import os
 import threading
 import time
@@ -92,14 +93,22 @@ class Highbar:
         self._hello_lock = threading.Lock()
         # The file each path last had a hello in: its device and inode (see _ensure_hello).
         self._hello_files: dict[str, tuple[int, int]] = {}
+        # The process that wrote each path's hello: only it may say bye there.
+        self._hello_pids: dict[str, int] = {}
+        atexit.register(self._bye)
         path = self.traces
         if path is not None:
             self._ensure_hello(path)
 
     @property
     def traces(self) -> str | None:
-        """The trace file right now: the one given, or ``HIGHBAR_TRACES_URL``."""
-        return self._explicit or os.environ.get(_ENV_VAR) or None
+        """The trace file right now: the one given, or ``HIGHBAR_TRACES_URL``.
+
+        ``{pid}`` in it is this process's id (HB-15): a server and its workers each write
+        a file of their own, which highbar reads together through a glob.
+        """
+        path = self._explicit or os.environ.get(_ENV_VAR) or None
+        return path.replace("{pid}", str(os.getpid())) if path else None
 
     @property
     def enabled(self) -> bool:
@@ -279,7 +288,25 @@ class Highbar:
             written = _identity(path)
             if written is not None:
                 self._hello_files[path] = written
+                self._hello_pids[path] = os.getpid()
             return False
+
+    def _bye(self) -> None:
+        """A `bye` in each file this process wrote its `hello` in (HB-15), from ``atexit``.
+
+        highbar then stops counting the tools the process declared there: an old build's
+        file must not vouch for a tool the code running now no longer records. A forked
+        child inherits its parent's hellos and ends only its own. ``atexit`` runs only
+        when Python itself ends the process (the end of its main module, ``sys.exit``,
+        Ctrl-C): a process stopped by SIGTERM (``kill``, ``docker stop``, uvicorn, which
+        raises the signal again after its shutdown), SIGKILL, ``os._exit`` or a crash
+        writes none. The agent's signals are the agent's, so the SDK does not catch them.
+        """
+        pid = os.getpid()
+        with self._hello_lock:
+            paths = [path for path, said in self._hello_pids.items() if said == pid]
+        for path in paths:
+            self._writer.write(path, {"type": "bye", "ts": time.time(), "pid": pid})
 
 
 def _identity(path: str) -> tuple[int, int] | None:

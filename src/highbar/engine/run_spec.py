@@ -10,7 +10,11 @@ from rich.console import Console
 from rich.markup import escape
 
 from highbar.adapters.attached import AttachedAgent
-from highbar.adapters.file_collector import FileTraceCollector, NoTraceCollector
+from highbar.adapters.file_collector import (
+    FileTraceCollector,
+    NoTraceCollector,
+    trace_collector,
+)
 from highbar.adapters.http_client import HTTPClient
 from highbar.adapters.subprocess_adapter import AgentStartError, SubprocessAdapter
 from highbar.assertions.function_calls import FunctionCallsAssertion
@@ -85,7 +89,7 @@ def run_spec(
 
     if agent.start is None:
         collector: TraceCollector = (
-            FileTraceCollector(agent.traces) if agent.traces else NoTraceCollector()
+            trace_collector(agent.traces) if agent.traces else NoTraceCollector()
         )
         runner = _runner(
             spec,

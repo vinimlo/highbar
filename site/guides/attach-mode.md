@@ -14,6 +14,26 @@ agent:
 - When a test checks tool calls or has a budget, the file must exist before the run. Otherwise the run stops with exit code 2 before sending anything, and the message shows the absolute path it looked for. highbar's SDK creates the file when `Highbar()` is created, and after the file is deleted, only with its next record. Create the file empty when it was deleted while the agent ran, or when its writer creates it only with its first record.
 - Other traffic may reach an attached agent, so a test counts only the trace records tagged as its own. See [correlation](#which-records-belong-to-a-test) below.
 
+### An agent with several processes
+
+A server and its queue workers can share one trace file only when every append lands whole, which a bind mount on macOS does not promise: a line cut by another process's line is an `error` for the test that reads it. Give each process a file of its own instead. With `{pid}` in `HIGHBAR_TRACES_URL` (or in `Highbar(traces=...)`), the SDK writes to a file named after the process, and `traces` takes a glob of them:
+
+```yaml agent
+agent:
+  endpoint: "http://localhost:8000/api/chat"
+  traces: "var/traces/*.jsonl"
+```
+
+```sh
+HIGHBAR_TRACES_URL=/app/var/traces/traces-{pid}.jsonl
+```
+
+- highbar reads every file the glob matches as one, and puts the records of each read in time order: a tool call by when it ended, a turn by its `ts`. A file that appears during the run, a worker started late, is read from its start.
+- Before the run, at least one file must match, or the run stops with exit code 2 and says so. The SDK creates its process's file when `Highbar()` is created. A directory the glob matches is not read; a `traces` that is a directory, with no glob, is still an error.
+- Clear the folder before each start of the agent, as in `rm -f var/traces/*.jsonl` before `docker compose up`, and never from inside one of its processes, which would delete the files of the others. An old process's file still matches. highbar reads only what is written after the run starts, so it adds nothing to a test, but the file keeps vouching for the tools its process declared, even one the code running now no longer records.
+- The SDK's `bye` record is only an extra, for a local loop: a file whose process wrote one stops counting. The SDK writes it only when Python itself ends the process: the end of its main module, `sys.exit`, or Ctrl-C. A process stopped by SIGTERM writes none, and that is how `kill`, `docker stop` and `docker compose down` stop it, uvicorn included, since it raises the signal again after its own shutdown. Neither does `kill -9`, `os._exit` or a crash.
+- A link to a file the glob matches is read once, under the file's own name. A path that names a file is that file, even with a `[` in its name.
+
 ## The request
 
 By default highbar sends `POST {"message": "<trigger>"}`. Any other shape is configured with placeholders:

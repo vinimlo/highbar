@@ -367,6 +367,25 @@ class TestDeclaredScan:
     def test_no_file_is_none(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         assert FileTraceCollector(tmp_path / "missing.jsonl").declared() is None
 
+    def test_hb15_a_process_that_said_bye_declares_nothing(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """It ended: what it declared says nothing about the code running now (#52)."""
+        declared = self._declared(
+            tmp_path,
+            '{"v": 1, "type": "hello", "ts": 1, "pid": 3, "tools": ["refund"]}',
+            '{"v": 1, "type": "tools", "ts": 2, "names": ["get_order"]}',
+            '{"v": 1, "type": "bye", "ts": 3, "pid": 3}',
+        )
+        assert declared is None
+
+    def test_hb15_another_process_saying_bye_ends_nothing(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A forked child that ends: the process whose hello is last is still running."""
+        declared = self._declared(
+            tmp_path,
+            '{"v": 1, "type": "hello", "ts": 1, "pid": 3, "tools": ["refund"]}',
+            '{"v": 1, "type": "bye", "ts": 2, "pid": 4}',
+        )
+        assert declared == frozenset({"refund"})
+
 
 class TestMissingFile:
     """Attach mode checks the file before the first message (rehearsal FR3)."""
