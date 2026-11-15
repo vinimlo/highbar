@@ -30,7 +30,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -51,6 +51,8 @@ class SessionContext:
     spec_path: str
     # The test's own session.args (HB-9): the state this execution starts from.
     args: Mapping[str, Any] = field(default_factory=dict[str, Any])
+    # The test's history (HB-24): the conversation the setup seeds before its message.
+    history: Sequence[Mapping[str, str]] = ()
 
 
 class SessionError(RuntimeError):
@@ -157,6 +159,7 @@ class SessionHooks:
             test_name=ctx.test_name,
             session=session,
             args=ctx.args,
+            history=ctx.history,
         )
         try:
             argv = [_as_argument(render(token, values)) for token in hook.argv]
@@ -209,6 +212,7 @@ class SessionHooks:
             test_name=ctx.test_name,
             session=session,
             args=ctx.args,
+            history=ctx.history,
         )
         try:
             url = render_url(hook.url, values)

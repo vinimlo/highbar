@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 import time
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -434,6 +434,7 @@ class TestRunner:
         self._test_index = 0
         # The session.args of the test that runs now (HB-9), for each of its executions.
         self._args: Mapping[str, Any] = {}
+        self._history: Sequence[Mapping[str, str]] = ()
         # Where the next read starts: each record is read once, and none is missed
         # between two tests (a late call is often written right there).
         self._cursor = 0
@@ -1120,6 +1121,7 @@ class TestRunner:
         start = time.time()
         name = test.plain_name
         self._args = test.session_args
+        self._history = test.history
         runs, min_pass = resolve_runs(test, self._default_runs, self._default_min_pass)
         budget = self._budget_of(test)
 
@@ -1240,7 +1242,11 @@ class TestRunner:
         ``labelled`` prefixes each error with the turn it came from (multi-turn tests).
         """
         context = SessionContext(
-            test_id=uuid.uuid4().hex, test_name=name, spec_path=self._spec_path, args=self._args
+            test_id=uuid.uuid4().hex,
+            test_name=name,
+            spec_path=self._spec_path,
+            args=self._args,
+            history=self._history,
         )
         execution = _Execution(
             self._test_index,
@@ -1292,6 +1298,7 @@ class TestRunner:
             test_name=context.test_name,
             session=session,
             args=context.args,
+            history=context.history,
         )
         all_traces: list[Trace] = []
         all_errors: list[str] = []
