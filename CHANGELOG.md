@@ -29,6 +29,7 @@
 - `--report` can be given more than once, one file per format, all from the same run.
 - `expect_status: failed` or `expect_status: error` on a test, for a negative control: the test passes when it ends exactly in that state, and fails when it passes or ends in the other one, so a control that works keeps the run green. The terminal marks it `(expected failed)`, and the report has `expect_status` on each test, with `status` judged against it.
 - `agent.run`: a `setup` and a `teardown` that run once per spec, around the run, to change something before it and put it back after it, like a feature flag on a shared bot. The `setup` runs before the agent starts, and one that fails stops the run with exit code 2 before anything is sent. The `teardown` runs on every way out once the `setup` finished, Ctrl-C and SIGTERM included, and one that fails is a warning. Each is a command, a Python function or an HTTP request, like a session hook, with no placeholders.
+- `expect.check: {python: "module:function"}`, a check of your own, for an outcome that is in neither the reply nor a tool call, like a row the agent must have written. The function gets the turn (the message, the reply, the session, the test's args and history, and the trace records highbar counted as the turn's) and returns its failures: none is a pass. Anything else, or an exception, leaves the turn `error`, and so does reading the trace records of a turn highbar did not observe. It runs once per execution, after highbar's own checks, in the thread of the session hooks.
 
 ### Changed
 

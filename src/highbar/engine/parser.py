@@ -1010,6 +1010,7 @@ def _asserts_something(expect: Expect) -> bool:
         or expect.response is not None
         or bool(expect.forbid)
         or expect.budget is not None
+        or expect.check is not None
     )
 
 
@@ -1027,8 +1028,8 @@ def _parse_expect(raw: Any, where: str) -> Expect:
     check_keys(raw, "expect", where)
     if not user_keys(raw):
         raise SpecError(
-            f"{where}: asserts nothing — use function_calls, response, forbid, budget, or "
-            "function_calls: [] to check that no tool is called"
+            f"{where}: asserts nothing — use function_calls, response, forbid, budget, check, "
+            "or function_calls: [] to check that no tool is called"
         )
 
     function_calls = None
@@ -1060,10 +1061,28 @@ def _parse_expect(raw: Any, where: str) -> Expect:
         response = _parse_response(raw["response"], where)
 
     budget = _parse_budget(raw["budget"], where) if "budget" in raw else None
+    check = _parse_check(raw["check"], f"{where}.check") if "check" in raw else None
 
     return Expect(
-        function_calls=function_calls, response=response, forbid=forbid, budget=budget, **flags
+        function_calls=function_calls,
+        response=response,
+        forbid=forbid,
+        budget=budget,
+        check=check,
+        **flags,
     )
+
+
+def _parse_check(raw: Any, where: str) -> str:
+    """``{python: "module:function"}``: the author's own check of the turn (HB-12)."""
+    require_type(raw, dict, where, "check must be {python: 'module:function'}")
+    check_keys(raw, "check", where)
+    target = raw.get("python")
+    require_type(target, str, where, "python must be 'module:function'")
+    module, colon, function = target.partition(":")
+    if not colon or not module.strip() or not function.strip() or ":" in function:
+        raise SpecError(f"{where}: python must be 'module:function', got {target!r}")
+    return target
 
 
 def _parse_response(raw: Any, where: str) -> ResponseExpect:

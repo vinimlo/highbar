@@ -61,7 +61,10 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "test_session": frozenset({"args"}),
     "history_message": frozenset({"role", "content"}),
     "turn": frozenset({"name", "trigger", "expect"}),
-    "expect": frozenset({"function_calls", "response", "ordered", "exclusive", "forbid", "budget"}),
+    "expect": frozenset(
+        {"function_calls", "response", "ordered", "exclusive", "forbid", "budget", "check"}
+    ),
+    "check": frozenset({"python"}),
     "budget": frozenset({"max_input_tokens", "max_cost"}),
     "function_call": frozenset({"name", "params", "result", "error"}),
     "response": TEXT_MATCHER_KEYS,

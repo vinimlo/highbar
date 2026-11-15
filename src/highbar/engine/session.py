@@ -23,6 +23,9 @@ be a JSON object; any reply that is not 2xx is the hook's failure.
 before the agent starts, its teardown on every way out of a run whose setup finished.
 They belong to no test, so they read no placeholder, and a Python one is called with
 no argument.
+
+An ``expect.check`` is a Python function too (HB-12), imported and called in the same
+thread: it gets a ``CheckContext`` of the turn and returns its failures.
 """
 
 from __future__ import annotations
@@ -41,13 +44,21 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TextIO, cast
+from typing import Any, NoReturn, TextIO, cast
 
 import httpx
 
 from highbar._narrow import as_dict
 from highbar.assertions.response import truncate
-from highbar.domain.models import CommandHook, HttpHook, PythonHook, RunConfig, SessionConfig
+from highbar.domain.models import (
+    CommandHook,
+    HttpHook,
+    PythonHook,
+    RunConfig,
+    SessionConfig,
+    Trace,
+    TurnRecord,
+)
 from highbar.engine.logs import log_path, make_folder
 from highbar.engine.placeholders import PlaceholderError, Values, render, render_url
 from highbar.engine.secrets import redact
@@ -66,8 +77,70 @@ class SessionContext:
     history: Sequence[Mapping[str, str]] = ()
 
 
+@dataclass(frozen=True)
+class CheckContext:
+    """What an ``expect.check`` function gets of the turn it checks (HB-12).
+
+    ``tools`` and ``turns`` are the records highbar counted as this turn's, as its own
+    checks read them; a record written after the turn's window is not in them. Of a turn
+    highbar did not observe, they are ``Unobserved``: reading them is an error.
+    """
+
+    test_id: str
+    test_name: str
+    spec_path: str
+    message: str  # the trigger as sent, its templates resolved
+    response: str
+    session: Mapping[str, Any] = field(default_factory=dict[str, Any])
+    args: Mapping[str, Any] = field(default_factory=dict[str, Any])
+    history: Sequence[Mapping[str, str]] = ()
+    tools: Sequence[Trace] = ()
+    turns: Sequence[TurnRecord] = ()
+
+
 class SessionError(RuntimeError):
     """A hook failed; the message starts with the hook: ``session.setup``, for one."""
+
+
+class Unobserved(Sequence[Any]):
+    """``ctx.tools`` or ``ctx.turns`` of a turn highbar has no record of.
+
+    An empty list would say the agent called nothing, and a guardrail of the author's
+    would pass against an agent nobody saw (review of #55). Reading it raises instead,
+    and ``read`` stays set when the check catches that, so the turn is still unverified.
+    """
+
+    def __init__(self, name: str, why: str) -> None:
+        why = why.removeprefix("not observed: ")
+        self.message = f"expect.check read ctx.{name} of a turn highbar did not observe: {why}"
+        self.read = False
+
+    def _refuse(self) -> NoReturn:
+        self.read = True
+        raise SessionError(self.message)
+
+    def __len__(self) -> NoReturn:
+        self._refuse()
+
+    def __getitem__(self, index: Any) -> NoReturn:
+        self._refuse()
+
+    def __iter__(self) -> NoReturn:
+        self._refuse()
+
+    def __contains__(self, value: object) -> NoReturn:
+        self._refuse()
+
+    def __bool__(self) -> NoReturn:
+        self._refuse()
+
+    def __eq__(self, other: object) -> NoReturn:
+        self._refuse()
+
+    __hash__ = None  # pyright: ignore[reportAssignmentType]
+
+    def __repr__(self) -> str:
+        return "<not observed>"
 
 
 class RunHookError(SessionError):
@@ -89,9 +162,12 @@ class SessionHooks:
         transport: httpx.BaseTransport | None = None,
         secrets: Mapping[str, str] | None = None,
         run: RunConfig | None = None,
+        checks: Sequence[str] = (),
     ) -> None:
         self._config = config
         self._run_config = run
+        self._check_targets = tuple(checks)
+        self._checks: dict[str, Callable[..., Any]] = {}
         self._transport = transport
         self._spec_path = spec_path
         self._timeout_s = timeout_ms / 1000
@@ -109,6 +185,10 @@ class SessionHooks:
                 ("agent.run.setup", self._run_config.setup),
                 ("agent.run.teardown", self._run_config.teardown),
             ]
+        for target in self._check_targets:
+            self._checks[target] = self._in_worker(
+                "expect.check", "import", lambda target=target: _load(target, "expect.check")
+            )
         for what, hook in hooks:
             if isinstance(hook, PythonHook):
                 self._functions[what] = self._in_worker(
@@ -164,6 +244,22 @@ class SessionHooks:
         """``agent.run.teardown``, once the run is over. Raises ``RunHookError``."""
         hook = self._run_config.teardown if self._run_config else None
         self._run_hook("agent.run.teardown", hook)
+
+    def check(self, target: str, ctx: CheckContext) -> list[str]:
+        """The failures ``expect.check`` found; none is a pass. Raises ``SessionError``.
+
+        Anything but a list of messages (``None`` from a function that forgot its
+        ``return`` included) is an error, never a pass.
+        """
+        function = self._checks[target]
+        found = self._in_worker("expect.check", "call", lambda: function(ctx))
+        messages = cast("list[Any]", found) if isinstance(found, (list, tuple)) else None
+        if messages is None or not all(isinstance(m, str) for m in messages):
+            raise SessionError(
+                "expect.check must return a list of failure messages (empty when the turn "
+                f"passes), got {_shape(found)}"
+            )
+        return [str(message) for message in messages]
 
     def _run_hook(self, what: str, hook: CommandHook | PythonHook | HttpHook | None) -> None:
         if hook is None:
@@ -471,6 +567,15 @@ class _Worker:
             except BaseException as e:  # SystemExit from a hook too: it is the hook's failure
                 outcome["error"] = e
             done.set()
+
+
+def _shape(value: Any) -> str:
+    """What a check returned, by kind: its values may be the agent's data."""
+    kind = type(value).__name__
+    if isinstance(value, (list, tuple)):
+        items = cast("list[Any]", value)
+        return f"a {kind} of {', '.join(sorted({type(item).__name__ for item in items}))}"
+    return kind
 
 
 def _describe(error: BaseException) -> str:

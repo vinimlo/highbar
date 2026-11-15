@@ -65,8 +65,9 @@ Each test's key is unique in a spec. Two tests with the same key are a spec erro
 | `forbid` | list of tool names | Tools that must not be called. |
 | `response` | matchers | Conditions on the reply text. |
 | `budget` | mapping | What may be spent. See [`budget`](#budget). |
+| `check` | mapping | `{python: "module:function"}`: a check of your own, which returns the failures it found. See [a check of your own](/guides/assertions#a-check-of-your-own-check). |
 
-At least one of `function_calls`, `forbid`, `response` and `budget` is required.
+At least one of `function_calls`, `forbid`, `response`, `budget` and `check` is required.
 
 ## `budget`
 
