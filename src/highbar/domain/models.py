@@ -264,6 +264,7 @@ class Expect:
     exclusive: bool = False  # no call beyond the expected ones
     forbid: tuple[str, ...] = ()  # tools that must not be called, failed or not
     budget: Budget | None = None  # per turn in a turn, per execution in a test
+    check: str | None = None  # "module:function" of the author's own check (HB-12)
 
     @property
     def requires_observation(self) -> bool:

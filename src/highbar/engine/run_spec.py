@@ -30,11 +30,21 @@ OnEnd = Callable[[RunSummary, bool], None]
 
 
 def load_session_hooks(path: str, spec: Spec) -> SessionHooks | None:
-    """The spec's session and run hooks, with the Python ones imported.
+    """The spec's session and run hooks and its ``expect.check`` functions, with the
+    Python ones imported.
 
     Raises ``SessionError``.
     """
-    if spec.agent.session is None and spec.agent.run is None:
+    checks = sorted(
+        {
+            expect.check
+            for suite in spec.suites
+            for test in suite.tests
+            for expect in [test.expect, *(turn.expect for turn in test.turns or [])]
+            if expect is not None and expect.check is not None
+        }
+    )
+    if spec.agent.session is None and spec.agent.run is None and not checks:
         return None
     hooks = SessionHooks(
         spec.agent.session or SessionConfig(),
@@ -42,6 +52,7 @@ def load_session_hooks(path: str, spec: Spec) -> SessionHooks | None:
         timeout_ms=spec.agent.timeout,
         secrets=spec.agent.secrets,
         run=spec.agent.run,
+        checks=checks,
     )
     hooks.load()
     return hooks

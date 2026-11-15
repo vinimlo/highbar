@@ -40,6 +40,7 @@ from highbar.domain.models import (
 )
 from highbar.domain.protocols import Assertion, Reporter, TraceCollector, VariationGenerator
 from highbar.engine import observation
+from highbar.engine import session as sessions
 from highbar.engine.observation import (
     AgentNotObservedError,
     Attribution,
@@ -128,6 +129,7 @@ class _TurnLog:
     tools: list[Trace] = field(default_factory=list[Trace])
     late: list[Trace] = field(default_factory=list[Trace])
     records: list[Usage] = field(default_factory=list[Usage])  # the usage of its `turn` records
+    turns: list[TurnRecord] = field(default_factory=list[TurnRecord])  # those records (HB-12)
     untagged: list[Usage] = field(default_factory=list[Usage])  # read next to it, no context
     suspected: list[Usage] = field(default_factory=list[Usage])  # counted for the next test
     budget: Budget | None = None
@@ -964,6 +966,46 @@ class TestRunner:
             "test ran; the agent must write a turn per message it handles"
         )
 
+    def _run_check(
+        self,
+        target: str,
+        result: TestResult,
+        execution: _Execution,
+        log: _TurnLog,
+        values: Values,
+        response: str,
+    ) -> TestResult:
+        """``expect.check`` (HB-12): the author's function, on what highbar knows of the turn.
+
+        Its failures fail the turn. One that raises, or does not return a list of
+        messages, leaves the turn unverified, unless it already failed (combine()).
+        """
+        if self._session is None:
+            raise RuntimeError(f"expect.check {target}: its function was never loaded")
+        ctx = sessions.CheckContext(
+            test_id=values.test_id,
+            test_name=values.test_name,
+            spec_path=self._spec_path,
+            message=log.trigger,
+            response=response,
+            session=dict(values.session),
+            args=dict(values.args),
+            history=tuple(values.history),
+            tools=tuple(log.tools),
+            turns=tuple(log.turns),
+        )
+        try:
+            failures = self._session.check(target, ctx)
+        except Exception as e:
+            reason = str(e) if isinstance(e, SessionError) else f"expect.check: {e!r}"
+            execution.passed = False
+            status = Status.FAILED if result.status is Status.FAILED else Status.ERROR
+            return replace(result, status=status, errors=[*result.errors, reason])
+        if not failures:
+            return result
+        execution.passed = False
+        return replace(result, status=Status.FAILED, errors=[*result.errors, *failures])
+
     def _check(self, tools: list[Trace], response: str, expect: Expect) -> list[str]:
         return [
             r.message
@@ -1465,6 +1507,8 @@ class TestRunner:
         result = self._verdict(
             window, response, expect, execution, log, previous, start, observes=observes
         )
+        if expect.check is not None and result.status is not Status.ERROR:
+            result = self._run_check(expect.check, result, execution, log, values, response)
         if unreadable is None:
             return result
         # What could be read counted as it does in any window. The line itself may be
@@ -1511,6 +1555,7 @@ class TestRunner:
             traces = window.tools
             log.tools = list(traces)
             log.records = stray if self._managed else []
+            log.turns = list(window.turns) if self._managed else []
             if log.records:
                 self._warn_once(NO_CONTEXT_USAGE_WARNING, execution.correlate)
             errors = self._check(traces, response, expect)
@@ -1525,6 +1570,7 @@ class TestRunner:
             traces = classified.mine.tools
             log.tools = list(traces)
             log.records = self._read_usage(classified.mine.turns)
+            log.turns = list(classified.mine.turns)
             errors = self._check(traces, response, expect)
             if untagged:
                 with_them = self._check([*traces, *untagged], response, expect)
