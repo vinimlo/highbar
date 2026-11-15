@@ -105,8 +105,8 @@ class TestTheSpec:
     def test_hb24_a_trigger_does_not_read_it(self, tmp_path: Path) -> None:
         """A trigger goes as written: the history there would be sent as braces.
 
-        The message points to the setup, the one place a history is seeded from: the
-        args' message would send the reader to agent.request, refused too (#41's review).
+        The message points to the two places a history goes: the setup, which seeds it,
+        and agent.request, in a single-turn test (HB-24 v2, review of #53).
         """
         suites = _suites(_test("as before: {{test.history}}", HISTORY))
 
@@ -115,7 +115,8 @@ class TestTheSpec:
 
         assert str(caught.value).endswith(
             "suites[0].tests[0].trigger: '{{test.history}}' is not read in a trigger: the "
-            "session setup seeds it (ctx.history, or {{test.history}} in a command or HTTP setup)"
+            "session setup seeds it (ctx.history, or {{test.history}} in a command or HTTP "
+            "setup), or agent.request hands it on in a single-turn test"
         )
 
     @pytest.mark.parametrize(

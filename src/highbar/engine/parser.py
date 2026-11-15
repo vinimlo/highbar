@@ -202,7 +202,8 @@ def _parse_spec(raw: Any) -> Spec:
 _NOT_IN_TRIGGERS = {
     "test.args": "use it in agent.request, agent.correlate or a session hook",
     "test.history": (
-        "the session setup seeds it (ctx.history, or {{test.history}} in a command or HTTP setup)"
+        "the session setup seeds it (ctx.history, or {{test.history}} in a command or HTTP "
+        "setup), or agent.request hands it on in a single-turn test"
     ),
 }
 
