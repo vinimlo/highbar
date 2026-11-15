@@ -19,7 +19,7 @@ from highbar.adapters.http_client import HTTPClient
 from highbar.adapters.subprocess_adapter import AgentStartError, SubprocessAdapter
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
-from highbar.domain.models import RunSummary, Spec
+from highbar.domain.models import RunSummary, SessionConfig, Spec
 from highbar.domain.protocols import Reporter, TraceCollector
 from highbar.engine.logs import log_path
 from highbar.engine.observation import AgentNotObservedError
@@ -34,14 +34,18 @@ OnEnd = Callable[[RunSummary, bool], None]
 
 
 def load_session_hooks(path: str, spec: Spec) -> SessionHooks | None:
-    """The spec's session hooks, with the Python ones imported. Raises ``SessionError``."""
-    if spec.agent.session is None:
+    """The spec's session and run hooks, with the Python ones imported.
+
+    Raises ``SessionError``.
+    """
+    if spec.agent.session is None and spec.agent.run is None:
         return None
     hooks = SessionHooks(
-        spec.agent.session,
+        spec.agent.session or SessionConfig(),
         spec_path=path,
         timeout_ms=spec.agent.timeout,
         secrets=spec.agent.secrets,
+        run=spec.agent.run,
     )
     hooks.load()
     return hooks

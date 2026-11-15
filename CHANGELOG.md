@@ -28,6 +28,7 @@
 - `highbar run --report markdown=<file>`: the report as a Markdown summary for a CI job's page (`$GITHUB_STEP_SUMMARY`): whether the run passed, the tests that did not with why, and the others folded. Text from the agent is escaped, and a long list is cut, so the page stays under GitHub's 1 MiB.
 - `--report` can be given more than once, one file per format, all from the same run.
 - `expect_status: failed` or `expect_status: error` on a test, for a negative control: the test passes when it ends exactly in that state, and fails when it passes or ends in the other one, so a control that works keeps the run green. The terminal marks it `(expected failed)`, and the report has `expect_status` on each test, with `status` judged against it.
+- `agent.run`: a `setup` and a `teardown` that run once per spec, around the run, to change something before it and put it back after it, like a feature flag on a shared bot. The `setup` runs before the agent starts, and one that fails stops the run with exit code 2 before anything is sent. The `teardown` runs on every way out once the `setup` finished, Ctrl-C and SIGTERM included, and one that fails is a warning. Each is a command, a Python function or an HTTP request, like a session hook, with no placeholders.
 
 ### Changed
 

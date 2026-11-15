@@ -33,11 +33,13 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
             "response",
             "traces",
             "session",
+            "run",
             "correlate",
         }
     ),
     "request": frozenset({"method", "headers", "body"}),
     "session": frozenset({"setup", "teardown"}),
+    "run": frozenset({"setup", "teardown"}),
     "hook": frozenset({"python", "http"}),
     "http_hook": frozenset({"url", "method", "headers", "body"}),
     "suite": frozenset({"name", "tests", "session"}),

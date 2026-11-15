@@ -37,6 +37,7 @@ from highbar.domain.models import (
     PythonHook,
     RequestConfig,
     ResponseExpect,
+    RunConfig,
     SessionConfig,
     Spec,
     Status,
@@ -514,6 +515,7 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
         response=_parse_response_path(raw["response"]) if "response" in raw else None,
         traces=traces,
         session=session,
+        run=_parse_run(raw["run"]) if "run" in raw else None,
         correlate=(
             _parse_correlate(raw["correlate"], has_session)
             if "correlate" in raw
@@ -552,9 +554,9 @@ def _expand_env(value: Any, where: str, found: dict[str, str]) -> Any:
     return _ENV_VAR.sub(variable, value)
 
 
-# Where tokens go: everything highbar sends to the agent or to a session hook, besides
-# the URL. A command hook's line is how it passes its own token on.
-_SECRET_BLOCKS = ("agent.request", "agent.session")
+# Where tokens go: everything highbar sends to the agent or to a session or run hook,
+# besides the URL. A command hook's line is how it passes its own token on.
+_SECRET_BLOCKS = ("agent.request", "agent.session", "agent.run")
 _URLS = ("agent.endpoint", "agent.health")
 
 
@@ -731,6 +733,22 @@ def _parse_session(raw: Any) -> SessionConfig:
         if "setup" in raw
         else None,
         teardown=_parse_hook(raw["teardown"], f"{where}.teardown", placeholders.TEARDOWN)
+        if "teardown" in raw
+        else None,
+    )
+
+
+def _parse_run(raw: Any) -> RunConfig:
+    """Hooks once per spec, around the run (HB-10). They belong to no test, so no
+    placeholder: a ``{{test.id}}`` there would have nothing to stand for."""
+    where = "agent.run"
+    require_type(raw, dict, where, "must be a mapping with setup and/or teardown")
+    check_keys(raw, "run", where)
+    if "setup" not in raw and "teardown" not in raw:
+        raise SpecError(f"{where}: needs setup or teardown")
+    return RunConfig(
+        setup=_parse_hook(raw["setup"], f"{where}.setup", frozenset()) if "setup" in raw else None,
+        teardown=_parse_hook(raw["teardown"], f"{where}.teardown", frozenset())
         if "teardown" in raw
         else None,
     )

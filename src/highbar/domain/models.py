@@ -169,6 +169,15 @@ class SessionConfig:
 
 
 @dataclass(frozen=True)
+class RunConfig:
+    """Once per spec (HB-10): ``setup`` before the agent starts, ``teardown`` on every way
+    out of a run whose setup finished, Ctrl-C and SIGTERM included."""
+
+    setup: Hook | None = None
+    teardown: Hook | None = None
+
+
+@dataclass(frozen=True)
 class AgentConfig:
     """Configuration for the agent under test.
 
@@ -186,6 +195,7 @@ class AgentConfig:
     response: str | None = None
     traces: str | None = None
     session: SessionConfig | None = None
+    run: RunConfig | None = None
     correlate: dict[str, Any] = field(default_factory=lambda: {"test": "{{test.id}}"})
     # Each value expanded from ${NAME}, and the name: what output must never show.
     secrets: dict[str, str] = field(default_factory=dict[str, str])

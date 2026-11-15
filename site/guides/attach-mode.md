@@ -71,7 +71,7 @@ agent:
 - A placeholder that is a whole value keeps its JSON type: a number stays a number. Inside a longer text it is inserted as text.
 - The body must send <code v-pre>{{message}}</code> somewhere, or every test would send the same request.
 - `X-Highbar-Test` is always sent, whatever the headers say.
-- `${NAME}` takes the value of an environment variable when the spec is loaded, under `agent` only. A value where a secret goes never appears in highbar's output: test errors, warnings and spec errors show `${NAME}` instead. Those places are `request` (its headers and body), `session` (every hook, a command line included), and a URL's password, query and fragment, in `endpoint` and `health`. A URL is read as the spec wrote it and as it is sent. A variable the spec puts before an `@`, or after a `?` or `#`, is masked whatever its value holds, so a `/` in a password does not make it a host. With the values in, a variable whose value touches the password, the query or the fragment is masked, so a `?` or `#` that one value brings masks the variables it puts in those parts. A value with an `@` in it, or a URL that is not `scheme://host` or has a space, a control character or a backslash in it, has every variable of that URL masked. The rest is shown: the `traces` path, `start`, `correlate`, and a URL's host, port and path, so a missing trace file is named in full. A value masked in one place is masked everywhere it appears. A value shorter than 6 characters, such as a port, is shown as it is. So a token passed on `start` or in a URL's path is shown, in the agent's own error lines too: pass it in the environment, which the agent inherits, or in a header. A header value with a newline or surrounding spaces (a token read from a file with its line break) is a spec error that does not show the value.
+- `${NAME}` takes the value of an environment variable when the spec is loaded, under `agent` only. A value where a secret goes never appears in highbar's output: test errors, warnings and spec errors show `${NAME}` instead. Those places are `request` (its headers and body), `session` and `run` (every hook, a command line included), and a URL's password, query and fragment, in `endpoint` and `health`. A URL is read as the spec wrote it and as it is sent. A variable the spec puts before an `@`, or after a `?` or `#`, is masked whatever its value holds, so a `/` in a password does not make it a host. With the values in, a variable whose value touches the password, the query or the fragment is masked, so a `?` or `#` that one value brings masks the variables it puts in those parts. A value with an `@` in it, or a URL that is not `scheme://host` or has a space, a control character or a backslash in it, has every variable of that URL masked. The rest is shown: the `traces` path, `start`, `correlate`, and a URL's host, port and path, so a missing trace file is named in full. A value masked in one place is masked everywhere it appears. A value shorter than 6 characters, such as a port, is shown as it is. So a token passed on `start` or in a URL's path is shown, in the agent's own error lines too: pass it in the environment, which the agent inherits, or in a header. A header value with a newline or surrounding spaces (a token read from a file with its line break) is a spec error that does not show the value.
 
 ## The reply
 
@@ -83,6 +83,23 @@ These are errors, never a reply checked as empty text:
 - an empty body, or a reply value that is `null`;
 - no reply within `timeout` milliseconds (60000 by default; a reply that trickles in counts as a whole);
 - a body over 10 MB.
+
+## Before and after the run
+
+To compare variants on the same bot, something has to change before the run and be put back after it: a feature flag, a fixture, a model setting. `agent.run` holds a `setup` that runs once, before the agent starts, and a `teardown` that runs once, after the agent stops:
+
+```yaml agent
+agent:
+  endpoint: "http://localhost:8000/api/chat"
+  run:
+    setup: "python -m flags on new_router --token ${FLAGS_TOKEN}"
+    teardown: "python -m flags off new_router --token ${FLAGS_TOKEN}"
+```
+
+- Each is a command, `{python: "module:function"}` or `{http: {url, method, headers, body}}`, like a session hook. They belong to no test, so they take no placeholder, and a Python one is called with no argument. `${NAME}` in them is masked, as in `session`.
+- A `setup` that fails stops the run before the agent starts, with exit code 2. Nothing is sent, and its `teardown` does not run.
+- Once the `setup` finished, the `teardown` runs on every way out: at the end, when `--max-cost` stops the run, when the agent does not start, on Ctrl-C and on SIGTERM. A `teardown` that fails is a warning above the summary: the results stand, and what it was to put back may still be as the run left it.
+- Each has `agent.timeout` to finish. With several specs, each spec runs its own, around its own agent.
 
 ## A session per test
 

@@ -475,7 +475,15 @@ class TestRunner:
         )
         self._run_start = time.time()
 
-        self._adapter.start()
+        # agent.run (HB-10): its setup before the agent starts, and its teardown on every
+        # way out once the setup finished, an agent that does not start included.
+        if self._session is not None:
+            self._session.before_run()
+        try:
+            self._adapter.start()
+        except BaseException:
+            self._after_run()
+            raise
         try:
             if self._managed and observes:
                 self._await_hello()
@@ -529,8 +537,13 @@ class TestRunner:
             self._warn_undeclared()
             self._warn_unmetered()
         finally:
-            self._adapter.stop()
-            self._settle()
+            try:
+                self._adapter.stop()
+                self._settle()
+            finally:
+                # A second Ctrl-C can land while the agent stops (review of #54): what
+                # the setup changed is put back even then.
+                self._after_run()
 
         summary = self.snapshot()
         self._reporter.on_run_end(summary)
@@ -670,6 +683,17 @@ class TestRunner:
 
     def _mask(self, value: Any) -> Any:
         return redact_value(value, self._secrets)
+
+    def _after_run(self) -> None:
+        """agent.run's teardown. Its failure is a warning: the results stand, but what the
+        setup changed may still be as the run left it."""
+        if self._session is None:
+            return
+        try:
+            self._session.after_run()
+        except Exception as e:
+            reason = str(e) if isinstance(e, SessionError) else f"{type(e).__name__}: {e}"
+            self._warn(f"{reason}; check by hand what it was to undo")
 
     def _warn(self, message: str) -> None:
         self._warnings.append(message)
