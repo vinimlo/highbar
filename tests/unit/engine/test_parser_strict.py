@@ -21,6 +21,11 @@ agent:
 """
 
 
+# The reasons a URL urlsplit refuses is not one (HB-41): a bracket in its host part,
+# or a character that NFKC turns into a / ? # @ or :, which it refuses there.
+BRACKETS = r'endpoint is not a valid URL: a "\[" or "\]" goes only around an IPv6 host'
+NORMALIZED = r"endpoint is not a valid URL: a character in its host or password reads as"
+
 # The smallest test that checks something: no tool may be called.
 GUARDRAIL = '- trigger: "hi"\n  expect: {function_calls: []}\n'
 
@@ -173,6 +178,11 @@ class TestWrongTypes:
         [
             ("localhost:18733/chat", r"endpoint must be an http:// or https:// URL"),
             ("http://localhost:99999/chat", r"endpoint has an invalid port"),
+            # HB-41: urlsplit raised ValueError, and highbar exited 1 with a traceback.
+            ("http://[::1:8000/chat", BRACKETS),
+            ("http://::1]:8000/chat", BRACKETS),
+            ("http://[not-an-ip]:8000/chat", BRACKETS),
+            ("http://ho\uff0fst:8000/chat", NORMALIZED),
         ],
     )
     def test_endpoint_must_be_an_http_url(
