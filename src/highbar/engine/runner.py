@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 import time
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -371,12 +371,17 @@ def _test_name(test: Test, variations_run: int | None = None) -> str:
     return label
 
 
-def _turn_label(turn: Turn, previous_traces: list[Trace]) -> str:
+def _turn_label(
+    turn: Turn,
+    previous_traces: list[Trace],
+    responses: list[str | None],
+    session: Mapping[str, Any],
+) -> str:
     """The turn's ``name``, or the message it sends, cut at 80 characters."""
     if turn.name:
         return turn.name
     try:
-        trigger = resolve_template(turn.trigger, previous_traces)
+        trigger = resolve_template(turn.trigger, previous_traces, responses, session)
     except TemplateError:
         trigger = turn.trigger
     return truncate(trigger, 80)
@@ -458,6 +463,9 @@ class TestRunner:
         self._warnings: list[str] = []
         self._run_start = time.time()
         self._test_index = 0
+        # The session.args of the test that runs now (HB-9), for each of its executions.
+        self._args: Mapping[str, Any] = {}
+        self._history: Sequence[Mapping[str, str]] = ()
         # Where the next read starts: each record is read once, and none is missed
         # between two tests (a late call is often written right there).
         self._cursor = 0
@@ -1170,6 +1178,8 @@ class TestRunner:
         """
         start = time.time()
         name = test.plain_name
+        self._args = test.session_args
+        self._history = test.history
         runs, min_pass = resolve_runs(test, self._default_runs, self._default_min_pass)
         budget = self._budget_of(test)
 
@@ -1304,7 +1314,11 @@ class TestRunner:
         ``labelled`` prefixes each error with the turn it came from (multi-turn tests).
         """
         context = SessionContext(
-            test_id=uuid.uuid4().hex, test_name=name, spec_path=self._spec_path
+            test_id=uuid.uuid4().hex,
+            test_name=name,
+            spec_path=self._spec_path,
+            args=self._args,
+            history=self._history,
         )
         execution = _Execution(
             self._test_index,
@@ -1351,7 +1365,12 @@ class TestRunner:
         execution: _Execution,
     ) -> TestResult:
         values = Values(
-            message=None, test_id=context.test_id, test_name=context.test_name, session=session
+            message=None,
+            test_id=context.test_id,
+            test_name=context.test_name,
+            session=session,
+            args=context.args,
+            history=context.history,
         )
         all_traces: list[Trace] = []
         all_errors: list[str] = []
@@ -1359,8 +1378,9 @@ class TestRunner:
 
         for number, turn in enumerate(turns, start=1):
             # Which turn broke is the finding: "Expected X" alone does not say where.
+            replies = [log.response for log in execution.turns]
             prefix = (
-                f"turn {number}/{len(turns)} ({_turn_label(turn, all_traces)}): "
+                f"turn {number}/{len(turns)} ({_turn_label(turn, all_traces, replies, session)}): "
                 if labelled
                 else ""
             )
@@ -1404,6 +1424,7 @@ class TestRunner:
     ) -> TestResult:
         """Send one message, read what the agent recorded for it, and check it."""
         execution.passed = False
+        earlier = [turn.response for turn in execution.turns]  # this execution's, so far
         log = _TurnLog(trigger=trigger, budget=expect.budget)
         execution.turns.append(log)
         # A budget on the whole execution reads the usage of each turn, whatever it expects.
@@ -1414,7 +1435,7 @@ class TestRunner:
             return TestResult(status=Status.ERROR, errors=[error], duration_ms=duration)
 
         try:
-            resolved_trigger = resolve_template(trigger, previous_traces)
+            resolved_trigger = resolve_template(trigger, previous_traces, earlier, values.session)
         except TemplateError as e:
             # Sending the raw "{{...}}" would test a message nobody meant to write; the
             # turn is unverified, and the rest of the run goes on.

@@ -1,7 +1,9 @@
 """Placeholders in the request, the correlation and the session hooks (spec D5).
 
 ``{{message}}`` is the trigger being sent, ``{{test.id}}`` the id of this test
-execution (also sent as ``X-Highbar-Test``), ``{{test.name}}`` the test's name, and
+execution (also sent as ``X-Highbar-Test``), ``{{test.name}}`` the test's name,
+``{{test.args.<path>}}`` a value of the test's own ``session: {args: ...}`` (HB-9),
+``{{test.history}}`` its ``history`` as a list of ``{role, content}`` (HB-24), and
 ``{{session.<path>}}`` a value from the object the session setup returned.
 
 A value that is only a placeholder keeps the JSON type of what it resolves to: an
@@ -15,20 +17,23 @@ from __future__ import annotations
 import difflib
 import json
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
 from highbar._narrow import as_dict, as_list
 from highbar.engine.paths import PathError, get_path
 from highbar.engine.schema import SpecError
+from highbar.engine.templates import no_path_message
 
 PLACEHOLDER = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
 
-ALL = frozenset({"message", "test.id", "test.name", "session"})
+ALL = frozenset({"message", "test.id", "test.name", "test.args", "test.history", "session"})
 # Hooks run outside a message: no {{message}}; setup runs before the session exists.
-SETUP = frozenset({"test.id", "test.name"})
-TEARDOWN = frozenset({"test.id", "test.name", "session"})
+# A test's args are known before it: setup can use them.
+SETUP = frozenset({"test.id", "test.name", "test.args", "test.history"})
+TEARDOWN = frozenset({"test.id", "test.name", "test.args", "test.history", "session"})
 
 
 @dataclass(frozen=True)
@@ -37,6 +42,8 @@ class Values:
     test_id: str
     test_name: str
     session: Mapping[str, Any]
+    args: Mapping[str, Any] = field(default_factory=dict[str, Any])
+    history: Sequence[Mapping[str, str]] = ()
 
 
 class PlaceholderError(ValueError):
@@ -44,7 +51,24 @@ class PlaceholderError(ValueError):
 
 
 def _kind(name: str) -> str:
-    return "session" if name.startswith("session.") else name
+    if name.startswith("session."):
+        return "session"
+    return "test.args" if name.startswith("test.args.") else name
+
+
+def args_used(value: Any, where: str) -> list[tuple[str, str]]:
+    """Each ``{{test.args.<path>}}`` in ``value``: where it is, and its path."""
+    if (mapping := as_dict(value)) is not None:
+        return [use for key, item in mapping.items() for use in args_used(item, f"{where}.{key}")]
+    if (items := as_list(value)) is not None:
+        return [use for i, item in enumerate(items) for use in args_used(item, f"{where}[{i}]")]
+    if not isinstance(value, str):
+        return []
+    return [
+        (where, name.removeprefix("test.args."))
+        for name in (match.group(1) for match in PLACEHOLDER.finditer(value))
+        if _kind(name) == "test.args" and name != "test.args."
+    ]
 
 
 def check_placeholders(
@@ -63,14 +87,25 @@ def check_placeholders(
         return
     for match in PLACEHOLDER.finditer(value):
         name = match.group(1)
+        if name == "session":
+            # As in a trigger. It loaded, and only failed when the request was built.
+            raise SpecError(f"{where}: '{{{{session}}}}' {no_path_message('session')}")
         kind = _kind(name)
-        if kind not in ALL or (kind == "session" and name == "session."):
-            known = ["message", "test.id", "test.name", "session.<key>"]
+        if kind not in ALL or name in ("session.", "test.args", "test.args."):
+            known = [
+                "message",
+                "test.id",
+                "test.name",
+                "test.args.<key>",
+                "test.history",
+                "session.<key>",
+            ]
             close = difflib.get_close_matches(name, known, n=1, cutoff=0.6)
             hint = f" — did you mean '{{{{{close[0]}}}}}'?" if close else ""
             raise SpecError(
                 f"{where}: unknown placeholder '{match.group(0)}'{hint} "
-                "(placeholders here: {{message}}, {{test.id}}, {{test.name}}, {{session.<key>}})"
+                "(placeholders here: {{message}}, {{test.id}}, {{test.name}}, "
+                "{{test.args.<key>}}, {{test.history}}, {{session.<key>}})"
             )
         if kind not in allowed:
             raise SpecError(f"{where}: '{match.group(0)}' is not available here")
@@ -112,6 +147,33 @@ def render(value: Any, values: Values) -> Any:
     return PLACEHOLDER.sub(text, value)
 
 
+def render_url(template: str, values: Values) -> str:
+    """Resolve the placeholders of a URL, each value percent-encoded as one piece.
+
+    A value is data in the URL, as it is JSON in a body: a ``/``, ``?``, ``#`` or ``@``
+    in it is encoded, so it cannot reach another resource, query or host. A value that
+    is a whole path step (``.`` or ``..``) is refused, because it would move the
+    request up the path even encoded, and so is an empty one, which would drop its
+    piece (a DELETE to the collection). Raises ``PlaceholderError``.
+    """
+
+    def piece(match: re.Match[str]) -> str:
+        resolved = _resolve(match.group(1), values)
+        text = resolved if isinstance(resolved, str) else json.dumps(resolved, ensure_ascii=False)
+        if text in (".", ".."):
+            raise PlaceholderError(
+                f"{{{{{match.group(1)}}}}} is {text!r}, a step of the URL's path, not a value"
+            )
+        if text == "":
+            # `/conversations/{{session.id}}` with "" is the collection, not one of it.
+            raise PlaceholderError(
+                f"{{{{{match.group(1)}}}}} is empty, which would leave its piece out of the URL"
+            )
+        return quote(text, safe="")
+
+    return PLACEHOLDER.sub(piece, template)
+
+
 def _resolve(name: str, values: Values) -> Any:
     if name == "message":
         if values.message is None:
@@ -121,8 +183,22 @@ def _resolve(name: str, values: Values) -> Any:
         return values.test_id
     if name == "test.name":
         return values.test_name
+    if name == "test.history":
+        return [dict(message) for message in values.history]
+    if _kind(name) == "test.args":
+        try:
+            return get_path(dict(values.args), name.removeprefix("test.args."))
+        except PathError as e:
+            raise PlaceholderError(f"{{{{{name}}}}}: {e}") from None
     path = name.removeprefix("session.")
     try:
-        return get_path(dict(values.session), path)
+        value = get_path(dict(values.session), path)
     except PathError as e:
         raise PlaceholderError(f"{{{{session.{path}}}}}: {e}") from None
+    if value is None:
+        # As in a trigger: most likely the setup gave no value, and sending null (or
+        # the text "null") would fail the agent for the setup's fault.
+        raise PlaceholderError(
+            f"{{{{session.{path}}}}}: the value is null: the session setup returned no value for it"
+        )
+    return value

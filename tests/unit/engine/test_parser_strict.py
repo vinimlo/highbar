@@ -101,7 +101,8 @@ class TestUnknownKeys:
         )
 
         with pytest.raises(
-            SpecError, match=r"unknown key 'zzz' \(allowed: expect, id, min_pass, name, runs, "
+            SpecError,
+            match=r"unknown key 'zzz' \(allowed: expect, history, id, min_pass, name, runs, ",
         ):
             parse_spec(path)
 
@@ -117,7 +118,8 @@ class TestUnknownKeys:
         path = _spec(tmp_path, "defaults: {zzz: 1}\n" + _one_test(GUARDRAIL))
 
         with pytest.raises(
-            SpecError, match=r": defaults: unknown key 'zzz' \(allowed: budget, min_pass, runs\)$"
+            SpecError,
+            match=r": defaults: unknown key 'zzz' \(allowed: budget, min_pass, runs, session\)$",
         ):
             parse_spec(path)
 

@@ -30,6 +30,7 @@ from typing import Any
 
 from highbar._narrow import as_dict, as_list
 from highbar.domain.models import Hello, Trace, TurnRecord, Usage, Window
+from highbar.engine.observation import AgentNotObservedError
 
 CONTRACT_VERSION = 1
 
@@ -78,6 +79,8 @@ class FileTraceCollector:
                 return _end_of_last_line(f)
         except FileNotFoundError:
             return 0
+        except OSError as e:
+            raise _unreadable(self._path, e) from None
 
     def collect(self, since: int) -> Window:
         """The records in the complete lines written after byte ``since``.
@@ -94,6 +97,8 @@ class FileTraceCollector:
                 data = f.read()
         except FileNotFoundError:
             return Window()
+        except OSError as e:
+            raise _unreadable(self._path, e) from None
 
         complete = data[: data.rfind(b"\n") + 1]
         window = Window(end=start + len(complete))
@@ -143,6 +148,8 @@ class FileTraceCollector:
                     current = set(names) if current is None else current | set(names)
         except FileNotFoundError:
             return None
+        except OSError as e:
+            raise _unreadable(self._path, e) from None
         return frozenset(current) if current is not None else None
 
     def _line_at(self, offset: int) -> int:
@@ -167,6 +174,25 @@ class NoTraceCollector:
 
     def missing(self) -> bool:
         return False
+
+
+def _unreadable(path: Path, error: OSError) -> AgentNotObservedError:
+    """A trace path that is there but cannot be read: named, not a traceback (HB-15).
+
+    Docker makes a directory when a bind mount names a file that does not exist yet:
+    the most common way to get here, so it gets its own message.
+    """
+    where = path.absolute()
+    if isinstance(error, IsADirectoryError) or path.is_dir():
+        return AgentNotObservedError(
+            f"agent.traces {where} is a directory, not a file, so no test can see what the "
+            "agent does. Docker makes one when a bind mount names a file that does not exist "
+            "yet: remove it, create the file and start the agent again"
+        )
+    return AgentNotObservedError(
+        f"could not read agent.traces {where}: {error.strerror or error}, so no test can "
+        "see what the agent does"
+    )
 
 
 def _end_of_last_line(f: Any) -> int:

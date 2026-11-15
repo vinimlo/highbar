@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
+import operator
 import re
 from collections.abc import Callable
 from typing import Any, cast
 
-from highbar._narrow import as_dict
+from highbar._narrow import as_dict, as_list
 
 
 def subset_match(expected: dict[str, Any] | None, actual: Any) -> bool:
@@ -108,11 +110,71 @@ def _regex_negative(ignore_case: bool) -> Callable[[Any, Any], bool]:
     return lambda actual, operand: _found(actual, operand, ignore_case=ignore_case) is False
 
 
+def _number(value: Any) -> int | float | None:
+    """The value as a number, or None when it is not one.
+
+    A bool is left out although Python counts it as an int (``True < 3``), and so is a
+    numeric string: a model that writes ``"2"`` where the tool takes an integer has made
+    the mistake a bound is there to catch.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
+def _bound(holds: Callable[[Any, Any], Any]) -> Callable[[Any, Any], bool]:
+    def check(actual: Any, operand: Any) -> bool:
+        # A value that is not a number fails, as a negative fails on a value with no text.
+        number = _number(actual)
+        return number is not None and bool(holds(number, operand))
+
+    return check
+
+
+def _length(holds: Callable[[Any, Any], Any]) -> Callable[[Any, Any], bool]:
+    def check(actual: Any, operand: Any) -> bool:
+        # Lists only: a string has a length too, but a list that arrived as a string is
+        # the defect, and an object's length is its number of keys, which nobody means.
+        if not isinstance(actual, (list, tuple)):
+            return False
+        items = cast("list[Any] | tuple[Any, ...]", actual)
+        return bool(holds(len(items), operand))
+
+    return check
+
+
+def _one_of(actual: Any, operand: Any) -> bool:
+    # The same comparison as `equals`, against each listed value.
+    return any(bool(actual == option) for option in operand)
+
+
+def _contains_all(actual: Any, operand: Any) -> bool:
+    return all(_contains(actual, item, ignore_case=False) is True for item in operand)
+
+
+def _items(actual: Any) -> list[Any] | None:
+    if not isinstance(actual, (list, tuple)):
+        return None
+    return list(cast("list[Any] | tuple[Any, ...]", actual))
+
+
+def _any_item(actual: Any, operand: Any) -> bool:
+    items = _items(actual)
+    return items is not None and any(value_match(operand, item) for item in items)
+
+
+def _every_item(actual: Any, operand: Any) -> bool:
+    # An empty list fails: every item of nothing matched, and nothing was checked. Python's
+    # all([]) is True, which here would be a green with no evidence behind it.
+    items = _items(actual)
+    return bool(items) and all(value_match(operand, item) for item in items or ())
+
+
 # Mirrors the vocabulary `response:` already uses (contains / not_contains / matches),
 # with the same case-sensitive semantics, so a spec author doesn't have to learn a second
 # dialect. The `i` variants ignore case. `equals` is the escape hatch for a literal value
 # that happens to look like a matcher.
-_CONDITIONS: dict[str, Callable[[Any, Any], bool]] = {
+_TEXT_CONDITIONS: dict[str, Callable[[Any, Any], bool]] = {
     "equals": lambda actual, operand: bool(actual == operand),
     "contains": _positive(ignore_case=False),
     "icontains": _positive(ignore_case=True),
@@ -124,9 +186,36 @@ _CONDITIONS: dict[str, Callable[[Any, Any], bool]] = {
     "not_imatches": _regex_negative(ignore_case=True),
 }
 
+# Bounds on a number and on the length of a list (HB-7): "at most 3 documents", "up to
+# 6000 tokens". Only values of params and result have them; a reply and an error are text.
+_CONDITIONS: dict[str, Callable[[Any, Any], bool]] = {
+    **_TEXT_CONDITIONS,
+    "lt": _bound(operator.lt),
+    "lte": _bound(operator.le),
+    "gt": _bound(operator.gt),
+    "gte": _bound(operator.ge),
+    "len": _length(operator.eq),
+    "len_lte": _length(operator.le),
+    # One of a list of values, all of a list of pieces, and the items of a list matched
+    # one by one: "some document has id X and chunks [0, 1, 2]".
+    "in": _one_of,
+    "contains_all": _contains_all,
+    "any": _any_item,
+    "all": _every_item,
+}
+
 MATCHER_KEYS = frozenset(_CONDITIONS)
+# What `response` and `error` accept: the matchers that read text.
+TEXT_MATCHER_KEYS = frozenset(_TEXT_CONDITIONS)
 # Their operand is a regex, so a spec has to find out it is broken before a run does.
 REGEX_KEYS = ("matches", "imatches", "not_matches", "not_imatches")
+NUMBER_KEYS = ("lt", "lte", "gt", "gte")
+LENGTH_KEYS = ("len", "len_lte")
+# Their operand is a list of values: an empty one would make a check that cannot hold
+# (`in`) or cannot fail (`contains_all`).
+LIST_OPERAND_KEYS = ("in", "contains_all")
+# Their operand is an expected value for each item, matchers included.
+ITEM_KEYS = ("any", "all")
 
 
 def _is_matcher(expected: Any) -> bool:
@@ -190,6 +279,13 @@ def validate_expected(expected: Any, where: str) -> None:
         return
 
     # A matcher. The operand of `equals` is a literal and is deliberately not inspected.
+    for key in TEXT_MATCHER_KEYS - {"equals"}:
+        if mapping.get(key) == "":
+            # "" is in every text and an empty pattern matches every text: a positive check
+            # that cannot fail, or a negative one that cannot pass, as `response` refuses.
+            msg = f"{where}: '{key}' cannot be empty"
+            raise ValueError(msg)
+
     for key in REGEX_KEYS:
         if key not in mapping:
             continue
@@ -202,3 +298,42 @@ def validate_expected(expected: Any, where: str) -> None:
         except re.error as exc:
             msg = f"{where}: invalid regex in '{key}' ({pattern!r}): {exc}"
             raise ValueError(msg) from exc
+
+    for key in NUMBER_KEYS:
+        if key not in mapping:
+            continue
+        bound = mapping[key]
+        if _number(bound) is None:
+            msg = f"{where}: '{key}' needs a number, got {type(bound).__name__}"
+            raise ValueError(msg)
+        if isinstance(bound, float) and not math.isfinite(bound):
+            # `lte: .inf` holds for every number, and nothing is ever below `.nan`. An int
+            # is always finite, and math.isfinite would overflow on a huge one.
+            msg = f"{where}: '{key}' needs a finite number, got {bound!r}"
+            raise ValueError(msg)
+
+    for key in LENGTH_KEYS:
+        if key not in mapping:
+            continue
+        size = mapping[key]
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            msg = f"{where}: '{key}' needs a whole number, 0 or more, got {size!r}"
+            raise ValueError(msg)
+
+    for key in LIST_OPERAND_KEYS:
+        if key in mapping and not as_list(mapping[key]):
+            msg = f"{where}: '{key}' needs a non-empty list, got {mapping[key]!r}"
+            raise ValueError(msg)
+    if "contains_all" in mapping and "" in mapping["contains_all"]:
+        # "" is in every text: one piece that can never fail.
+        msg = f"{where}: 'contains_all' has an empty text, which every value contains"
+        raise ValueError(msg)
+
+    for key in ITEM_KEYS:
+        if key not in mapping:
+            continue
+        if as_dict(mapping[key]) == {}:
+            # `all: {}` subset-matches nothing, so it only says "these are objects".
+            msg = f"{where}: '{key}' needs something to match in each item, got {{}}"
+            raise ValueError(msg)
+        validate_expected(mapping[key], f"{where}.{key}")

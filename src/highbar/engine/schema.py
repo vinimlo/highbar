@@ -11,7 +11,7 @@ import difflib
 from collections.abc import Mapping
 from typing import Any
 
-from highbar.assertions._match import MATCHER_KEYS
+from highbar.assertions._match import TEXT_MATCHER_KEYS
 
 
 class SpecError(ValueError):
@@ -20,7 +20,7 @@ class SpecError(ValueError):
 
 ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "spec": frozenset({"agent", "suites", "defaults"}),
-    "defaults": frozenset({"runs", "min_pass", "budget"}),
+    "defaults": frozenset({"runs", "min_pass", "budget", "session"}),
     "agent": frozenset(
         {
             "start",
@@ -38,16 +38,30 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
     ),
     "request": frozenset({"method", "headers", "body"}),
     "session": frozenset({"setup", "teardown"}),
-    "python_hook": frozenset({"python"}),
-    "suite": frozenset({"name", "tests"}),
+    "hook": frozenset({"python", "http"}),
+    "http_hook": frozenset({"url", "method", "headers", "body"}),
+    "suite": frozenset({"name", "tests", "session"}),
     "test": frozenset(
-        {"id", "name", "trigger", "expect", "turns", "variations", "runs", "min_pass"}
+        {
+            "id",
+            "name",
+            "trigger",
+            "expect",
+            "turns",
+            "variations",
+            "runs",
+            "min_pass",
+            "session",
+            "history",
+        }
     ),
+    "test_session": frozenset({"args"}),
+    "history_message": frozenset({"role", "content"}),
     "turn": frozenset({"name", "trigger", "expect"}),
     "expect": frozenset({"function_calls", "response", "ordered", "exclusive", "forbid", "budget"}),
     "budget": frozenset({"max_input_tokens", "max_cost"}),
     "function_call": frozenset({"name", "params", "result", "error"}),
-    "response": MATCHER_KEYS,
+    "response": TEXT_MATCHER_KEYS,
 }
 
 # Keys starting with this are the author's own (YAML anchors, notes), as in compose

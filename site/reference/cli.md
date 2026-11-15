@@ -13,7 +13,7 @@ Runs the tests of a spec file, or of every `*.highbar.yaml` under a directory. W
 | `--runs N` | Run each phrasing N times (N ≥ 1), in place of the specs' `defaults.runs`. A test's own `runs` still wins. |
 | `--frozen` | Never generate variations: a phrasing missing from the committed cache fails. Use it in CI. |
 | `--keep-traces` | Keep the trace file of each spec whose agent highbar started, and print its path. |
-| `--report json=FILE` | Also write the results to FILE. See the [report](/reference/report). |
+| `--report json=FILE` | Also write the results to FILE. See the [report](/reference/report). `junit=FILE` writes them as JUnit XML, for CI tools that read it, and `markdown=FILE` as a summary for a CI job's page (`$GITHUB_STEP_SUMMARY`). Give it once per file to write more than one. |
 | `--max-cost AMOUNT` | A ceiling on what the whole run spends. Over it, the run stops at the end of the test in progress and exits with 3. |
 | `--max-errors N` | Stop the run once N executions in a row fail for the same cause of the agent's infrastructure, and exit with 4. 5 by default; 0 never stops. |
 

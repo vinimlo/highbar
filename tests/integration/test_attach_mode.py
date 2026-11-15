@@ -192,6 +192,27 @@ def test_fr3_a_wrong_traces_path_exits_2_before_any_message(attached: _Attached)
 
 
 @pytest.mark.timeout(40)
+def test_hb15_a_directory_as_the_trace_file_exits_2_with_its_name(attached: _Attached) -> None:
+    """What Docker leaves when a bind mount names a file that is not there yet."""
+    attached.start()
+    spec = attached.spec()
+    path = attached.root / spec
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("var/traces.jsonl", "var/mounted.jsonl"),
+        encoding="utf-8",
+    )
+    (attached.root / "var" / "mounted.jsonl").mkdir()
+
+    result = attached.run(spec)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"{attached.root / 'var' / 'mounted.jsonl'} is a directory, not a file" in result.stdout
+    assert "Traceback" not in result.stdout + result.stderr
+    records = attached.traces.read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["type"] for line in records] == ["hello"]
+
+
+@pytest.mark.timeout(40)
 def test_session_hook_that_cannot_load_exits_2_before_any_agent(attached: _Attached) -> None:
     marker = attached.root / "STARTED"
     (attached.root / "agent.highbar.yaml").write_text(

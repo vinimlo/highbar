@@ -110,6 +110,10 @@ def run_spec(
         suffix=".jsonl", prefix="highbar-traces-", delete=False
     ) as traces_fd:
         traces_file = traces_fd.name
+    if keep_traces:
+        # Said before the run, not after: after the summary, a write of its own races a
+        # reader that leaves at the summary line, and rich exits 1 on it (HB-35).
+        console.print(f"  Traces kept at {escape(traces_file)}")
 
     adapter = SubprocessAdapter(
         start_cmd=agent.start,
@@ -140,9 +144,7 @@ def run_spec(
     try:
         summary = _run(runner, spec, on_end)
     finally:
-        if keep_traces:
-            console.print(f"  Traces kept at {escape(traces_file)}")
-        else:
+        if not keep_traces:
             Path(traces_file).unlink(missing_ok=True)
 
     if summary.failed or summary.errored:

@@ -42,8 +42,46 @@ expect:
 | `not_contains`, `not_icontains` | does not contain it. |
 | `matches`, `not_matches` | matches the regular expression somewhere (Python's `re.search`), or does not. **Case-sensitive:** `matches: "eleven years"` fails on "Eleven years" at the start of a sentence. |
 | `imatches`, `not_imatches` | the same, ignoring case. `(?i)` at the start of a pattern does the same in `matches`. |
+| `lt`, `lte`, `gt`, `gte` | is a number below, at most, above, or at least the operand. |
+| `len`, `len_lte` | is a list of exactly, or at most, that many items. |
+| `in` | equals one of the listed values: `plan: {in: [basic, pro]}`. |
+| `contains_all` | contains each listed item, as `contains` does: every piece of text, or every item of a list. |
+| `any`, `all` | is a list where some item, or every item, matches the operand. The operand is any expected value: an object compared as `params` is, or a matcher. |
 
 A value that has no text form (an object, a list) never satisfies a negative matcher: "it does not contain the card number" is not evidence when there is no text to look at.
+
+An empty text in a matcher (`contains: ""`, `matches: ""`) is refused when the spec loads: `""` is in every text, so it checks nothing. To compare with an empty text, write `{equals: ""}`. An empty object is a check: `options: {}` says that `options` is there and is an object, whatever it holds; `{equals: {}}` says it is an empty one.
+
+Bounds and lengths hold only on what they measure. A bound fails on anything that is not a number, a numeric string (`"3"`) and `true` included, and a length fails on anything that is not a list, a string included: a value of the wrong type is a defect the bound is there to catch. Two conditions make a range:
+
+```yaml test
+trigger: "Show me the three newest documents about refunds"
+expect:
+  function_calls:
+    - name: search_documents
+      params:
+        limit: {gte: 1, lte: 3}
+      result:
+        documents: {len_lte: 3}
+```
+
+`any` and `all` reach into the items of a list, so a test can say what one of the documents must be, or what each of them must be:
+
+```yaml test
+trigger: "What is the refund policy?"
+expect:
+  function_calls:
+    - name: retrieve
+      result:
+        documents:
+          len_lte: 3
+          any: {id: "policy-7", chunks: [0, 1, 2]}
+          all: {score: {gte: 0.5}}
+```
+
+`all` fails on an empty list: every item of nothing matched, and nothing was checked. When an empty list is fine and its items are text or numbers, say what none of them may be with `not_contains`, which holds on `[]`: `tags: {not_contains: "private"}`. `in` and `contains_all` need a list with at least one value, and `any: {}`, `all: {}` and an empty text in `contains_all` are refused when the spec loads, because they hold on anything.
+
+These matchers apply to values of `params` and `result`; `response` and `error` refuse them. A reply and an error are text, where a bound or a length could never hold. A literal object whose keys are all matcher names is read as a matcher: to compare `{lt: 5}` itself, write `{equals: {lt: 5}}`.
 
 ### A call that failed
 
