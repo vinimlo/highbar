@@ -27,6 +27,7 @@ from highbar.engine.schema import SpecError
 from highbar.engine.session import SessionError, SessionHooks
 from highbar.engine.usage import add_costs, add_up
 from highbar.reporters.json_report import JsonReport, ReportError
+from highbar.reporters.junit_report import JUnitReport
 from highbar.reporters.terminal import format_summary
 from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
 from highbar.variations.generator import VariationError, VariationGenerator
@@ -119,10 +120,10 @@ def run(
     report_to: str | None = typer.Option(
         None,
         "--report",
-        metavar="json=FILE",
+        metavar="json=FILE|junit=FILE",
         help=(
-            "Also write the results to FILE as JSON. It is replaced before the first "
-            "message, and written on every way out of the run."
+            "Also write the results to FILE, as JSON or as JUnit XML. It is replaced before "
+            "the first message, and written on every way out of the run."
         ),
     ),
     max_cost: float | None = typer.Option(
@@ -166,6 +167,10 @@ def run(
     raise typer.Exit(_close_report(report, code))
 
 
+# The formats of --report. JUnit is the same report, for CI tools that read JUnit XML.
+_REPORTS: dict[str, type[JsonReport]] = {"json": JsonReport, "junit": JUnitReport}
+
+
 def _open_report(value: str | None, paths: list[str]) -> JsonReport | None:
     """The report of this run, already on disk, or exit 2 before anything starts.
 
@@ -175,14 +180,16 @@ def _open_report(value: str | None, paths: list[str]) -> JsonReport | None:
     if value is None:
         return None
     kind, separator, target = value.partition("=")
-    if kind != "json" or not separator or not target:
-        console.print(f"  [red]\u2717[/red] --report takes json=<file>, got {escape(value)}")
+    if kind not in _REPORTS or not separator or not target:
+        console.print(
+            f"  [red]\u2717[/red] --report takes json=<file> or junit=<file>, got {escape(value)}"
+        )
         raise typer.Exit(EXIT_UNRUNNABLE)
     path = Path(target)
     if path.resolve() in {Path(spec).resolve() for spec in paths}:
         console.print(f"  [red]\u2717[/red] --report: {escape(target)} is a spec of this run")
         raise typer.Exit(EXIT_UNRUNNABLE)
-    report = JsonReport(path, version=_version())
+    report = _REPORTS[kind](path, version=_version())
     try:
         report.start()
     except ReportError as e:
