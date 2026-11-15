@@ -15,7 +15,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | Key | Type | Default | |
 |---|---|---|---|
 | `endpoint` | URL | required | Where each message is sent. |
-| `start` | command | none | Start the agent: highbar runs it, stops it at the end, and passes `HIGHBAR_TRACES_URL`. Without it, highbar attaches to a running agent. |
+| `start` | command | none | Start the agent: highbar runs it, stops it at the end, and passes `HIGHBAR_TRACES_URL`. Without it, highbar attaches to a running agent. A `${VAR}` in it is shown in the output: pass a token in the environment, which the agent inherits. |
 | `health` | URL | none | Must answer before tests start. Without it, highbar waits for the endpoint's port. |
 | `startup_timeout` | ms | 15000 | How long a started agent has to become ready. |
 | `settle_time` | ms | 500 | How long after a reply highbar waits before reading the trace file. |
