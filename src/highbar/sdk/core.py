@@ -292,12 +292,15 @@ class Highbar:
             return False
 
     def _bye(self) -> None:
-        """At a clean exit, a `bye` in each file this process wrote its `hello` in (HB-15).
+        """A `bye` in each file this process wrote its `hello` in (HB-15), from ``atexit``.
 
         highbar then stops counting the tools the process declared there: an old build's
         file must not vouch for a tool the code running now no longer records. A forked
-        child inherits its parent's hellos and ends only its own. A process that is
-        killed (SIGKILL, ``os._exit``, a crash) writes none.
+        child inherits its parent's hellos and ends only its own. ``atexit`` runs only
+        when Python itself ends the process (the end of its main module, ``sys.exit``,
+        Ctrl-C): a process stopped by SIGTERM (``kill``, ``docker stop``, uvicorn, which
+        raises the signal again after its shutdown), SIGKILL, ``os._exit`` or a crash
+        writes none. The agent's signals are the agent's, so the SDK does not catch them.
         """
         pid = os.getpid()
         with self._hello_lock:

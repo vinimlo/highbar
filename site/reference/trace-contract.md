@@ -125,7 +125,7 @@ A writer may write several. highbar joins those written since the writer's last 
 {"v": 1, "type": "bye", "ts": 1792987350.411, "pid": 94015}
 ```
 
-Write it when the process exits. A `bye` with the `pid` of the file's last `hello` says that process ended, so the tools it declared no longer count: an old build's file must not vouch for a tool the code running now no longer records. A `bye` from another process, a forked child's, ends nothing. The Python SDK writes one at a clean exit; a process that is killed writes none. Older versions of highbar ignore the record.
+Write it when the process exits. A `bye` with the `pid` of the file's last `hello` says that process ended, so the tools it declared no longer count: an old build's file must not vouch for a tool the code running now no longer records. A `bye` from another process, a forked child's, ends nothing. The Python SDK writes one when Python itself ends the process: the end of its main module, `sys.exit`, or Ctrl-C. A process stopped by SIGTERM, which is how `kill`, `docker stop` and `docker compose down` stop it, writes none, and neither does one stopped by SIGKILL, `os._exit` or a crash. Older versions of highbar ignore the record.
 
 ## Matching records to a test
 
