@@ -9,7 +9,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from highbar.adapters import file_collector
+from highbar.adapters import file_collector, subprocess_adapter
 from highbar.adapters.file_collector import TraceFormatError
 from highbar.adapters.http_client import AgentResponseError, HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
@@ -163,6 +163,9 @@ class _Execution:
     response: str = ""
     tools: list[Trace] = field(default_factory=list[Trace])
     passed: bool = False
+    # No record of its own in a managed run: it rests on the agent highbar started being
+    # the one that answered, which it may not be once that agent is gone (HB-43).
+    on_faith: bool = False
     execution_id: str = ""
     started_at: float = 0.0
     duration_ms: float = 0.0
@@ -468,6 +471,10 @@ class TestRunner:
         self._gates: dict[int, _Gate] = {}
         self._reported: dict[int, _Reported] = {}
         self._warnings: list[str] = []
+        # The agent highbar started was seen gone (HB-43): why, once something else
+        # answers on its port; and whether a crash with nothing there was told.
+        self._agent_gone: str | None = None
+        self._crash_told = False
         self._run_start = time.time()
         self._test_index = 0
         # The session.args of the test that runs now (HB-9), for each of its executions.
@@ -778,6 +785,50 @@ class TestRunner:
                 return e.window, str(e)
             return Window(end=self._collector.checkpoint()), str(e)
 
+    def _agent_exit(self) -> subprocess_adapter.AgentExit | None:
+        """How the agent highbar started ended, or None while it runs, or when attached."""
+        if not self._managed:
+            return None
+        ended = self._adapter.exited()
+        return ended if isinstance(ended, subprocess_adapter.AgentExit) else None
+
+    @staticmethod
+    def _exit_text(ended: subprocess_adapter.AgentExit) -> str:
+        cleanly = (
+            " (cleanly: `start` may launch the agent in the background)" if ended.code == 0 else ""
+        )
+        return f"the agent highbar started exited with code {ended.code}{cleanly}"
+
+    def _look_at_agent(self, current: _Execution | None = None) -> str | None:
+        """Why an execution with no record of its own is unverified now, or None (HB-43).
+
+        Gone with something else on its port, the agent may have died before any message:
+        that process answered them, and when the agent died cannot be told. So every
+        execution that rested on it is unverified, the ones already judged through a
+        finding. Gone with nothing on its port, it crashed, and what it answered stands.
+        ``current`` is the execution whose turn is being judged: its own result says so.
+        """
+        if self._agent_gone is not None:
+            return self._agent_gone
+        ended = self._agent_exit()
+        if ended is None:
+            return None
+        if not ended.port_answers:
+            if not self._crash_told:
+                self._crash_told = True
+                self._warn(f"{self._exit_text(ended)} during the run; see {self._adapter.log_path}")
+            return None
+        self._agent_gone = (
+            f"{self._exit_text(ended)}, and another process answers on its port: this "
+            "execution has no trace record of its own, so what answered it may not be the "
+            f"agent. See {self._adapter.log_path}"
+        )
+        for execution in self._executions:
+            if execution is not current and execution.on_faith and execution.passed:
+                execution.passed = False
+                self._findings.append(_Finding(execution, Status.ERROR, self._agent_gone))
+        return self._agent_gone
+
     def _read_after_last_test(self) -> None:
         last = self._last_read() or self._executions[-1]
         window, unreadable = self._read()
@@ -797,6 +848,8 @@ class TestRunner:
             # No test comes after the last one: the line may be its late call or usage.
             last.passed = False
             self._findings.append(_Finding(last, Status.ERROR, unreadable))
+        # The last look at the agent: gone by now, it may have been gone all along.
+        self._look_at_agent()
 
     def _untagged(self, tools: list[Trace], execution: _Execution) -> list[Trace]:
         return [
@@ -1237,6 +1290,16 @@ class TestRunner:
         while True:
             try:
                 if self._collector.collect(since=0).hellos:
+                    if (ended := self._agent_exit()) is not None:
+                        raise AgentNotObservedError(
+                            f"{self._exit_text(ended)} right after its SDK's hello"
+                            + (
+                                ", and another process answers on its port"
+                                if ended.port_answers
+                                else ""
+                            )
+                            + f": tests would not talk to it. See {self._adapter.log_path}"
+                        )
                     return
             except TraceFormatError as e:
                 raise AgentNotObservedError(str(e)) from None
@@ -1551,6 +1614,10 @@ class TestRunner:
         )
         if expect.check is not None and result.status is not Status.ERROR:
             result = self._run_check(expect.check, result, execution, log, values, response)
+        gone = self._look_at_agent(current=execution)
+        if gone is not None and execution.on_faith:
+            execution.passed = False
+            result = replace(result, status=Status.ERROR, errors=[gone])
         if unreadable is None:
             return result
         # What could be read counted as it does in any window. The line itself may be
@@ -1598,6 +1665,7 @@ class TestRunner:
             log.tools = list(traces)
             log.records = stray if self._managed else []
             log.turns = list(window.turns)
+            execution.on_faith = execution.on_faith or self._managed
             if expect.check is not None and not (self._managed and observes):
                 # highbar's own checks read an untagged window only in that case (a fresh
                 # file whose hello it waited for): expect.check reads what they read.
@@ -1617,6 +1685,8 @@ class TestRunner:
             log.tools = list(traces)
             log.records = self._read_usage(classified.mine.turns)
             log.turns = list(classified.mine.turns)
+            if self._managed and not (classified.mine.tools or classified.mine.turns):
+                execution.on_faith = True
             if expect.check is not None and not (classified.mine.tools or classified.mine.turns):
                 log.unobserved = self._not_observed(classified, execution.correlate)
             errors = self._check(traces, response, expect)

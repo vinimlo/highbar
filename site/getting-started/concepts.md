@@ -58,7 +58,7 @@ Each execution of a test gets its own id, sent in the `X-Highbar-Test` header. `
 
 When the test id cannot travel to the agent's tools, `agent.correlate` names another key, such as a `conversation_id` opened by the session hook.
 
-An empty trace is never taken as proof. When highbar starts the agent, it waits for the writer's `hello` before any test that checks tool calls runs, and stops with exit code 2 without it: that is how a stale server on the port, or an SDK that never started, is caught. When records carry test ids, and always in attach mode, a test that checks tool calls also needs a record of its own; without one it is an `error` that says what was read, never a pass.
+An empty trace is never taken as proof. When highbar starts the agent, it waits for the writer's `hello` before any test that checks tool calls runs, and stops with exit code 2 without it: that is how a stale server on the port, or an SDK that never started, is caught. If the agent it started dies during the run while something else answers on its port, each execution with no record of its own becomes an `error`. When records carry test ids, and always in attach mode, a test that checks tool calls also needs a record of its own; without one it is an `error` that says what was read, never a pass.
 
 ## Three results
 
