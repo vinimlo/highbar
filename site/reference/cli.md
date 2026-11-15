@@ -58,7 +58,15 @@ suites:
             - name: cancel_order
 ```
 
-Here `--tag orders` runs both tests and `--tag smoke` only the first. Given more than once, each option picks any of its values, and given together, a test must match each option given. Every spec is still parsed and validated whole, so a typo anywhere stops the run. A spec with no test picked is left out, and its agent does not start. The report lists only the tests picked.
+Here `--tag orders` runs both tests and `--tag smoke` only the first. Given more than once, each option picks any of its values, and given together, a test must match each option given. Every spec is still parsed and validated whole, so a typo anywhere stops the run. A spec with no test picked is left out, and its agent does not start.
+
+A run of part of the tests can pass whole, so it says what it left out. Its last line counts the tests:
+
+```console
+  ! part of the tests: 2 of 7 picked by --tag smoke, 5 not run
+```
+
+The [report](/reference/report) lists only the tests picked, and its `selection` holds the options and the same two numbers. `complete` and the exit code are about the tests picked: a gate that runs `--tag smoke` should not be read as the whole suite.
 
 A selection that picks no test stops the run before any agent starts, with exit code 2, since a run that checks nothing must not pass. So does a `--suite` that no spec has, or a `--tag` that no test has, with the closest name.
 

@@ -29,6 +29,7 @@ from highbar.domain.models import (
     iso_utc,
 )
 from highbar.engine.secrets import redact
+from highbar.engine.selection import Selection
 from highbar.engine.usage import add_up
 
 SCHEMA_VERSION = 1
@@ -56,6 +57,7 @@ class JsonReport:
         self._summaries: list[RunSummary] = []
         self._specs: list[dict[str, Any]] = []
         self._stopped: dict[str, str] | None = None
+        self._selection: dict[str, Any] | None = None
 
     @property
     def path(self) -> Path:
@@ -65,8 +67,13 @@ class JsonReport:
         """Write the unfinished report. Raises ``ReportError``, before any message goes."""
         self._write(self._body(exit_code=None, complete=False))
 
-    def plan(self, specs: list[tuple[str, Spec]]) -> None:
-        """The specs that will run. Hashed now: a file can change during a long run."""
+    def plan(self, specs: list[tuple[str, Spec]], selection: Selection | None = None) -> None:
+        """The specs that will run. Hashed now: a file can change during a long run.
+
+        ``selection`` is what --suite, -k and --tag picked, when they were given: the
+        report of part of the tests has to say so (HB-17).
+        """
+        self._selection = asdict(selection) if selection is not None else None
         for path, spec in specs:
             self._planned[path] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
             self._secrets.update(spec.agent.secrets)
@@ -118,6 +125,7 @@ class JsonReport:
             "exit_code": exit_code,
             "complete": complete,
             "stopped": self._stopped,
+            "selection": self._selection,
             "git_sha": self._git_sha,
             "summary": _totals(self._summaries),
             "totals": _usage_totals(add_up(usages)),

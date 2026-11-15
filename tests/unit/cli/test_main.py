@@ -124,6 +124,41 @@ class TestSelection:
         (call,) = fake.return_value.run.call_args_list
         assert [suite.name for suite in call.args[0].suites] == ["Drinks"]
 
+    def test_hb17_a_cut_run_says_what_it_left_out(self, project: Path) -> None:
+        other = project / "specs" / "menu" / "drinks.highbar.yaml"
+        other.write_text(textwrap.dedent(SPEC).replace("name: Menu", "name: Drinks"), "utf-8")
+        report = project / "report.json"
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            fake.return_value.snapshot.return_value = _summary(passed=1)
+            result = runner.invoke(
+                app, ["run", "specs/", "--suite", "Drinks", "--report", f"json={report}"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "! part of the tests: 1 of 2 picked by --suite Drinks, 1 not run" in result.output
+        selection = json.loads(report.read_text(encoding="utf-8"))["selection"]
+        assert selection == {
+            "suites": ["Drinks"],
+            "keywords": [],
+            "tags": [],
+            "picked": 1,
+            "left_out": 1,
+        }
+
+    def test_hb17_a_whole_run_says_nothing_of_the_kind(self, project: Path) -> None:
+        report = project / "report.json"
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            fake.return_value.snapshot.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--report", f"json={report}"])
+
+        assert result.exit_code == 0, result.output
+        assert "part of the tests" not in result.output
+        assert json.loads(report.read_text(encoding="utf-8"))["selection"] is None
+
     def test_hb17_a_suite_no_spec_has_exits_2(self, project: Path) -> None:
         with patch("highbar.engine.run_spec.TestRunner") as fake:
             result = runner.invoke(app, ["run", "specs/", "--suite", "Menus"])

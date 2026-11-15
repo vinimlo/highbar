@@ -10,7 +10,7 @@ import pytest
 
 from highbar.domain.models import AgentConfig, Expect, ResponseExpect, Spec, Suite
 from highbar.domain.models import Test as Case
-from highbar.engine.selection import SelectionError, select
+from highbar.engine.selection import Selection, SelectionError, select, selection_of
 
 AGENT = AgentConfig(start="agent", endpoint="http://127.0.0.1:1/chat")
 OK = Expect(response=ResponseExpect(matcher={"contains": "ok"}))
@@ -161,3 +161,27 @@ class TestTags:
     def test_hb17_with_no_tags_anywhere_it_says_so(self) -> None:
         with pytest.raises(SelectionError, match=r"\(tags: none\)$"):
             select(SPECS, suites=(), keywords=(), tags=["smoke"])
+
+
+class TestWhatWasCut:
+    """A cut run can exit 0 with complete: true; what it left out has to be said (the
+    review of #45 at 3c16f42)."""
+
+    def test_hb17_no_option_is_no_selection(self) -> None:
+        assert selection_of(SPECS, SPECS, suites=(), keywords=(), tags=()) is None
+
+    def test_hb17_it_counts_the_tests_picked_and_left_out(self) -> None:
+        picked = select(SPECS, suites=["Orders"], keywords=(), tags=())
+
+        cut = selection_of(SPECS, picked, suites=["Orders"], keywords=(), tags=())
+
+        assert cut == Selection(suites=("Orders",), keywords=(), tags=(), picked=2, left_out=2)
+
+    def test_hb17_its_line_names_the_options_and_the_count(self) -> None:
+        cut = Selection(
+            suites=("Orders",), keywords=("cancel",), tags=("smoke",), picked=1, left_out=3
+        )
+
+        assert cut.line() == (
+            "part of the tests: 1 of 4 picked by --suite Orders -k cancel --tag smoke, 3 not run"
+        )

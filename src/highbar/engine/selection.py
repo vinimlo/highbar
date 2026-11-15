@@ -10,13 +10,64 @@ from __future__ import annotations
 
 import difflib
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from highbar.domain.models import Spec, Suite, Test, stable_key
 
 
 class SelectionError(ValueError):
     """The options pick nothing: the run would check nothing, so it does not start."""
+
+
+@dataclass(frozen=True)
+class Selection:
+    """What the options picked, for the report and the run's last line.
+
+    A run of part of the tests can exit 0 with ``complete: true``: only this says that
+    the rest did not run.
+    """
+
+    suites: tuple[str, ...]
+    keywords: tuple[str, ...]
+    tags: tuple[str, ...]
+    picked: int  # tests, not executions
+    left_out: int
+
+    def line(self) -> str:
+        options = _options(self.suites, self.keywords, self.tags)
+        picked, total = self.picked, self.picked + self.left_out
+        return (
+            f"part of the tests: {picked} of {total} picked by {options}, {self.left_out} not run"
+        )
+
+
+def selection_of(
+    before: list[tuple[str, Spec]],
+    after: list[tuple[str, Spec]],
+    *,
+    suites: Sequence[str],
+    keywords: Sequence[str],
+    tags: Sequence[str],
+) -> Selection | None:
+    """What ``select`` kept of ``before`` in ``after``; ``None`` when no option was given."""
+    if not suites and not keywords and not tags:
+        return None
+    picked = _count(after)
+    return Selection(tuple(suites), tuple(keywords), tuple(tags), picked, _count(before) - picked)
+
+
+def _count(specs: list[tuple[str, Spec]]) -> int:
+    return sum(len(suite.tests) for _, spec in specs for suite in spec.suites)
+
+
+def _options(suites: Sequence[str], keywords: Sequence[str], tags: Sequence[str]) -> str:
+    return " ".join(
+        [
+            *(f"--suite {name}" for name in suites),
+            *(f"-k {word}" for word in keywords),
+            *(f"--tag {tag}" for tag in tags),
+        ]
+    )
 
 
 def select(
@@ -48,12 +99,8 @@ def select(
         if kept:
             picked.append((path, replace(spec, suites=kept)))
     if not picked:
-        options = [
-            *(f"--suite {name}" for name in suites),
-            *(f"-k {word}" for word in keywords),
-            *(f"--tag {tag}" for tag in tags),
-        ]
-        raise SelectionError(f"no test matches {' '.join(options)}: nothing would be checked")
+        options = _options(suites, keywords, tags)
+        raise SelectionError(f"no test matches {options}: nothing would be checked")
     return picked
 
 

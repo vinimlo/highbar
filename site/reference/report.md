@@ -24,8 +24,9 @@ Responses and tool arguments go in whole, so treat it like a trace file from `--
 | `highbar_version` | |
 | `started_at`, `duration_ms` | UTC with milliseconds; wall time of the run. |
 | `exit_code` | The code the process returned. `null` means the run did not finish: it is still going, or it was killed. |
-| `complete` | Every test of every spec ran all of its executions. A run that `--max-cost` stopped after its last test is complete: `stopped` says the ceiling was passed. So is a run that `--max-errors` stopped at the last execution of its last test. |
+| `complete` | Every test of every spec ran all of its executions; with `--suite`, `-k` or `--tag`, every test picked. A run that `--max-cost` stopped after its last test is complete: `stopped` says the ceiling was passed. So is a run that `--max-errors` stopped at the last execution of its last test. |
 | `stopped` | Why the run ended early, or `null`: `{"reason": ..., "message": ...}`. |
+| `selection` | What [`--suite`, `-k` and `--tag`](/reference/cli#part-of-the-tests) picked, or `null` when none was given: `{"suites": [...], "keywords": [...], "tags": [...], "picked": 2, "left_out": 5}`, counted in tests. A run of part of the tests can exit 0 and be `complete`: this is what says the rest did not run. |
 | `git_sha` | `HEAD` where highbar ran, which is not always the agent's version. `null` outside a repository. |
 | `summary` | `total`, `passed`, `failed`, `errored` and `variations` of the whole run. |
 | `totals` | [Tokens and cost](#tokens-and-cost) of the whole run. |

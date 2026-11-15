@@ -31,6 +31,7 @@ from highbar.domain.models import (
 )
 from highbar.domain.models import Test as Case
 from highbar.domain.models import TestOutcome as Outcome
+from highbar.engine.selection import Selection
 from highbar.engine.usage import add_up, merged, turn_usage
 from highbar.reporters.json_report import JsonReport, ReportError
 
@@ -118,6 +119,35 @@ def _finished(path: Path, spec_path: str, summary: RunSummary, *, code: int = 1)
     report.add(spec_path, SPEC, summary, True)
     report.finish(code)
     return _read(path)
+
+
+class TestSelection:
+    """A run of part of the tests says so: complete and exit 0 alone read as the whole
+    suite (the review of #45 at 3c16f42)."""
+
+    def test_hb17_a_cut_run_records_its_options_and_what_it_left_out(self, workdir: Path) -> None:
+        path, spec_path = workdir / "report.json", _spec_file(workdir)
+        report = JsonReport(path, version="1.2.3")
+        report.start()
+        cut = Selection(suites=(), keywords=(), tags=("smoke",), picked=2, left_out=5)
+        report.plan([(spec_path, SPEC)], selection=cut)
+        report.add(spec_path, SPEC, _summary(_test()), True)
+        report.finish(0)
+
+        data = _read(path)
+        assert data["selection"] == {
+            "suites": [],
+            "keywords": [],
+            "tags": ["smoke"],
+            "picked": 2,
+            "left_out": 5,
+        }
+        jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+
+    def test_hb17_a_whole_run_has_no_selection(self, workdir: Path) -> None:
+        data = _finished(workdir / "report.json", _spec_file(workdir), _summary(_test()))
+
+        assert data["selection"] is None
 
 
 class TestStart:
