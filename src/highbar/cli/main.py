@@ -305,13 +305,14 @@ def _run_all(
     specs = _parse_all(paths, runs=runs, failures=failures)
     if specs is None:
         return _stopped(report, "spec_invalid", "; ".join(failures), EXIT_UNRUNNABLE)
+    # Before the selection: a spec left out still lends its ${VAR} values to the masks.
+    specs = _sharing_secrets(specs)
     # --suite and -k: the specs are whole above, so a typo anywhere still stops the run.
     try:
         specs = select(specs, suites=suites, keywords=keywords)
     except SelectionError as e:
         console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)
         return _stopped(report, "usage_error", str(e), EXIT_UNRUNNABLE)
-    specs = _sharing_secrets(specs)
     if report is not None:
         report.plan(specs)
     # Python session hooks are imported before any agent starts, like the specs parsed.

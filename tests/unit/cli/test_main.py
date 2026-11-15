@@ -88,6 +88,30 @@ class TestSelection:
         (call,) = fake.return_value.run.call_args_list
         assert [suite.name for suite in call.args[0].suites] == ["Drinks"]
 
+    def test_hb17_a_spec_left_out_still_lends_its_secrets(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An agent can echo another spec's token: it is masked in every spec of the run,
+        picked or not (the security review of 5a2e6bf)."""
+        monkeypatch.setenv("TOKEN_A", "secret-a-123")
+        endpoint = '  endpoint: "http://localhost:8000/chat"\n'
+        api = (
+            textwrap.dedent(SPEC)
+            .replace("name: Menu", "name: Api")
+            .replace(
+                endpoint, endpoint + '  request:\n    headers: {Authorization: "${TOKEN_A}"}\n'
+            )
+        )
+        (project / "specs" / "menu" / "api.highbar.yaml").write_text(api, "utf-8")
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--suite", "Menu"])
+
+        assert result.exit_code == 0, result.output
+        (call,) = fake.call_args_list
+        assert "secret-a-123" in call.kwargs["secrets"]
+
     def test_hb17_a_suite_no_spec_has_exits_2(self, project: Path) -> None:
         with patch("highbar.engine.run_spec.TestRunner") as fake:
             result = runner.invoke(app, ["run", "specs/", "--suite", "Menus"])

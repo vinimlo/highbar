@@ -4,6 +4,7 @@
 
 ### Added
 
+- `highbar run --suite NAME` and `-k TEXT`: run part of the tests, by suite name or by a piece of a test's `<suite>/<name>` or `id`. A selection that picks no test, or a suite no spec has, stops the run before any agent starts, with exit code 2.
 - Tokens and cost. A `turn` record can carry an optional `usage`: `model`, `provider`, `input_tokens`, `output_tokens`, `cached_input_tokens`, `cost`, `currency` and `llm_calls`, all optional. The contract stays at v1, and a writer without it works as before. In Python, set `turn.usage` in `hb.turn()`; a `Decimal` in it is written as a number.
 - A price table for the cost a writer does not send: `src/highbar/engine/prices.json`, in USD per token, in the format of OpenRouter's model list, rewritten by `scripts/update_prices.py`. A cost the writer sends always stands. A model outside the table leaves the cost missing, with a warning.
 - Each turn of the report has its `usage`, and each execution, test, suite and spec, and the run, have `totals`. A sum holds only what is known: when a cost or a currency is missing, or the costs come in more than one currency, `complete` is `false` and `warnings` says what is missing. Costs in different currencies are never added together. The terminal's summary ends with the tokens and cost.
@@ -16,7 +17,6 @@
 - An optional `id` on a test, and a stable key for each one: its `id`, or `<suite>/<name>`.
 - `definition_sha256` on each test of the report, to tell whether two runs measured the same thing.
 - `highbar.run()` returns each test in `summary.tests` and the warnings in `summary.warnings`, and takes a `reporter`.
-- `highbar run --suite NAME` and `-k TEXT`: run part of the tests, by suite name or by a piece of a test's `<suite>/<name>` or `id`. A selection that picks no test, or a suite no spec has, stops the run before any agent starts, with exit code 2.
 
 ### Changed
 
