@@ -25,6 +25,7 @@ from urllib.parse import quote
 from highbar._narrow import as_dict, as_list
 from highbar.engine.paths import PathError, get_path
 from highbar.engine.schema import SpecError
+from highbar.engine.templates import no_path_message
 
 PLACEHOLDER = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
 
@@ -86,6 +87,9 @@ def check_placeholders(
         return
     for match in PLACEHOLDER.finditer(value):
         name = match.group(1)
+        if name == "session":
+            # As in a trigger. It loaded, and only failed when the request was built.
+            raise SpecError(f"{where}: '{{{{session}}}}' {no_path_message('session')}")
         kind = _kind(name)
         if kind not in ALL or name in ("session.", "test.args", "test.args."):
             known = [
@@ -188,6 +192,13 @@ def _resolve(name: str, values: Values) -> Any:
             raise PlaceholderError(f"{{{{{name}}}}}: {e}") from None
     path = name.removeprefix("session.")
     try:
-        return get_path(dict(values.session), path)
+        value = get_path(dict(values.session), path)
     except PathError as e:
         raise PlaceholderError(f"{{{{session.{path}}}}}: {e}") from None
+    if value is None:
+        # As in a trigger: most likely the setup gave no value, and sending null (or
+        # the text "null") would fail the agent for the setup's fault.
+        raise PlaceholderError(
+            f"{{{{session.{path}}}}}: the value is null: the session setup returned no value for it"
+        )
+    return value

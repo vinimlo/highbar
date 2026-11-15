@@ -7,6 +7,10 @@ object the session setup returned, as in the request.
 
 Both are resolved in one pass over what the spec wrote: a reply or a session value
 that holds ``{{...}}`` goes in as text, and is never read as a template again.
+
+Nothing that is not a value goes out looking like one: a path that ends on ``null``,
+or ``{{session}}`` and ``{{previous}}`` with no path, are errors, not the text
+``null`` or the braces as written.
 """
 
 from __future__ import annotations
@@ -22,8 +26,10 @@ from highbar.domain.models import Trace
 from highbar.engine.paths import PathError, get_path
 
 # Spaces inside the braces are allowed: `{{ previous.x }}` is how most template
-# languages are written, and rejecting it would read as "no such value".
-_TEMPLATE_PATTERN = re.compile(r"\{\{\s*(previous|session)\.(.+?)\s*\}\}")
+# languages are written, and rejecting it would read as "no such value". A path holds
+# no brace, so a template ends at its own `}}`. No path at all is matched too, to be
+# refused: `{{session}}` would otherwise go to the agent as it was written.
+_TEMPLATE_PATTERN = re.compile(r"\{\{\s*(previous|session)(?:\.([^{}]*?))?\s*\}\}")
 
 _TRACE_FIELDS = sorted(f.name for f in fields(Trace))
 
@@ -33,8 +39,23 @@ def session_placeholders(text: str) -> list[str]:
     return [
         f"{{{{session.{match.group(2)}}}}}"
         for match in _TEMPLATE_PATTERN.finditer(text)
-        if match.group(1) == "session"
+        if match.group(1) == "session" and match.group(2)
     ]
+
+
+def pathless_templates(text: str) -> list[str]:
+    """The ``{{session}}`` and ``{{previous}}`` in ``text`` that name no value."""
+    return [
+        f"{{{{{match.group(1)}}}}}"
+        for match in _TEMPLATE_PATTERN.finditer(text)
+        if not match.group(2)
+    ]
+
+
+def no_path_message(kind: str) -> str:
+    """Why ``{{<kind>}}`` alone is refused, and what to write instead."""
+    example = "{{session.<key>}}" if kind == "session" else "{{previous.response}}"
+    return f"names no value: write a path, as {example}"
 
 
 class TemplateError(ValueError):
@@ -70,6 +91,8 @@ def resolve_template(
 
     def replacer(match: re.Match[str]) -> str:
         kind, path = match.group(1), match.group(2)
+        if not path:
+            raise TemplateError(f"{{{{{kind}}}}}: {no_path_message(kind)}")
         try:
             if kind == "session":
                 value = _session_value(path, session)
@@ -77,6 +100,15 @@ def resolve_template(
                 value = _resolve_path(path, traces, earlier)
         except _Missing as e:
             raise TemplateError(f"{{{{{kind}.{path}}}}}: {e}") from None
+        if value is None:
+            # Most likely the value was never produced: sent as "null", it would fail
+            # the agent for a message nobody meant to write.
+            cause = (
+                "the session setup returned no value for it"
+                if kind == "session"
+                else "the earlier turn left no value there"
+            )
+            raise TemplateError(f"{{{{{kind}.{path}}}}}: the value is null: {cause}")
         if isinstance(value, str):
             return value
         return json.dumps(value, ensure_ascii=False, default=str)

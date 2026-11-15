@@ -28,7 +28,7 @@ By default highbar sends `POST {"message": "<trigger>"}`. Any other shape is con
 | `{{session.<path>}}` | a value the session's setup returned |
 :::
 
-A trigger can name a session value too, as a customer gives their own id: <code v-pre>trigger: "I am customer {{session.customer_id}}"</code>. A key that is not there makes that test an `error`, and nothing is sent. A test whose trigger names one cannot have `variations`, because a paraphrase can drop the placeholder or change it.
+A trigger can name a session value too, as a customer gives their own id: <code v-pre>trigger: "I am customer {{session.customer_id}}"</code>. A key that is not there makes that test an `error`, and nothing is sent. So does a value that is `null`, in a trigger and in the request: the setup most likely did not produce it, and the agent would get the text `null`. A test whose trigger names one cannot have `variations`, because a paraphrase can drop the placeholder or change it.
 
 ```yaml agent
 agent:

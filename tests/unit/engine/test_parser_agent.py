@@ -366,6 +366,25 @@ class TestSessionInTriggers:
 
     WITH_SESSION = MANAGED + 'session:\n  setup: "open"\n'
 
+    @pytest.mark.parametrize(
+        ("template", "named"), [("{{session}}", "session"), ("{{ previous }}", "previous")]
+    )
+    def test_hb20_a_trigger_template_with_no_path_does_not_load(
+        self, tmp_path: Path, template: str, named: str
+    ) -> None:
+        """Review of #36: `{{session}}` used to go to the agent as it was written."""
+        suites = (
+            "suites:\n  - name: S\n    tests:\n"
+            f'      - trigger: "hi {template}"\n'
+            '        expect: {response: {contains: "ok"}}\n'
+        )
+
+        with pytest.raises(
+            SpecError,
+            match=rf"suites\[0\]\.tests\[0\]\.trigger: '\{{\{{{named}\}}\}}' names no value",
+        ):
+            parse_spec(_spec(tmp_path, self.WITH_SESSION, suites))
+
     def test_hb20_a_trigger_with_a_session_value_loads_with_a_session(self, tmp_path: Path) -> None:
         suites = (
             "suites:\n  - name: S\n    tests:\n"

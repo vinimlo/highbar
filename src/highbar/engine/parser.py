@@ -49,7 +49,7 @@ from highbar.engine.paths import PathError, get_path
 from highbar.engine.placeholders import args_used, check_placeholders, uses_placeholder
 from highbar.engine.schema import SpecError, check_keys, require_type, user_keys
 from highbar.engine.secrets import redact
-from highbar.engine.templates import session_placeholders
+from highbar.engine.templates import no_path_message, pathless_templates, session_placeholders
 
 
 def parse_spec(path: str) -> Spec:
@@ -81,6 +81,8 @@ def parse_spec(path: str) -> Spec:
 def _check_trigger_sessions(suites: list[Suite], *, has_session: bool) -> None:
     """A trigger's ``{{session.*}}`` needs a session, and no variations (HB-20).
 
+    ``{{session}}`` or ``{{previous}}`` with no path names no value, and is refused.
+
     Without agent.session the raw ``{{...}}`` would go to the agent. A paraphrase can
     drop the placeholder or change it, and then its phrasing tests another message.
     """
@@ -93,6 +95,9 @@ def _check_trigger_sessions(suites: list[Suite], *, has_session: bool) -> None:
                 for k, turn in enumerate(test.turns or [])
             ]
             for at, trigger in triggers:
+                for template in pathless_templates(trigger):
+                    kind = template.strip("{}")
+                    raise SpecError(f"{at}: '{template}' {no_path_message(kind)}")
                 for placeholder in session_placeholders(trigger):
                     if not has_session:
                         raise SpecError(
