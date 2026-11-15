@@ -7,7 +7,6 @@ result at the end, so no two of them can tell a different story about one run.
 
 from __future__ import annotations
 
-from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +30,8 @@ class Reports(JsonReport):
         A file that cannot be written makes the run exit 2, so no other file may be left
         saying how the run ended. Each one is written next to its place first, and they
         are put in place only once all are written. A replace that still fails (the
-        file became a folder) puts the ones already replaced back to "did not finish".
+        file became a folder) puts the ones already replaced back to "did not finish",
+        and the error names any that could not be.
         """
         staged: list[tuple[JsonReport, str]] = []
         try:
@@ -44,15 +44,27 @@ class Reports(JsonReport):
         for done, (part, temporary) in enumerate(staged):
             try:
                 part._replace(temporary)
-            except ReportError:
+            except ReportError as e:
                 for _, waiting in staged[done + 1 :]:
                     Path(waiting).unlink(missing_ok=True)
-                self._put_back([replaced for replaced, _ in staged[:done]])
-                raise
+                left = self._put_back([replaced for replaced, _ in staged[:done]])
+                if not left:
+                    raise
+                # A double fault: these files hold this write while the run exits 2, and
+                # only the error can say so.
+                names = ", ".join(str(path) for path in left)
+                raise ReportError(
+                    f'{e}; {names} could not be put back to "did not finish" '
+                    "and may still say how the run ended"
+                ) from None
 
-    def _put_back(self, parts: list[JsonReport]) -> None:
-        """These files say the run did not finish, as far as they can be written."""
+    def _put_back(self, parts: list[JsonReport]) -> list[Path]:
+        """These files say the run did not finish; the paths that could not be written."""
         unfinished = self._body(exit_code=None, complete=False)
+        left: list[Path] = []
         for part in parts:
-            with suppress(ReportError):
+            try:
                 part._write(unfinished)
+            except ReportError:
+                left.append(part.path)
+        return left

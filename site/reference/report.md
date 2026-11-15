@@ -216,7 +216,7 @@ Give `--report` once per file:
 highbar run --report json=report.json --report junit=junit.xml --report markdown=summary.md
 ```
 
-They are one report in three formats, written at the same moments and with the same result. When one file cannot be written, none of them keeps the result: they all say the run did not finish, and the run exits 2. A path given twice, or one that is a spec of the run, stops the run before it starts (exit 2).
+They are one report in three formats, written at the same moments and with the same result. When one file cannot be written, none of them keeps the result: they all say the run did not finish, and the run exits 2. If a file that was already written cannot be put back either, the error names it. A path given twice, or one that is a spec of the run, stops the run before it starts (exit 2).
 
 ## Comparing runs
 
