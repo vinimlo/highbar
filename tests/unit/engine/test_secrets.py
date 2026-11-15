@@ -382,12 +382,16 @@ class TestMaskByPlace:
         assert "p4ss/s3cr3t" not in str(info.value)
         assert "${API_PASSWORD}" in str(info.value)
 
-    @pytest.mark.parametrize("password", ["p4ss[s3cr3t", "p4ss]s3cr3t"])
-    def test_hb41_the_error_refusing_an_unpaired_bracket_never_shows_the_password(
+    @pytest.mark.parametrize(
+        "password", ["p4ss[s3cr3t", "p4ss]s3cr3t", "p4ss\uff0fs3cr3t", "p4ss\u2100s3cr3t"]
+    )
+    def test_hb41_the_error_refusing_a_url_urlsplit_cannot_read_never_shows_the_password(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, password: str
     ) -> None:
         """A bracket in a password made urlsplit raise ValueError: a traceback, exit 1.
-        It is a spec error now, and the password stays masked in it."""
+        So did a character whose NFKC form is a ``/`` (a fullwidth one, or U+2100), and
+        that error quotes the whole netloc, the password in it. It is a spec error now,
+        which quotes the URL masked and never the ValueError's own text."""
         monkeypatch.setenv("API_PASSWORD", password)
         url = "http://bot:${API_PASSWORD}@localhost:8000/chat"
 

@@ -39,7 +39,7 @@
 - A trace line that cannot be read no longer throws away the lines read with it. The test that read it is still an `error`. The other records count as in any read: a late call or a late `turn` among them still fails the test it belongs to, and their usage is in the sums, in `--max-cost` and in budgets. The line may be the late usage of the test before, so that test is an `error` too if it passed and has a budget.
 - A value from `${VAR}` is masked in every spec of a run, not only in the spec that uses it, and when a message is cut in the middle of it. Two or fewer of its first characters can still show at a cut: telling a shorter start from an ordinary word is not possible.
 - `agent.traces` pointing to a directory, which Docker leaves when a bind mount names a file that does not exist yet, stops the run before the first message with a message that says so, and exit code 2, instead of a traceback. A trace file highbar cannot read for another reason is named the same way.
-- An `endpoint` or `health` with a `[` or `]` without its pair (`http://[::1:8000/chat`, or a bracket in a password) is a spec error that names the key, exit 2, instead of a traceback with exit 1. A value from `${VAR}` in it is masked like in every other spec error.
+- An `endpoint` or `health` that Python cannot split, with a `[` or `]` that is not a pair around an IP address (`http://[::1:8000/chat`, a bracket in a password) or a character that reads as `/ ? # @ :` once normalized (a fullwidth `／`), is a spec error that names the key and says why, exit 2, instead of a traceback with exit 1. That traceback quoted the host part, and with it a password; the spec error masks a value from `${VAR}` like every other.
 
 ### Upgrading from 0.1.0
 

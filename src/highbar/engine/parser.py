@@ -793,10 +793,21 @@ def _check_url(url: str, key: str) -> None:
     """An http(s) URL with a host. Without a scheme, `localhost:8000/chat` reads as port 80."""
     try:
         parts = urlsplit(url)
-    except ValueError:  # a bracket without its pair: urlsplit reads an IPv6 host (HB-41)
-        raise SpecError(
-            f'agent: {key} is not a valid URL (a "[" or "]" without its pair): {url!r}'
-        ) from None
+    except ValueError:
+        # urlsplit refuses a bracket that is not a pair around an IP address, and a
+        # character whose NFKC form is / ? # @ or : in the host part (HB-41). Its own
+        # message quotes that part, a password included: it is never shown.
+        if "[" in url or "]" in url:
+            reason = (
+                'a "[" or "]" goes only around an IPv6 host; in a user or a password, '
+                "write it as %5B or %5D"
+            )
+        else:
+            reason = (
+                "a character in its host or password reads as / ? # @ or : once "
+                "normalized (a fullwidth slash, for one); percent-encode it"
+            )
+        raise SpecError(f"agent: {key} is not a valid URL: {reason}: {url!r}") from None
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise SpecError(f"agent: {key} must be an http:// or https:// URL, got {url!r}")
     try:
