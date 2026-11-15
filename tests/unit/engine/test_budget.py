@@ -173,7 +173,10 @@ def _runner(
     variations: Any = None,
     correlate: Mapping[str, Any] | None = None,
     session: Any = None,
+    more_after: bool | None = None,
 ) -> Runner:
+    # Given only by the tests that need it (HB-33).
+    extra = {} if more_after is None else {"more_after": more_after}
     return Runner(
         adapter=MagicMock(),
         client=agent,  # pyright: ignore[reportArgumentType]
@@ -189,6 +192,7 @@ def _runner(
         secrets=secrets,
         correlate=correlate,
         session=session,
+        **extra,
     )
 
 
@@ -952,7 +956,8 @@ class TestUntaggedUsage:
         summary = _run([Case(trigger="t", expect=SAYS_OK)], agent, max_cost=1)
 
         assert summary.stopped is not None
-        assert "2.0 USD by the end of" in summary.stopped
+        # Its one test was the last: nothing was left to run (HB-33).
+        assert "2.0 USD, over its ceiling, by the end of its last test" in summary.stopped
         assert "no test context" not in summary.stopped
 
     def test_q1_a_stray_of_an_earlier_spec_stays_in_the_stop_message(self) -> None:
@@ -1080,7 +1085,7 @@ class TestUntaggedUsage:
 
         assert within.stopped is None
         assert over.stopped is not None
-        assert "the run spent 1.2 USD by the end of" in over.stopped
+        assert "the run spent 1.2 USD, over its ceiling, by the end of" in over.stopped
 
     def test_q8_a_failure_stays_a_failure(self) -> None:
         tests = [_budgeted(Budget(max_input_tokens=100)), Case(trigger="b", expect=SAYS_OK)]
@@ -2040,3 +2045,54 @@ class TestComplete:
 
         assert summary.stopped is None
         assert complete is True
+
+
+class TestNothingLeft:
+    """HB-33: a ceiling passed when no test was left out does not ask to run the rest.
+
+    The runner knows whether its spec has tests left. Whether more specs follow it is
+    the CLI's to say, as ``more_after``.
+    """
+
+    REST = ", so it stopped there; raise the ceiling to run the rest"
+
+    def test_hb33_passed_at_the_last_test_names_no_rest(self) -> None:
+        summary, complete = TestComplete._ended(2, _reporting(_usd(0.01)), max_cost=0.015)
+
+        assert complete is True
+        assert summary.stopped == (
+            "--max-cost 0.015: the run spent 0.02 USD, over its ceiling, by the end of its "
+            "last test, 'm1'"
+        )
+
+    def test_hb33_passed_by_the_read_after_the_last_test_names_no_rest(self) -> None:
+        late = FakeAgent(_late(_usd(0.1), _usd(5.0)))
+
+        summary, complete = TestComplete._ended(1, late, max_cost=1)
+
+        assert complete is True
+        assert summary.stopped is not None
+        assert summary.stopped.endswith(
+            "the run spent 5.1 USD, over its ceiling, by the end of its last test, 'm0'"
+        )
+
+    def test_hb33_passed_before_the_last_test_names_the_rest(self) -> None:
+        summary, complete = TestComplete._ended(3, _reporting(_usd(0.01)), max_cost=0.015)
+
+        assert complete is False
+        assert summary.stopped == "--max-cost 0.015: the run spent 0.02 USD by the end of 'm1'" + (
+            self.REST
+        )
+
+    def test_hb33_specs_after_this_one_are_the_rest(self) -> None:
+        spec = Spec(
+            agent=AgentConfig(start="agent", endpoint="http://127.0.0.1:1/chat"),
+            suites=[Suite(name="S", tests=TestCeiling._tests(2))],
+        )
+        runner = _runner(_reporting(_usd(0.01)), max_cost=0.015, more_after=True)
+
+        summary = runner.run(spec)
+
+        assert summary.stopped == "--max-cost 0.015: the run spent 0.02 USD by the end of 'm1'" + (
+            self.REST
+        )

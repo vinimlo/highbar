@@ -297,7 +297,7 @@ def _run_all(
     current = ""
     try:
         with _terminate_as_exit():
-            for current, spec in specs:
+            for index, (current, spec) in enumerate(specs):
                 summaries.append(
                     run_spec(
                         current,
@@ -313,6 +313,8 @@ def _run_all(
                         spent_untagged=_spent_untagged(summaries),
                         max_errors=max_errors or None,
                         streak=streak,
+                        # A stop leaves the specs after this one out (HB-33).
+                        more_after=index < len(specs) - 1,
                     )
                 )
                 # Either stop is the whole run's, so the specs left do not start either.

@@ -253,6 +253,38 @@ def test_hb32_a_ceiling_crossed_at_the_last_test_leaves_the_report_complete(
 
 
 @pytest.mark.timeout(30)
+def test_hb33_a_ceiling_crossed_at_the_last_test_asks_to_run_nothing_more(
+    project: _Project,
+) -> None:
+    spec = project.spec(PASSES, PASSES, args=("--cost", "0.01"))
+
+    result = project.run(spec, "--max-cost", "0.015")
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    message = (
+        "--max-cost 0.015: the run spent 0.02 USD, over its ceiling, by the end of its last "
+        "test, 'message 1'"
+    )
+    assert message in result.stdout
+    assert "run the rest" not in result.stdout
+    assert project.data()["stopped"]["message"] == message
+
+
+@pytest.mark.timeout(40)
+def test_hb33_a_spec_that_never_started_is_the_rest(project: _Project) -> None:
+    project.spec(PASSES, PASSES, name="specs/a.highbar.yaml", args=("--cost", "0.01"))
+    project.spec(PASSES, name="specs/b.highbar.yaml", args=("--cost", "0.01"))
+    project.spec(PASSES, name="specs/c.highbar.yaml", args=("--cost", "0.01"))
+
+    result = project.run("specs", "--max-cost", "0.025")
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert project.data()["stopped"]["message"].endswith(
+        "by the end of 'message 0', so it stopped there; raise the ceiling to run the rest"
+    )
+
+
+@pytest.mark.timeout(30)
 def test_ac12_under_the_ceiling_the_exit_code_is_the_tests(project: _Project) -> None:
     result = project.run(project.spec(PASSES, args=("--cost", "0.01")), "--max-cost", "1")
 

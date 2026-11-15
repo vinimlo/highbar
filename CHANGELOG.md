@@ -20,6 +20,7 @@
 ### Changed
 
 - Every run waits `agent.settle_time` (500 ms by default) after its last test and reads the trace file once more, also when its spec checks only replies, so a `turn` recorded late still counts in the totals, in budgets and in `--max-cost`. A spec that checks only replies takes that much longer than in 0.1.0.
+- When `--max-cost` is passed only at the last test of the last spec, or by what was read after it, the message that stops the run no longer asks to raise the ceiling to run the rest: nothing was left out. It says what the run spent, over its ceiling, by the end of its last test. The reason, `budget_exceeded`, and the exit code, 3, are the same.
 
 ### Fixed
 
