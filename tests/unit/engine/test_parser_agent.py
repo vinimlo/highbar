@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from highbar.domain.models import CommandHook, PythonHook, RequestConfig
+from highbar.domain.models import CommandHook, HttpHook, PythonHook, RequestConfig
 from highbar.engine.parser import parse_spec
 from highbar.engine.schema import SpecError
 
@@ -269,6 +269,73 @@ session:
     def test_unparsable_command_is_an_error(self, tmp_path: Path) -> None:
         with pytest.raises(SpecError, match="not a valid command line"):
             parse_spec(_spec(tmp_path, ATTACH + 'session:\n  setup: "open \'unclosed"\n'))
+
+
+class TestHttpSessionHooks:
+    """HB-13: `{http: {url, method, headers, body}}` as a setup or a teardown."""
+
+    def test_hb13_http_hooks_parse(self, tmp_path: Path) -> None:
+        spec = _spec(
+            tmp_path,
+            ATTACH
+            + """\
+session:
+  setup:
+    http:
+      url: "http://localhost:8000/test/sessions"
+      headers: {Authorization: "Bearer abc"}
+      body: {label: "{{test.name}}"}
+  teardown:
+    http:
+      url: "http://localhost:8000/test/sessions/{{session.conversation_id}}"
+      method: delete
+""",
+        )
+
+        session = parse_spec(spec).agent.session
+
+        assert session is not None
+        assert session.setup == HttpHook(
+            url="http://localhost:8000/test/sessions",
+            headers={"Authorization": "Bearer abc"},
+            body={"label": "{{test.name}}"},
+        )
+        assert session.teardown == HttpHook(
+            url="http://localhost:8000/test/sessions/{{session.conversation_id}}",
+            method="DELETE",
+        )
+
+    @pytest.mark.parametrize(
+        ("hook", "error"),
+        [
+            ("{http: {}}", r"agent\.session\.setup\.http: missing 'url'"),
+            ('{http: {url: "localhost:8000/s"}}', r"url must start with http:// or https://"),
+            ('{http: {url: ""}}', r"url must start with http:// or https://"),
+            ('{http: {url: "http://h/s", method: TRACE}}', r"method must be one of"),
+            ('{http: {url: "http://h/s", headers: {X-N: 3}}}', r"headers: X-N must be a string"),
+            ('{http: {url: "http://h/s", bdy: {}}}', r"did you mean 'body'"),
+            ('{http: "http://h/s"}', r"http must be a mapping"),
+            ('{python: "m:f", http: {url: "http://h/s"}}', r"either python or http"),
+            ('{htp: {url: "http://h/s"}}', r"unknown key 'htp'"),
+        ],
+    )
+    def test_hb13_a_malformed_http_hook_is_a_spec_error(
+        self, tmp_path: Path, hook: str, error: str
+    ) -> None:
+        with pytest.raises(SpecError, match=error):
+            parse_spec(_spec(tmp_path, ATTACH + f"session:\n  setup: {hook}\n"))
+
+    def test_hb13_setup_cannot_use_session_placeholders(self, tmp_path: Path) -> None:
+        hook = '{http: {url: "http://h/s", body: {id: "{{session.id}}"}}}'
+
+        with pytest.raises(SpecError, match=r"agent\.session\.setup.*session"):
+            parse_spec(_spec(tmp_path, ATTACH + f"session:\n  setup: {hook}\n"))
+
+    def test_hb13_a_hook_has_no_message(self, tmp_path: Path) -> None:
+        hook = '{http: {url: "http://h/s?q={{message}}"}}'
+
+        with pytest.raises(SpecError, match="message"):
+            parse_spec(_spec(tmp_path, ATTACH + f"session:\n  teardown: {hook}\n"))
 
 
 class TestCorrelate:

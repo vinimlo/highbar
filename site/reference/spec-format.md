@@ -23,10 +23,10 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `traces` | path | none | The trace file of an attached agent. Required when a test checks tool calls in attach mode. |
 | `request` | mapping | <code v-pre>POST {"message": "{{message}}"}</code> | `method`, `headers`, `body`. |
 | `response` | dotted path | first of `response`, `message`, `content`, `text`, `reply` | Where the reply text is in the JSON body. |
-| `session` | mapping | none | `setup` and `teardown` hooks, each a command or `{python: "module:function"}`. |
+| `session` | mapping | none | `setup` and `teardown` hooks, each a command, `{python: "module:function"}` or `{http: {url, method, headers, body}}`. |
 | `correlate` | mapping | <code v-pre>{test: "{{test.id}}"}</code> | The context keys that link a trace record to a test. |
 
-`${NAME}` anywhere under `agent` is replaced by the environment variable when the spec is loaded; a missing variable is an error. Placeholders (<code v-pre>{{message}}</code>, <code v-pre>{{test.id}}</code>, <code v-pre>{{test.name}}</code>, <code v-pre>{{session.&lt;path&gt;}}</code>) are allowed in `request`, `correlate` and session commands. See [attach mode and sessions](/guides/attach-mode).
+`${NAME}` anywhere under `agent` is replaced by the environment variable when the spec is loaded; a missing variable is an error. Placeholders (<code v-pre>{{message}}</code>, <code v-pre>{{test.id}}</code>, <code v-pre>{{test.name}}</code>, <code v-pre>{{session.&lt;path&gt;}}</code>) are allowed in `request`, `correlate`, session commands and the URL, headers and body of an HTTP hook. See [attach mode and sessions](/guides/attach-mode).
 
 ## `suites[]`
 
