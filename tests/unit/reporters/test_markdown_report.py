@@ -6,12 +6,13 @@ written on every way out, and never "passed" when the run was not.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from highbar.domain.models import AgentConfig, Counts, RunSummary, Spec, Status, Suite
 from highbar.domain.models import Test as Case
 from highbar.domain.models import TestOutcome as Outcome
-from highbar.reporters.markdown_report import ROW_LIMIT, MarkdownReport
+from highbar.reporters.markdown_report import ROW_LIMIT, MarkdownReport, render
 
 SPEC = Spec(
     agent=AgentConfig(endpoint="http://x/chat"), suites=[Suite(name="Orders", tests=[Case()])]
@@ -85,7 +86,8 @@ def test_hb19_a_green_run_is_passed_with_its_tests_folded(tmp_path: Path) -> Non
     )
 
     assert text.startswith("## highbar: passed\n")
-    assert "**2 passed** · 1.75s" in text
+    # The run's own duration, as the terminal and the JUnit root show it.
+    assert re.search(r"^\*\*2 passed\*\* · \d+\.\d\ds$", text, re.MULTILINE)
     assert "<details><summary>2 passed</summary>" in text
     assert "| Orders › looks the order up | specs/orders.highbar.yaml | 1.50s |" in text
     assert "| Orders › cancels it | specs/orders.highbar.yaml | 0.25s |" in text
@@ -101,7 +103,7 @@ def test_hb19_failures_and_errors_come_first_with_why(tmp_path: Path) -> None:
     )
 
     assert text.startswith("## highbar: not passed (exit code 1)\n")
-    assert "**1 passed** · 1 failed · 1 error · 4.50s" in text
+    assert re.search(r"^\*\*1 passed\*\* · 1 failed · 1 error · \d+\.\d\ds$", text, re.MULTILINE)
     failed, errored, passed = _rows(text)
     assert failed.startswith("| ✗ failed | Orders › cancels it |")
     assert "does not contain 'cancelled' (and 1 more) |" in failed
@@ -156,3 +158,17 @@ def test_hb19_a_long_list_is_cut_and_says_how_much(tmp_path: Path) -> None:
     assert len(_rows(text)) == ROW_LIMIT
     assert "…and 7 more not shown." in text
     assert len(text.encode("utf-8")) < 1024 * 1024
+
+
+def test_hb19_the_time_is_the_runs_as_the_terminal_shows_it() -> None:
+    """The real run said 4.54s in the terminal and 3.05s here: the sum of its tests."""
+    test = {"suite": "O", "name": "a", "status": "passed", "errors": [], "duration_ms": 3054.0}
+    body = {
+        "exit_code": 0,
+        "stopped": None,
+        "duration_ms": 4577.0,
+        "summary": {"total": 1, "passed": 1, "failed": 0, "errored": 0, "variations": 0},
+        "specs": [{"key": "s.highbar.yaml", "tests": [test]}],
+    }
+
+    assert "**1 passed** · 4.58s" in render(body)

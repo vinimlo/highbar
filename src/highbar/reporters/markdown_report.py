@@ -87,8 +87,8 @@ def _counts(body: dict[str, Any]) -> str:
         parts.append(f"{summary['errored']} error")
     if summary["variations"]:
         parts.append(f"{summary['variations']} variations")
-    tests_ms = sum(test.get("duration_ms") or 0 for spec in body["specs"] for test in spec["tests"])
-    parts.append(f"{tests_ms / 1000:.2f}s")
+    # The run's duration, as the terminal and the JUnit root give it.
+    parts.append(f"{(body.get('duration_ms') or 0) / 1000:.2f}s")
     return " · ".join(parts)
 
 
