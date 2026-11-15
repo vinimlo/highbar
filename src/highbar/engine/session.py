@@ -18,6 +18,11 @@ hook's failure names the file and ends with its last lines.
 An HTTP hook is a request with placeholders in its URL, headers and body (HB-13), so
 highbar can run from an image of its own, away from the agent's. A setup's reply must
 be a JSON object; any reply that is not 2xx is the hook's failure.
+
+``agent.run`` has the same three kinds of hook, run once per spec (HB-10): its setup
+before the agent starts, its teardown on every way out of a run whose setup finished.
+They belong to no test, so they read no placeholder, and a Python one is called with
+no argument.
 """
 
 from __future__ import annotations
@@ -42,7 +47,7 @@ import httpx
 
 from highbar._narrow import as_dict
 from highbar.assertions.response import truncate
-from highbar.domain.models import CommandHook, HttpHook, PythonHook, SessionConfig
+from highbar.domain.models import CommandHook, HttpHook, PythonHook, RunConfig, SessionConfig
 from highbar.engine.logs import log_path, make_folder
 from highbar.engine.placeholders import PlaceholderError, Values, render, render_url
 from highbar.engine.secrets import redact
@@ -62,7 +67,11 @@ class SessionContext:
 
 
 class SessionError(RuntimeError):
-    """A hook failed; the message starts with ``session.setup`` or ``session.teardown``."""
+    """A hook failed; the message starts with the hook: ``session.setup``, for one."""
+
+
+class RunHookError(SessionError):
+    """``agent.run.setup`` or ``agent.run.teardown`` failed (HB-10)."""
 
 
 # A setup's reply becomes the session, which goes into every request: past this, it is
@@ -79,8 +88,10 @@ class SessionHooks:
         timeout_ms: int,
         transport: httpx.BaseTransport | None = None,
         secrets: Mapping[str, str] | None = None,
+        run: RunConfig | None = None,
     ) -> None:
         self._config = config
+        self._run_config = run
         self._transport = transport
         self._spec_path = spec_path
         self._timeout_s = timeout_ms / 1000
@@ -92,7 +103,13 @@ class SessionHooks:
 
     def load(self) -> None:
         """Import the Python hooks, once, before any agent starts. Raises ``SessionError``."""
-        for what, hook in (("setup", self._config.setup), ("teardown", self._config.teardown)):
+        hooks = [("session.setup", self._config.setup), ("session.teardown", self._config.teardown)]
+        if self._run_config is not None:
+            hooks += [
+                ("agent.run.setup", self._run_config.setup),
+                ("agent.run.teardown", self._run_config.teardown),
+            ]
+        for what, hook in hooks:
             if isinstance(hook, PythonHook):
                 self._functions[what] = self._in_worker(
                     what, "import", lambda target=hook.target, what=what: _load(target, what)
@@ -104,16 +121,16 @@ class SessionHooks:
         if hook is None:
             return {}
         if isinstance(hook, PythonHook):
-            result = self._call("setup", ctx)
+            result = self._call("session.setup", ctx)
             if not isinstance(result, Mapping):
                 raise SessionError(
                     f"session.setup must return a mapping, got {type(result).__name__}"
                 )
             session: dict[str, Any] = dict(cast("Mapping[str, Any]", result))
         elif isinstance(hook, HttpHook):
-            session = _json_object(self._send(hook, "setup", ctx, {}))
+            session = _json_object(self._send(hook, "session.setup", ctx, {}))
         else:
-            session = _last_json_object(self._run(hook, "setup", ctx, {}))
+            session = _last_json_object(self._run(hook, "session.setup", ctx, {}))
         if "headers" in session and not isinstance(session["headers"], Mapping):
             raise SessionError("session.setup returned 'headers' that is not an object")
         for key, value in session.items():
@@ -133,11 +150,36 @@ class SessionHooks:
         if hook is None:
             return
         if isinstance(hook, PythonHook):
-            self._call("teardown", ctx, session)
+            self._call("session.teardown", ctx, session)
         elif isinstance(hook, HttpHook):
-            self._send(hook, "teardown", ctx, session)
+            self._send(hook, "session.teardown", ctx, session)
         else:
-            self._run(hook, "teardown", ctx, session)
+            self._run(hook, "session.teardown", ctx, session)
+
+    def before_run(self) -> None:
+        """``agent.run.setup``, once, before the agent starts. Raises ``RunHookError``."""
+        self._run_hook("agent.run.setup", self._run_config.setup if self._run_config else None)
+
+    def after_run(self) -> None:
+        """``agent.run.teardown``, once the run is over. Raises ``RunHookError``."""
+        hook = self._run_config.teardown if self._run_config else None
+        self._run_hook("agent.run.teardown", hook)
+
+    def _run_hook(self, what: str, hook: CommandHook | PythonHook | HttpHook | None) -> None:
+        if hook is None:
+            return
+        # A run hook reads no placeholder (the parser refuses them): no test to fill in.
+        no_test = SessionContext(test_id="", test_name="", spec_path=self._spec_path)
+        try:
+            if isinstance(hook, PythonHook):
+                self._call(what)
+            elif isinstance(hook, HttpHook):
+                self._send(hook, what, no_test, {})
+            else:
+                self._run(hook, what, no_test, {})
+        except SessionError as e:
+            # It leaves the run, past the runner that masks a test's errors.
+            raise RunHookError(redact(str(e), self._secrets)) from None
 
     def _call(self, what: str, *args: Any) -> Any:
         function = self._functions[what]
@@ -154,7 +196,7 @@ class SessionHooks:
             self._worker = None
             raise SessionError(
                 self._with_output(
-                    f"session.{what} did not finish in {self._timeout_s:g}s (agent.timeout)",
+                    f"{what} did not finish in {self._timeout_s:g}s (agent.timeout)",
                     mark,
                 )
             )
@@ -163,7 +205,7 @@ class SessionHooks:
             message = (
                 str(error)
                 if isinstance(error, SessionError)
-                else f"session.{what} raised {_describe(error)}"
+                else f"{what} raised {_describe(error)}"
             )
             raise SessionError(self._with_output(message, mark)) from None
         return outcome.get("result")
@@ -191,7 +233,7 @@ class SessionHooks:
         try:
             argv = [_as_argument(render(token, values)) for token in hook.argv]
         except PlaceholderError as e:
-            raise SessionError(f"session.{what}: {e}") from None
+            raise SessionError(f"{what}: {e}") from None
 
         # Output goes to files, not pipes: a daemon the hook leaves behind may hold a
         # pipe open forever, and waiting for its end would hang the run.
@@ -206,7 +248,7 @@ class SessionHooks:
                 )
             except OSError as e:
                 raise SessionError(
-                    f"session.{what}: could not run '{argv[0]}': {e.strerror or e}"
+                    f"{what}: could not run '{argv[0]}': {e.strerror or e}"
                 ) from None
 
             try:
@@ -214,7 +256,7 @@ class SessionHooks:
             except subprocess.TimeoutExpired:
                 _kill_group(process)
                 raise SessionError(
-                    f"session.{what} did not finish in {self._timeout_s:g}s (agent.timeout)"
+                    f"{what} did not finish in {self._timeout_s:g}s (agent.timeout)"
                 ) from None
             except BaseException:
                 _kill_group(process)
@@ -224,8 +266,7 @@ class SessionHooks:
         if process.returncode != 0:
             tail = "\n".join(stderr.splitlines()[-10:])
             raise SessionError(
-                f"session.{what} exited with code {process.returncode}"
-                + (f":\n{tail}" if tail else "")
+                f"{what} exited with code {process.returncode}" + (f":\n{tail}" if tail else "")
             )
         return stdout
 
@@ -246,18 +287,18 @@ class SessionHooks:
             headers = {name: _as_argument(render(v, values)) for name, v in hook.headers.items()}
             body = render(hook.body, values)
         except PlaceholderError as e:
-            raise SessionError(f"session.{what}: {e}") from None
+            raise SessionError(f"{what}: {e}") from None
         for name, value in headers.items():
             if value != value.strip() or any(ord(c) < 32 or ord(c) == 127 for c in value):
                 # Usually a token read with its newline, from the session or a ${VAR}.
                 raise SessionError(
-                    f"session.{what}: the header {name} has a control character or leading "
+                    f"{what}: the header {name} has a control character or leading "
                     "or trailing whitespace (often a secret read with its newline); not shown"
                 )
             if not value.isascii():
                 # An accented test name, usually. The value is not shown either.
                 raise SessionError(
-                    f"session.{what}: the header {name} has characters outside ASCII, which "
+                    f"{what}: the header {name} has characters outside ASCII, which "
                     "a header cannot carry; send the value in the body or the URL instead"
                 )
 
@@ -270,7 +311,7 @@ class SessionHooks:
             content["json"] = body
 
         seconds = self._timeout_s
-        late = f"session.{what} did not finish in {seconds:g}s (agent.timeout)"
+        late = f"{what} did not finish in {seconds:g}s (agent.timeout)"
         # httpx's timeout bounds each read, not the whole reply: the deadline bounds it.
         deadline = time.monotonic() + seconds
         try:
@@ -283,7 +324,7 @@ class SessionHooks:
                     raw += chunk
                     if len(raw) > MAX_HOOK_REPLY_BYTES:
                         raise SessionError(
-                            f"session.{what}: the reply from {url} is larger than "
+                            f"{what}: the reply from {url} is larger than "
                             f"{MAX_HOOK_REPLY_BYTES // 1_000_000} MB"
                         )
                     if time.monotonic() > deadline:
@@ -291,27 +332,27 @@ class SessionHooks:
         except httpx.TimeoutException:
             raise SessionError(late) from None
         except httpx.ConnectError as e:
-            raise SessionError(f"session.{what}: cannot reach {url}: {e}") from None
+            raise SessionError(f"{what}: cannot reach {url}: {e}") from None
         except httpx.LocalProtocolError:
             # The library quotes the offending value whole: say which problem, never it.
             raise SessionError(
-                f"session.{what}: the request to {url} could not be sent: a header value "
+                f"{what}: the request to {url} could not be sent: a header value "
                 "is not valid; the value is not shown"
             ) from None
         except (httpx.HTTPError, httpx.InvalidURL) as e:
-            raise SessionError(f"session.{what}: {hook.method} {url} failed: {e}") from None
+            raise SessionError(f"{what}: {hook.method} {url} failed: {e}") from None
 
         text = bytes(raw).decode(reply.charset_encoding or "utf-8", errors="replace")
         status = reply.status_code
         if 300 <= status < 400:
             where = reply.headers.get("Location", "an unnamed location")
             raise SessionError(
-                f"session.{what}: {hook.method} {url} returned HTTP {status}, redirected to "
+                f"{what}: {hook.method} {url} returned HTTP {status}, redirected to "
                 f"{where}; point the hook at that URL"
             )
         if not reply.is_success:
             raise SessionError(
-                f"session.{what}: {hook.method} {url} returned HTTP {status}: {truncate(text, 200)}"
+                f"{what}: {hook.method} {url} returned HTTP {status}: {truncate(text, 200)}"
             )
         return text
 
@@ -454,13 +495,13 @@ def _load(target: str, what: str) -> Callable[..., Any]:
         module = importlib.import_module(module_name)
     except Exception as e:
         raise SessionError(
-            f"session.{what}: cannot import '{module_name}': {type(e).__name__}: {e}"
+            f"{what}: cannot import '{module_name}': {type(e).__name__}: {e}"
         ) from None
     function = getattr(module, function_name, None)
     if function is None:
-        raise SessionError(f"session.{what}: '{module_name}' has no '{function_name}'")
+        raise SessionError(f"{what}: '{module_name}' has no '{function_name}'")
     if not callable(function):
-        raise SessionError(f"session.{what}: '{target}' is not a function")
+        raise SessionError(f"{what}: '{target}' is not a function")
     return function
 
 

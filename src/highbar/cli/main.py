@@ -327,6 +327,13 @@ def _run_all(
         # Nothing could be checked: the agent is up but not instrumented (or not ours).
         console.print(f"  [red]\u2717[/red] {escape(current)}: {escape(str(e))}", soft_wrap=True)
         return _stopped(report, "agent_not_observed", f"{current}: {e}", EXIT_UNRUNNABLE)
+    except SessionError as e:
+        # Only agent.run's setup gets here (RunHookError, HB-10): a session's own hooks
+        # fail one execution, inside the run. Nothing was sent, and the specs left would
+        # find what it was to set up missing too.
+        message = f"{current}: {e}; nothing was sent"
+        console.print(f"  [red]\u2717[/red] {escape(message)}", soft_wrap=True)
+        return _stopped(report, "run_setup_failed", message, EXIT_UNRUNNABLE)
 
     total = _total(summaries)
     if len(summaries) > 1:
