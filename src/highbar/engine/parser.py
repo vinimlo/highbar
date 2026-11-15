@@ -155,7 +155,13 @@ def _parse_spec(raw: Any) -> Spec:
 
 
 # A test's own values, which a trigger does not read: it goes to the agent as written.
-_NOT_IN_TRIGGERS = ("test.args", "test.history")
+# Each says where its value is read instead.
+_NOT_IN_TRIGGERS = {
+    "test.args": "use it in agent.request, agent.correlate or a session hook",
+    "test.history": (
+        "the session setup seeds it (ctx.history, or {{test.history}} in a command or HTTP setup)"
+    ),
+}
 
 
 def _check_not_in_triggers(suites: list[Suite]) -> None:
@@ -178,11 +184,11 @@ def _check_not_in_triggers(suites: list[Suite]) -> None:
             for at, trigger in triggers:
                 for match in placeholders.PLACEHOLDER.finditer(trigger):
                     name = match.group(1)
-                    if any(name == own or name.startswith(f"{own}.") for own in _NOT_IN_TRIGGERS):
-                        raise SpecError(
-                            f"{at}: '{match.group(0)}' is not read in a trigger: "
-                            "use it in agent.request, agent.correlate or a session hook"
-                        )
+                    for own, instead in _NOT_IN_TRIGGERS.items():
+                        if name == own or name.startswith(f"{own}."):
+                            raise SpecError(
+                                f"{at}: '{match.group(0)}' is not read in a trigger: {instead}"
+                            )
 
 
 def _with_inherited_args(suites: list[Suite], raw: list[Any], defaults: Any) -> list[Suite]:
@@ -252,6 +258,9 @@ def _check_history_seeded(agent: AgentConfig, suites: list[Suite]) -> None:
             "agent.session.setup does not use '{{test.history}}': a command or HTTP setup "
             "sees only its placeholders, so the test would start from an empty conversation"
         )
+    request = agent.request
+    if uses_placeholder([request.headers, request.body], "test.history"):
+        problem += " ({{test.history}} in agent.request does not seed it)"
     for i, suite in enumerate(suites):
         for j, test in enumerate(suite.tests):
             if test.history:

@@ -99,15 +99,51 @@ class TestTheSpec:
         assert len(test.history) == 2
 
     def test_hb24_a_trigger_does_not_read_it(self, tmp_path: Path) -> None:
-        """A trigger goes as written: the history there would be sent as braces."""
+        """A trigger goes as written: the history there would be sent as braces.
+
+        The message points to the setup, the one place a history is seeded from: the
+        args' message would send the reader to agent.request, refused too (#41's review).
+        """
         suites = _suites(_test("as before: {{test.history}}", HISTORY))
 
-        with pytest.raises(
-            SpecError,
-            match=r"suites\[0\]\.tests\[0\]\.trigger: '\{\{test\.history\}\}' is not read "
-            r"in a trigger",
-        ):
+        with pytest.raises(SpecError) as caught:
             parse_spec(_spec(tmp_path, WITH_SESSION, suites))
+
+        assert str(caught.value).endswith(
+            "suites[0].tests[0].trigger: '{{test.history}}' is not read in a trigger: the "
+            "session setup seeds it (ctx.history, or {{test.history}} in a command or HTTP setup)"
+        )
+
+    @pytest.mark.parametrize(
+        ("session", "problem"),
+        [
+            (
+                "",
+                "needs agent.session with a setup, which seeds it in the agent: without one "
+                "the test starts from an empty conversation",
+            ),
+            (
+                'session:\n  setup: "open"\n',
+                "agent.session.setup does not use '{{test.history}}': a command or HTTP setup "
+                "sees only its placeholders, so the test would start from an empty conversation",
+            ),
+        ],
+        ids=["no-setup", "a-setup-that-ignores-it"],
+    )
+    def test_hb24_a_request_alone_does_not_seed_it_and_says_so(
+        self, tmp_path: Path, session: str, problem: str
+    ) -> None:
+        """An agent that takes the conversation in each request: not seeding, in v0."""
+        request = 'request:\n  body: {message: "{{message}}", messages: "{{test.history}}"}\n'
+        agent = MANAGED + request + session
+
+        with pytest.raises(SpecError) as caught:
+            parse_spec(_spec(tmp_path, agent, _suites(_test("another one", HISTORY))))
+
+        assert str(caught.value).endswith(
+            f"suites[0].tests[0].history: {problem} "
+            "({{test.history}} in agent.request does not seed it)"
+        )
 
     @pytest.mark.parametrize(
         ("history", "message"),
