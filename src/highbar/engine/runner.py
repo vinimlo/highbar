@@ -352,12 +352,17 @@ def _test_name(test: Test, variations_run: int | None = None) -> str:
     return label
 
 
-def _turn_label(turn: Turn, previous_traces: list[Trace], responses: list[str | None]) -> str:
+def _turn_label(
+    turn: Turn,
+    previous_traces: list[Trace],
+    responses: list[str | None],
+    session: Mapping[str, Any],
+) -> str:
     """The turn's ``name``, or the message it sends, cut at 80 characters."""
     if turn.name:
         return turn.name
     try:
-        trigger = resolve_template(turn.trigger, previous_traces, responses)
+        trigger = resolve_template(turn.trigger, previous_traces, responses, session)
     except TemplateError:
         trigger = turn.trigger
     return truncate(trigger, 80)
@@ -1306,9 +1311,9 @@ class TestRunner:
 
         for number, turn in enumerate(turns, start=1):
             # Which turn broke is the finding: "Expected X" alone does not say where.
+            replies = [log.response for log in execution.turns]
             prefix = (
-                f"turn {number}/{len(turns)} "
-                f"({_turn_label(turn, all_traces, [log.response for log in execution.turns])}): "
+                f"turn {number}/{len(turns)} ({_turn_label(turn, all_traces, replies, session)}): "
                 if labelled
                 else ""
             )
@@ -1363,7 +1368,7 @@ class TestRunner:
             return TestResult(status=Status.ERROR, errors=[error], duration_ms=duration)
 
         try:
-            resolved_trigger = resolve_template(trigger, previous_traces, earlier)
+            resolved_trigger = resolve_template(trigger, previous_traces, earlier, values.session)
         except TemplateError as e:
             # Sending the raw "{{...}}" would test a message nobody meant to write; the
             # turn is unverified, and the rest of the run goes on.

@@ -40,7 +40,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 
 | Key | Type | |
 |---|---|---|
-| `trigger` | text | The message. Either `trigger` or `turns`. |
+| `trigger` | text | The message. Either `trigger` or `turns`. It can name a value of the session, <code v-pre>{{session.&lt;path&gt;}}</code>, when the agent has a `session`, in a test without `variations`. |
 | `expect` | mapping | What must hold. Required with `trigger`. With `turns`, it holds only a [`budget`](#budget), for the whole conversation. |
 | `turns` | list | A conversation: each turn has `trigger`, `expect` and an optional `name`. |
 | `name` | text | Shown in the output instead of the trigger. |

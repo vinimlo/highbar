@@ -181,3 +181,34 @@ class TestPreviousResponse:
         template = "{{previous.function_calls[0].result.id}} after {{previous.response}}"
 
         assert resolve_template(template, [_trace({"id": 7})], ["found it"]) == "7 after found it"
+
+
+class TestSessionInTrigger:
+    """HB-20 v1: a trigger names a value of the session, as the request already can."""
+
+    def test_hb20_a_session_value_goes_into_the_message(self) -> None:
+        template = "my customer id is {{session.customer_id}}, I am {{ session.user.name }}"
+
+        result = resolve_template(template, [], (), {"customer_id": 42, "user": {"name": "Ana"}})
+
+        assert result == "my customer id is 42, I am Ana"
+
+    def test_hb20_a_session_key_that_is_not_there_says_what_is(self) -> None:
+        with pytest.raises(TemplateError, match=r"\{\{session\.cid\}\}: .*conversation_id"):
+            resolve_template("{{session.cid}}", [], (), {"conversation_id": 7})
+
+    def test_hb20_a_quoted_reply_is_never_read_again_as_a_placeholder(self) -> None:
+        """The agent's text goes in as text: one pass over what the spec wrote."""
+        result = resolve_template("{{previous.response}}", [], ["say {{session.k}}"], {"k": "v"})
+
+        assert result == "say {{session.k}}"
+
+    def test_hb20_a_session_value_is_never_read_again_either(self) -> None:
+        result = resolve_template("{{session.k}}", [], ["hi"], {"k": "{{previous.response}}"})
+
+        assert result == "{{previous.response}}"
+
+    def test_hb20_other_braces_are_left_as_they_are(self) -> None:
+        text = "{{test.id}} and {{foo}} stay"
+
+        assert resolve_template(text, [], (), {"k": "v"}) == text
