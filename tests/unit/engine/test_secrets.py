@@ -297,6 +297,42 @@ class TestMaskByPlace:
         assert "p4ss-s3cr3t" not in str(info.value)
         assert "${API_PASSWORD}" in str(info.value)
 
+    @pytest.mark.parametrize(
+        ("url", "env", "masked"),
+        [
+            (
+                "${SCHEME}//bot:${API_PASSWORD}@localhost:8000/chat",
+                {"SCHEME": "http:"},
+                ["API_PASSWORD"],
+            ),
+            (
+                "http://${AGENT_HOST}/u/me@team?key=${API_KEY}",
+                {"AGENT_HOST": "agent.internal"},
+                ["API_KEY"],
+            ),
+            ("http://bot:${API_PASSWORD}\\\\@localhost:8000/chat", {}, ["API_PASSWORD"]),
+        ],
+        ids=["the-scheme-from-a-value", "an-at-in-the-path", "a-backslash"],
+    )  # fmt: skip
+    def test_hb6_a_url_is_read_with_its_values_in_as_it_is_sent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        url: str,
+        env: dict[str, str],
+        masked: list[str],
+    ) -> None:
+        """The security review of 69da690: the parts were read from the URL as written,
+        so ``${SCHEME}//bot:${API_PASSWORD}@...`` with ``SCHEME=http:`` showed the
+        password. A URL with an odd character in it is not read at all: all masked."""
+        values = {"API_PASSWORD": "p4ss-s3cr3t", "API_KEY": "k3y-s3cr3t-value", **env}
+        for name, value in values.items():
+            monkeypatch.setenv(name, value)
+
+        secrets = parse_spec(_spec(tmp_path, f'endpoint: "{url}"\n')).agent.secrets
+
+        assert sorted(secrets.values()) == sorted(masked)
+
     def test_hb6_a_value_also_used_in_a_header_is_masked_in_the_traces_path_too(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

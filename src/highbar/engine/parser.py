@@ -551,21 +551,59 @@ def _secret_in_url(url: str, at: int) -> bool:
     """A variable in a URL's userinfo (a password), query (an API key) or fragment is a
     secret; the scheme, host, port and path are shown.
 
-    The parts are read from the URL as written, so they must be where they are written:
-    when a value brings a ``?``, ``#`` or ``@``, or the URL has no ``://`` once its values
-    are in, which part a variable is in cannot be told, and every variable is a secret.
+    The URL is read with its values in, as it is sent, so a ``?``, ``#``, ``@`` or ``//``
+    that a value brings moves the parts as it would for the agent; a variable whose value
+    touches a secret part is a secret. A URL that is not ``scheme://host`` with nothing
+    odd in it (a space, a control character, a backslash) cannot be read the way every
+    client would read it, and all its variables are secrets.
     """
-    values = [os.environ.get(m.group(1), "") for m in _ENV_VAR.finditer(url)]
-    whole = _ENV_VAR.sub(lambda m: os.environ.get(m.group(1), ""), url)
-    if "://" not in whole or any(mark in value for value in values for mark in "?#@"):
+    whole, spans = _url_with_values(url)
+    regions = _secret_regions(whole)
+    if regions is None:
         return True
-    query = min((i for i in (url.find("?"), url.find("#")) if i >= 0), default=len(url))
-    if at >= query:
-        return True
-    authority = url.find("://") + 3 if "://" in url else 0
-    path = url.find("/", authority, query)
-    userinfo_end = url.rfind("@", authority, query if path < 0 else path)
-    return authority <= at < userinfo_end
+    start, end = spans[at]
+    return any(start < stop and begin < end for begin, stop in regions)
+
+
+def _url_with_values(url: str) -> tuple[str, dict[int, tuple[int, int]]]:
+    """``url`` with each ``${NAME}`` replaced, and where each one's value lands in it."""
+    pieces: list[str] = []
+    spans: dict[int, tuple[int, int]] = {}
+    length = written = 0
+    for match in _ENV_VAR.finditer(url):
+        pieces.append(url[written : match.start()])
+        length += match.start() - written
+        value = os.environ.get(match.group(1), "")
+        spans[match.start()] = (length, length + len(value))
+        pieces.append(value)
+        length += len(value)
+        written = match.end()
+    pieces.append(url[written:])
+    return "".join(pieces), spans
+
+
+def _secret_regions(url: str) -> list[tuple[int, int]] | None:
+    """Where ``url`` holds its userinfo and its query and fragment, or ``None`` when it
+    cannot be read with certainty."""
+    if any(c.isspace() or ord(c) < 32 or ord(c) == 127 or c == "\\" for c in url):
+        return None
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # an IPv6 host without its closing bracket
+        return None
+    host_at = url.find("//") + 2
+    if not parts.scheme or not parts.netloc:
+        return None
+    if url[host_at : host_at + len(parts.netloc)] != parts.netloc:
+        return None
+    path_at = host_at + len(parts.netloc)
+    if url[path_at : path_at + len(parts.path)] != parts.path:
+        return None
+    regions = [(path_at + len(parts.path), len(url))]
+    userinfo, at_sign, _ = parts.netloc.rpartition("@")
+    if at_sign:
+        regions.append((host_at, host_at + len(userinfo) + 1))
+    return regions
 
 
 def _required_text(raw: dict[str, Any], key: str) -> str:
