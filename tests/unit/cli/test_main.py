@@ -147,6 +147,42 @@ class TestJobs:
         assert (data["exit_code"], data["stopped"]["reason"]) == (2, "usage_error")
 
 
+class TestJobsWithTheLlmProxy:
+    """HB-30, P9: no test id goes out on the agent's model calls yet, so with more than one
+    test in flight the proxy could not tell whose call it saw."""
+
+    def test_hb30_jobs_over_one_with_llm_proxy_exits_2_before_anything_runs(
+        self, project: Path
+    ) -> None:
+        spec = project / "specs" / "menu" / "menu.highbar.yaml"
+        spec.write_text(SPEC.replace('  start: "true"\n', '  start: "true"\n  llm_proxy: true\n'))
+        report = project / "report.json"
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            result = runner.invoke(
+                app, ["run", "specs/", "--jobs", "2", "--report", f"json={report}"]
+            )
+
+        assert result.exit_code == 2, result.output
+        assert "agent.llm_proxy" in result.output and "--jobs" in result.output
+        fake.assert_not_called()
+        data = json.loads(report.read_text(encoding="utf-8"))
+        assert (data["exit_code"], data["stopped"]["reason"]) == (2, "usage_error")
+
+    def test_hb30_jobs_one_with_llm_proxy_runs(self, project: Path) -> None:
+        spec = project / "specs" / "menu" / "menu.highbar.yaml"
+        spec.write_text(SPEC.replace('  start: "true"\n', '  start: "true"\n  llm_proxy: true\n'))
+
+        with (
+            patch("highbar.engine.run_spec.TestRunner") as fake,
+            patch("highbar.engine.run_spec.LlmProxy"),
+        ):
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--jobs", "1"])
+
+        assert result.exit_code == 0, result.output
+
+
 class TestMaxErrors:
     """HB-34: --max-errors is 5 unless given, 0 turns it off; its stop exits with 4."""
 

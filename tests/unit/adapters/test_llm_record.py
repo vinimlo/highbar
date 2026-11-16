@@ -136,3 +136,9 @@ def test_hb30_a_read_that_is_not_a_boolean_is_a_bad_line(tmp_path: Path) -> None
 
     with pytest.raises(TraceFormatError, match="line 1: 'read' must be true or false"):
         collector.collect(since=0)
+
+
+def test_hb30_the_call_kind_is_read(tmp_path: Path) -> None:
+    (call,) = _write(tmp_path / "t.jsonl", {**CALL, "call": "model"}).collect(since=0).llms
+
+    assert call.call == "model"

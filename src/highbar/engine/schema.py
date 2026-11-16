@@ -36,9 +36,11 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
             "session",
             "run",
             "correlate",
+            "llm_proxy",
         }
     ),
     "traces": frozenset({"path", "format"}),
+    "llm_proxy": frozenset({"openai", "anthropic"}),
     "request": frozenset({"method", "headers", "body"}),
     "session": frozenset({"setup", "teardown"}),
     "run": frozenset({"setup", "teardown"}),

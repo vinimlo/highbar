@@ -323,6 +323,15 @@ def _run_all(
     specs = _parse_all(paths, runs=runs, failures=failures)
     if specs is None:
         return _stopped(report, "spec_invalid", "; ".join(failures), EXIT_UNRUNNABLE)
+    proxied = [path for path, spec in specs if spec.agent.llm_proxy]
+    if jobs > 1 and proxied:
+        message = (
+            f"--jobs {jobs} cannot run with agent.llm_proxy ({', '.join(proxied)}): the "
+            "agent's model calls carry no test id yet, so with more than one test in "
+            "flight the proxy could not tell whose call it saw. Run it with --jobs 1"
+        )
+        console.print(f"[red]{escape(message)}[/red]")
+        return _stopped(report, "usage_error", message, EXIT_UNRUNNABLE)
     specs = _sharing_secrets(specs)
     if report is not None:
         report.plan(specs)

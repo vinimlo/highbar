@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from rich.console import Console
 from rich.markup import escape
@@ -16,6 +18,7 @@ from highbar.adapters.file_collector import (
     trace_collector,
 )
 from highbar.adapters.http_client import HTTPClient
+from highbar.adapters.llm_proxy import LlmProxy, Upstream
 from highbar.adapters.subprocess_adapter import AgentStartError, SubprocessAdapter
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
@@ -32,6 +35,31 @@ from highbar.variations.generator import VariationGenerator
 
 # Called once per spec, however it ended: the result so far, and whether it ran to the end.
 OnEnd = Callable[[RunSummary, bool], None]
+
+# agent.llm_proxy (HB-30): the variable each SDK reads its base URL from, the provider's
+# own base URL when it is unset, and the provider that URL is.
+PROXIED = (
+    ("openai", "OPENAI_BASE_URL", "https://api.openai.com/v1", "api.openai.com"),
+    ("anthropic", "ANTHROPIC_BASE_URL", "https://api.anthropic.com", "api.anthropic.com"),
+)
+
+
+def proxy_upstreams(
+    environ: Mapping[str, str], given: Mapping[str, str] | None = None
+) -> dict[str, Upstream]:
+    """Where the proxy sends each protocol: where the agent would have gone without it.
+
+    ``given`` is the spec's (``agent.llm_proxy: {openai: <url>}``), which wins over the
+    environment's: an agent that loads its own .env has its base URL there, not here.
+    ``provider`` is said only for the provider's own host: a name in the price table is
+    looked up under it, and OpenRouter or DeepSeek on the OpenAI protocol are not OpenAI.
+    """
+    upstreams: dict[str, Upstream] = {}
+    for name, variable, default, host in PROXIED:
+        base = (given or {}).get(name) or environ.get(variable) or default
+        provider = name if urlsplit(base).hostname == host else None
+        upstreams[name] = Upstream(base, protocol=name, provider=provider)  # type: ignore[arg-type]
+    return upstreams
 
 
 def load_session_hooks(path: str, spec: Spec) -> SessionHooks | None:
@@ -100,6 +128,9 @@ def run_spec(
     """
     console.print(f"  Running {escape(path)}")
     agent = spec.agent
+    if agent.llm_proxy and jobs > 1:
+        # The CLI refuses it first; a caller from Python gets the same answer.
+        raise ValueError("agent.llm_proxy runs with jobs=1: model calls carry no test id yet")
     reporter = reporter or TerminalReporter()
     # The CLI's --runs, when given, takes the place of the spec's defaults.runs.
     runs = spec.default_runs if default_runs is None else default_runs
@@ -136,6 +167,7 @@ def run_spec(
             streak=streak,
             jobs=jobs,
             more_after=more_after,
+            proxy=None,
         )
         return _run(runner, spec, on_end)
 
@@ -148,13 +180,20 @@ def run_spec(
         # reader that leaves at the summary line, and rich exits 1 on it (HB-35).
         console.print(f"  Traces kept at {escape(traces_file)}")
 
+    env = {"HIGHBAR_TRACES_URL": traces_file}
+    proxy: LlmProxy | None = None
+    if agent.llm_proxy:
+        # Started before the agent, which reads its base URLs once, when it starts.
+        proxy = LlmProxy(traces_file, proxy_upstreams(os.environ, agent.llm_proxy_upstreams))
+        proxy.start()
+        env.update({variable: proxy.base_url(name) for name, variable, _, _ in PROXIED})
     adapter = SubprocessAdapter(
         start_cmd=agent.start,
         endpoint=agent.endpoint,
         log_path=agent_log_path(path),
         health_url=agent.health,
         startup_timeout=agent.startup_timeout,
-        env={"HIGHBAR_TRACES_URL": traces_file},
+        env=env,
     )
     runner = _runner(
         spec,
@@ -174,11 +213,16 @@ def run_spec(
         streak=streak,
         jobs=jobs,
         more_after=more_after,
+        proxy=proxy,
     )
 
     try:
         summary = _run(runner, spec, on_end)
     finally:
+        # After the agent, which the runner stopped on every way out: a call it makes
+        # while it stops still goes through, and is recorded.
+        if proxy is not None:
+            proxy.stop()
         if not keep_traces:
             Path(traces_file).unlink(missing_ok=True)
 
@@ -207,6 +251,7 @@ def _runner(
     streak: ErrorStreak | None,
     jobs: int,
     more_after: bool,
+    proxy: LlmProxy | None,
 ) -> TestRunner:
     return TestRunner(
         adapter=adapter,  # type: ignore[arg-type]
@@ -232,6 +277,7 @@ def _runner(
         jobs=jobs,
         more_after=more_after,
         trace_format=spec.agent.trace_format,
+        proxy=proxy,
     )
 
 

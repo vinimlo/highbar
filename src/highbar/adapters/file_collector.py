@@ -566,6 +566,7 @@ def _llm(record: dict[str, Any]) -> LlmCall:
         unread=_text(record.get("unread")),
         cost=_cost(record.get("cost")),
         currency=_currency(record.get("currency")),
+        call=_text(record.get("call")),
     )
 
 
