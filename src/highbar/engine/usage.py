@@ -11,6 +11,7 @@ was exceeded. Known parts under the limit prove nothing, so the check is unverif
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
@@ -117,13 +118,26 @@ def find_price(usage: Usage, prices: Mapping[str, Price]) -> Price | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def priced(usage: Usage) -> tuple[Usage, str | None]:
+# A snapshot date at the end of a model's name: OpenAI's -2025-04-14, Anthropic's -20250929.
+_DATED = re.compile(r"-(?:\d{4}-\d{2}-\d{2}|\d{8})$")
+
+
+def without_date(model: str) -> str | None:
+    """``model`` without the snapshot date at its end, or None when it has none."""
+    name = _DATED.sub("", model.strip())
+    return name if name != model.strip() else None
+
+
+def priced(usage: Usage, *, undated: bool = False) -> tuple[Usage, str | None]:
     """``usage`` with its cost, and a warning when it should have one and cannot.
 
     The emitter's cost stands. Without one it comes from the price table, in the table's
     currency, and only from the whole count: a turn priced without its output tokens
     would look cheaper than it was, and pass a budget it may not have met. The input
     includes the cached tokens, so a smaller one is a count that cannot be right.
+
+    ``undated`` (the LLM proxy's calls, HB-30 P6): a name the table does not have is
+    looked up again without its snapshot date. The name the reply gave stays the model.
     """
     cached = usage.cached_input_tokens or 0
     if usage.input_tokens is not None and cached > usage.input_tokens:
@@ -132,6 +146,8 @@ def priced(usage: Usage) -> tuple[Usage, str | None]:
         return usage, None
     currency, prices = _table()
     price = find_price(usage, prices)
+    if price is None and undated and (name := without_date(usage.model)) is not None:
+        price = find_price(replace(usage, model=name), prices)
     if price is None:
         return usage, (
             f"model '{usage.model}' is not in highbar's price table, so its turns have no "
