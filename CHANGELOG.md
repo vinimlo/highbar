@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `agent.reply: turn`, for an agent that answers later through a queue (a webhook that says `202`): the reply is the `response` of the test's `turn` record, and highbar waits for it up to `agent.timeout`. A reply that does not come, comes only untagged, or is empty or only spaces, is an `error`, and for `--max-errors` it is one more execution with no reply, as an empty body is: a worker that is down stops the run instead of waiting `agent.timeout` for every execution left.
+
 ### Fixed
 
 - A message to the agent stops at `agent.timeout` when the agent sends its status line and headers slowly, as HTTP hooks do since 0.2.0. httpx's timeout holds for each read, so an agent that sent a byte every 0.1 s kept a message of 1 s waiting for 12 s. A message cut this way is a timeout, as any other, and counts for `--max-errors`.

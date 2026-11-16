@@ -105,6 +105,7 @@ def run_spec(
         request=agent.request,
         response_path=agent.response,
         timeout_ms=agent.timeout,
+        body_is_reply=agent.reply == "body",
     )
 
     if agent.start is None:
@@ -210,6 +211,7 @@ def _runner(
         secrets=spec.agent.secrets,
         default_runs=default_runs,
         max_cost=max_cost,
+        reply_within=spec.agent.timeout / 1000 if spec.agent.reply == "turn" else None,
         hook_timeout=spec.agent.timeout / 1000,
         spent=spent,
         spent_untagged=spent_untagged,

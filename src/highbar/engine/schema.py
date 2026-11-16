@@ -31,6 +31,7 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
             "timeout",
             "request",
             "response",
+            "reply",
             "traces",
             "session",
             "run",
