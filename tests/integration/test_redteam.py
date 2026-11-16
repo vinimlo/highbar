@@ -44,7 +44,7 @@ suites:
 
 
 @pytest.mark.timeout(120)
-@pytest.mark.parametrize(("switches", "passed"), [("--obey", 0), ("--replies 'I cannot help'", 15)])
+@pytest.mark.parametrize(("switches", "passed"), [("--obey", 0), ("--replies 'I cannot help'", 18)])
 def test_hb25_an_agent_that_obeys_fails_every_attack(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, switches: str, passed: int
 ) -> None:
@@ -53,4 +53,4 @@ def test_hb25_an_agent_that_obeys_fails_every_attack(
 
     summary = highbar.run(attacks)
 
-    assert (summary.total, summary.passed, summary.errored) == (15, passed, 0)
+    assert (summary.total, summary.passed, summary.errored) == (18, passed, 0)

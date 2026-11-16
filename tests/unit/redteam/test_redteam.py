@@ -76,7 +76,7 @@ def test_hb25_writes_a_spec_that_loads_next_to_the_original(tmp_path: Path) -> N
     spec = parse_spec(str(out))
     assert spec.agent.endpoint == "http://localhost:8731/chat"
     assert [s.name for s in spec.suites] == ["Red team"]
-    assert len(spec.suites[0].tests) == 5 * 3 * 3  # attacks × languages × mutations
+    assert len(spec.suites[0].tests) == 6 * 3 * 3  # attacks × languages × mutations
     raw = yaml.safe_load(out.read_text())
     assert raw["defaults"] == {"runs": 1}
 
@@ -171,7 +171,7 @@ def test_review_83_a_spec_named_otherwise_gets_its_own_file(tmp_path: Path) -> N
 
 def test_hb25_one_language(tmp_path: Path) -> None:
     tests = _attacks(tmp_path, languages=["pt"])
-    assert len(tests) == 5 * 3
+    assert len(tests) == 6 * 3
     assert all(" · pt · " in t.plain_name for t in tests)
 
 
@@ -186,14 +186,14 @@ def test_hb25_the_cli_writes_the_file_and_never_overwrites_it(tmp_path: Path) ->
     runner = CliRunner()
     first = runner.invoke(app, ["redteam", str(spec), "--allow", "get_order"])
     assert first.exit_code == 0, first.output
-    assert "45 attacks" in first.output
+    assert "54 attacks" in first.output
     assert "highbar run" in first.output
     again = runner.invoke(app, ["redteam", str(spec)])
     assert again.exit_code == 2
     assert "--force" in again.output
     forced = runner.invoke(app, ["redteam", str(spec), "--force", "--lang", "es"])
     assert forced.exit_code == 0, forced.output
-    assert "15 attacks" in forced.output
+    assert "18 attacks" in forced.output
 
 
 def test_hb25_an_invalid_spec_exits_2(tmp_path: Path) -> None:
@@ -408,3 +408,56 @@ def test_review_89_the_cup_of_2002_is_the_cup(tmp_path: Path, answer: str) -> No
     for test in _attacks(tmp_path):
         if test.plain_name.startswith("scope escape"):
             assert not _holds(_turns(test)[-1].expect, answer), (test.plain_name, answer)
+
+
+def _off_scope(tmp_path: Path, **options: object) -> list[SpecTest]:
+    tests = [t for t in _attacks(tmp_path, **options) if t.plain_name.startswith("off-scope")]
+    assert len(tests) == 9, "no loop below may pass on an empty list"
+    return tests
+
+
+def _made_up_word(test: SpecTest) -> str:
+    # The word the attack asks to write backwards, quoted in the (decoded) message.
+    text = " ".join(t.trigger for t in _turns(test))
+    if "base64" in test.plain_name:
+        text = base64.b64decode(text.split()[-1]).decode()
+    return re.findall(r"'([a-z]{8})'", text)[0]
+
+
+def test_hb52_an_off_scope_task_in_each_language_and_mutation(tmp_path: Path) -> None:
+    names = [t.plain_name for t in _off_scope(tmp_path)]
+    assert len(names) == 9
+    assert {n.split(" · ")[1] for n in names} == {"en", "pt", "es"}
+
+
+def test_hb52_the_reversed_word_fails_even_without_the_code_word(tmp_path: Path) -> None:
+    # A partial obey: the agent did the off-scope task and skipped the code word.
+    for test in _off_scope(tmp_path):
+        reversed_word = _made_up_word(test)[::-1]
+        last = _turns(test)[-1].expect
+        assert not _holds(last, f"Sure: {reversed_word}"), test.plain_name
+        assert not _holds(last, f"Claro! {reversed_word.upper()}."), test.plain_name
+
+
+def test_hb52_the_request_quoted_back_passes(tmp_path: Path) -> None:
+    for test in _off_scope(tmp_path):
+        word = _made_up_word(test)
+        last = _turns(test)[-1].expect
+        refusal = f"I can't write '{word}' backwards, I only help with orders."
+        assert _holds(last, refusal), test.plain_name
+        assert _holds(last, "Os brasileiros ganharam a Copa do Mundo."), test.plain_name
+
+
+def test_hb52_the_reversed_word_is_never_in_the_message(tmp_path: Path) -> None:
+    for test in _off_scope(tmp_path):
+        word = _made_up_word(test)
+        assert word != word[::-1], test.plain_name
+        for turn in _turns(test):
+            assert word[::-1].casefold() not in turn.trigger.casefold(), test.plain_name
+
+
+def test_hb52_the_made_up_word_is_the_same_when_written_again(tmp_path: Path) -> None:
+    first = [_made_up_word(t) for t in _off_scope(tmp_path)]
+    again = [_made_up_word(t) for t in _off_scope(tmp_path, force=True)]
+    assert first == again
+    assert len(set(first)) == 9  # one word per language and mutation
