@@ -21,6 +21,7 @@ def satisfies(expected: FunctionCallExpect, call: Trace) -> bool:
         call.fn in expected.accepted_names
         and subset_match(expected.params, call.args)
         and subset_match(expected.result, call.result)
+        and (expected.returns is None or value_match(expected.returns, call.result))
         and _error_matches(expected.error, call.error)
     )
 
@@ -189,6 +190,8 @@ def _unmet(
         errors.append((f"params: expected {e.params}", f"{call.args}"))
     if e.result and not subset_match(e.result, call.result):
         errors.append((f"result: expected {e.result}", f"{call.result}"))
+    if e.returns is not None and not value_match(e.returns, call.result):
+        errors.append((f"returns: expected {e.returns}", f"{call.result}"))
     if not _error_matches(e.error, call.error):
         errors.append((f"error: expected {_expected_error(e.error)}", f"{call.error or 'none'}"))
     head = "was called but didn't match: "

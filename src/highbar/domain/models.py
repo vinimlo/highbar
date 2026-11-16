@@ -274,6 +274,10 @@ class FunctionCallExpect:
     name: str | list[str]
     params: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
+    # The whole return value, as an expected value (a matcher, a list, a text): for a
+    # tool that returns a list or a text, which `result`'s key names cannot reach
+    # (HB-37). None: not checked; a null return is ``{equals: null}``.
+    returns: Any = None
     # False: the call must not have failed. True: it must have. A matcher: it must
     # have failed with an error that matches (``{contains: "Timeout"}``).
     error: bool | dict[str, Any] = False

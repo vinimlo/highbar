@@ -125,6 +125,7 @@ A budget needs the turn's record, so it counts as a check on what the agent reco
 | `name` | text, or list of texts | Required. A list accepts any of the names. |
 | `params` | mapping | Must be contained in the call's arguments. Values may be matchers. |
 | `result` | mapping | Must be contained in what the tool returned. |
+| `returns` | any expected value | The whole return value: a matcher, a list, a text or a number, for a tool that returns something other than an object. `null` is refused; write `{equals: null}`. |
 | `error` | boolean, or matchers | `false` (default): the call must not have failed. `true`: it must have. A matcher: its error text must meet it. |
 
 ## Matchers
