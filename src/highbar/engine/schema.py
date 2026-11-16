@@ -38,6 +38,7 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
             "correlate",
         }
     ),
+    "traces": frozenset({"path", "format"}),
     "request": frozenset({"method", "headers", "body"}),
     "session": frozenset({"setup", "teardown"}),
     "run": frozenset({"setup", "teardown"}),
