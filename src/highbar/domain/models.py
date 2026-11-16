@@ -38,6 +38,10 @@ def combine(statuses: Iterable[Status]) -> Status:
     return Status.PASSED
 
 
+# What agent.traces.format names: highbar's own contract, or OTLP JSON lines (HB-48).
+TRACE_FORMATS = ("highbar", "otlp")
+
+
 @dataclass(frozen=True)
 class Trace:
     """One tool call, from a `tool` record of the trace contract.
@@ -57,6 +61,9 @@ class Trace:
     # False when the record had no `result` key: what the tool returned was not seen,
     # which is not the same as having returned null (review of #74, HB-37).
     has_result: bool = True
+    # False when the arguments were not recorded: an OpenTelemetry tool span exports
+    # them only with content capture on (HB-48). `params` cannot be checked on it.
+    has_args: bool = True
 
     @property
     def duration_ms(self) -> float:
@@ -264,6 +271,8 @@ class AgentConfig:
     # execution's turn record, for an agent that answers later through a queue (HB-14).
     reply: str = "body"
     traces: str | None = None
+    # How the trace file is written: highbar's own contract, or OTLP JSON lines (HB-48).
+    trace_format: str = "highbar"
     session: SessionConfig | None = None
     run: RunConfig | None = None
     correlate: dict[str, Any] = field(default_factory=lambda: {"test": "{{test.id}}"})

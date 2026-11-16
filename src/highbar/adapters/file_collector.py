@@ -18,6 +18,9 @@ Rules of the contract (v1) that live here:
   writer that had its own ``usage`` field keeps working, and a budget on a value that
   was dropped ends in ``error``, never in a pass. A ``usage`` with nothing readable is
   remembered as such: alone it says nothing, but next to a readable one it was spent too.
+
+With ``trace_format="otlp"`` each line is OpenTelemetry's OTLP/JSON instead, mapped in
+``highbar.adapters.otlp`` (HB-48). The reading by offset and a bad line are the same.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from highbar._narrow import as_dict, as_list
+from highbar.adapters.otlp import OtlpLineError, add_otlp
 from highbar.domain.models import (
     Hello,
     LlmCall,
@@ -75,10 +79,11 @@ class _BadLine(Exception):
 
 
 class FileTraceCollector:
-    """Reads trace records written to a JSONL file."""
+    """Reads trace records written to a JSONL file, in ``trace_format``."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, trace_format: str = "highbar") -> None:
         self._path = Path(path)
+        self._otlp = trace_format == "otlp"
 
     @property
     def path(self) -> Path:
@@ -122,7 +127,10 @@ class FileTraceCollector:
         problem: str | None = None
         for raw in complete.splitlines(keepends=True):
             try:
-                _add(window, raw)
+                if self._otlp:
+                    _add_otlp(window, raw)
+                else:
+                    _add(window, raw)
             except _BadLine as e:
                 if problem is None:
                     problem = f"{self._path} line {self._line_at(offset)}: {e}"
@@ -140,8 +148,11 @@ class FileTraceCollector:
         `bye` with the pid of the last `hello` says that process ended, so what it
         declared says nothing about the code running now: None (review of #52). Only
         `hello`, `tools` and `bye` lines are parsed, one at a time, and a line that
-        cannot be read is skipped: it is history, which no test reads.
+        cannot be read is skipped: it is history, which no test reads. OTLP declares
+        nothing (HB-48).
         """
+        if self._otlp:
+            return None
         current: set[str] | None = None
         hello_pid: Any = _NO_HELLO
         ended = False
@@ -187,14 +198,16 @@ def is_glob(path: str | Path) -> bool:
     return any(char in "*?[" for char in str(path))
 
 
-def trace_collector(path: str | Path) -> FileTraceCollector | GlobTraceCollector:
+def trace_collector(
+    path: str | Path, *, trace_format: str = "highbar"
+) -> FileTraceCollector | GlobTraceCollector:
     """The collector for ``agent.traces``: one file, or every file a glob matches.
 
     A path that names a file is that file, a ``[`` in its name or not, as before HB-15.
     """
     if is_glob(path) and not Path(path).is_file():
-        return GlobTraceCollector(path)
-    return FileTraceCollector(path)
+        return GlobTraceCollector(path, trace_format=trace_format)
+    return FileTraceCollector(path, trace_format=trace_format)
 
 
 class GlobTraceCollector:
@@ -212,8 +225,9 @@ class GlobTraceCollector:
     a link is another name for a file it matches: each file is read once.
     """
 
-    def __init__(self, pattern: str | Path) -> None:
+    def __init__(self, pattern: str | Path, *, trace_format: str = "highbar") -> None:
         self._pattern = str(pattern)
+        self._format = trace_format
         # Checkpoint 0 is every file from its start; each later one, the offsets it holds.
         self._marks: list[dict[Path, int]] = [{}]
         # Every name a checkpoint has held an offset for: the name a file is read by.
@@ -229,7 +243,7 @@ class GlobTraceCollector:
 
     def checkpoint(self) -> int:
         files = self._files(self._known)
-        return self._mark({file: FileTraceCollector(file).checkpoint() for file in files})
+        return self._mark({file: self._reader(file).checkpoint() for file in files})
 
     def collect(self, since: int) -> Window:
         """The records written in every file after checkpoint ``since``, in time order.
@@ -242,7 +256,7 @@ class GlobTraceCollector:
         ends: dict[Path, int] = {}
         problem: TraceFormatError | None = None
         for file in self._files(self._known):
-            reader = FileTraceCollector(file)
+            reader = self._reader(file)
             try:
                 window = reader.collect(since=offsets.get(file, 0))
             except TraceFormatError as e:
@@ -257,9 +271,12 @@ class GlobTraceCollector:
 
     def declared(self) -> frozenset[str] | None:
         """The tools every process declared since its own last `hello`, together."""
-        found = [FileTraceCollector(file).declared() for file in self._files()]
+        found = [self._reader(file).declared() for file in self._files()]
         declared = [names for names in found if names is not None]
         return frozenset[str]().union(*declared) if declared else None
+
+    def _reader(self, file: Path) -> FileTraceCollector:
+        return FileTraceCollector(file, trace_format=self._format)
 
     def _files(self, known: Collection[Path] = ()) -> list[Path]:
         """Each file the glob matches, once, by one of its names (review of #52).
@@ -355,10 +372,8 @@ def _end_of_last_line(f: Any) -> int:
     return 0
 
 
-def _add(window: Window, raw: bytes) -> None:
-    """The record of one line, added whole or, if the line cannot be read, not at all."""
-    if not raw.strip():
-        return
+def _object(raw: bytes) -> dict[str, Any]:
+    """The JSON object of one line, or ``_BadLine``."""
     try:
         parsed: Any = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -367,6 +382,24 @@ def _add(window: Window, raw: bytes) -> None:
     record = as_dict(parsed)
     if record is None:
         raise _BadLine(f"not a JSON object, got {type(parsed).__name__}")
+    return record
+
+
+def _add_otlp(window: Window, raw: bytes) -> None:
+    """The spans of one OTLP line, added whole or, if the line cannot be read, not at all."""
+    if not raw.strip():
+        return
+    try:
+        add_otlp(window, _object(raw))
+    except OtlpLineError as e:
+        raise _BadLine(str(e)) from None
+
+
+def _add(window: Window, raw: bytes) -> None:
+    """The record of one line, added whole or, if the line cannot be read, not at all."""
+    if not raw.strip():
+        return
+    record = _object(raw)
 
     version = record.get("v")
     if version is None or (not isinstance(version, bool) and version == 0):
