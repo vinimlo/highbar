@@ -57,7 +57,7 @@ The message never shows the body of a reply, and a value from `${VAR}` in the en
 
 ### `--jobs`
 
-With `--jobs N`, up to N tests are in flight at once, started in spec order. Most of a test's time is the agent thinking, so N in flight divides the wall time by close to N. A test's phrasings, runs and turns still run one after the other, in one place: `{{previous.*}}`, `min_pass` and a conversation's turns depend on that order. Only the send and the wait for `settle_time` run side by side; the reading of the trace file and every verdict happen one at a time.
+With `--jobs N`, up to N tests are in flight at once, started in spec order. Most of a test's time is the agent thinking, so N in flight divides the wall time by close to N. A test's phrasings, runs and turns still run one after the other, in one place: <code v-pre>{{previous.*}}</code>, `min_pass` and a conversation's turns depend on that order. Only the send and the wait for `settle_time` run side by side; the reading of the trace file and every verdict happen one at a time.
 
 With several tests in flight, the window a record falls in says nothing about whose it is, so records are counted by their correlation alone:
 
