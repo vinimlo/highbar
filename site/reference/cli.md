@@ -57,7 +57,7 @@ The message never shows the body of a reply, and a value from `${VAR}` in the en
 
 ### `--jobs`
 
-With `--jobs N`, up to N tests are in flight at once, started in spec order. Most of a test's time is the agent thinking, so N in flight divides the wall time by close to N. A test's phrasings, runs and turns still run one after the other, in one place: <code v-pre>{{previous.*}}</code>, `min_pass` and a conversation's turns depend on that order. Only the send and the wait for `settle_time` run side by side; the reading of the trace file and every verdict happen one at a time.
+With `--jobs N`, up to N tests are in flight at once, started in spec order. Most of a test's time is the agent thinking, so N in flight divides the wall time by close to N. A test's phrasings, runs and turns still run one after the other, in one place: <code v-pre>{{previous.*}}</code>, `min_pass` and a conversation's turns depend on that order. Only the send, the wait for the reply's `turn` record with [`agent.reply: turn`](/guides/connecting-your-agent#an-agent-that-answers-later), and the wait for `settle_time` run side by side; the reading of the trace file and every verdict happen one at a time.
 
 With several tests in flight, the window a record falls in says nothing about whose it is, so records are counted by their correlation alone:
 
@@ -75,6 +75,8 @@ Session hooks run in the test's own place, so up to N setups and teardowns can r
 The stops start no more tests:
 
 - `--max-cost` is checked as each test ends. The tests already in flight finish, so a run can go past the ceiling by what up to N−1 tests spend. The message says how many tests were in flight and how much the run spent over the ceiling:
+
+  When every test of the run had already started, nothing was left out, and the message ends with `with no test left to run` instead of asking to raise the ceiling.
 
   ```console
     ✗ --max-cost 0.2: the run spent 0.25 USD by the end of 't1', so it started no more tests; the 2 tests in flight then finished, and the run spent 0.75 USD in all, 0.55 USD over the ceiling; raise the ceiling to run the rest
