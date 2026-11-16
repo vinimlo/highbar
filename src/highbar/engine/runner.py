@@ -518,6 +518,7 @@ class _Ceiling:
     test: str  # the test whose end passed it
     spent: str  # what the run had spent then, as the message says it
     in_flight: int
+    left: bool  # tests of the run were not started yet: of this spec, or a spec after it
 
 
 class TestRunner:
@@ -883,7 +884,8 @@ class TestRunner:
         over = over_limit(self._costs(), self._max_cost)
         if over:
             spent = f"{_amounts(over)}{self._untagged_share(over)}"
-            self._ceiling = _Ceiling(name, spent, len(self._in_flight))
+            left = self._next < len(self._plan) or self._more_after
+            self._ceiling = _Ceiling(name, spent, len(self._in_flight), left)
 
     def _flush(self) -> None:
         """Tell the reporter each finished test whose tests before it were told."""
@@ -1195,6 +1197,8 @@ class TestRunner:
         """
         assert self._reply_within is not None
         deadline = time.monotonic() + self._reply_within
+        if self._parallel:
+            return self._await_reply_jobs(correlate, deadline)
         while True:
             window, _ = self._read()
             for turn in classify(window, correlate).mine.turns:
@@ -1203,6 +1207,27 @@ class TestRunner:
             if time.monotonic() >= deadline:
                 return None
             time.sleep(min(REPLY_POLL, max(0.0, deadline - time.monotonic())))
+
+    def _await_reply_jobs(self, correlate: Mapping[str, Any], deadline: float) -> str | None:
+        """--jobs: the wait is a send-and-wait part, outside the lock (HB-8 with HB-14).
+
+        Its reads go where every read goes, so its turn reaches it whichever worker reads
+        it: it waits in the execution's held records, and its window counts it then.
+        """
+        execution = self._local.execution
+        assert execution is not None and execution.held is not None
+        while True:
+            self._route_read()
+            held = execution.held
+            assert held is not None
+            for turn in held.tagged.turns:
+                mine = attribute(turn.context, correlate) is Attribution.MINE
+                if mine and turn.response is not None:
+                    return turn.response
+            if time.monotonic() >= deadline:
+                return None
+            with self._unlocked():
+                time.sleep(min(REPLY_POLL, max(0.0, deadline - time.monotonic())))
 
     def _read(self) -> tuple[Window, str | None]:
         """The records written since the cursor, and why a line among them cannot be read.
@@ -1413,23 +1438,59 @@ class TestRunner:
     def _read_after_last_jobs(self) -> None:
         """--jobs: the read after the last test. What it cannot give to one test is
         suspected of every one (review of #95)."""
-        last = self._executions[-1]
+        self._route_read(last=True)
+        self._look_at_agent()
+
+    def _route_read(self, *, last: bool = False) -> None:
+        """--jobs: a read on no execution's behalf, for agent.reply: turn's wait and the
+        read after the last test. Each record goes where a read for a test would send it:
+        to the execution in flight it names, kept for its window; as a late record to one
+        that ended; and what names none is shared with every execution in flight and
+        suspected of every one that ended."""
+        probe = self._executions[-1]  # whose keys say what a record without them is
         window, unreadable = self._read()
         self._cursor = window.end
         self._absorb(window)
-        untagged = self._untagged(window.tools, last)
-        self._judge_late([t for t in window.tools if t not in untagged], current=None)
+        flying = [e for e in self._executions if e.held is not None]
+        kept = Window()
+        parts: list[tuple[list[Any], Callable[[Window], list[Any]]]] = [
+            (window.tools, lambda w: w.tools),
+            (window.turns, lambda w: w.turns),
+            (window.llms, lambda w: w.llms),
+            (window.retrievals, lambda w: w.retrievals),
+        ]
+        for records, kind in parts:
+            for record in records:
+                context: Mapping[str, Any] = record.context
+                owner = next(
+                    (e for e in flying if attribute(context, e.correlate) is Attribution.MINE),
+                    None,
+                )
+                if owner is not None:
+                    assert owner.held is not None
+                    kind(owner.held.tagged).append(record)
+                    continue
+                kind(kept).append(record)
+                for other in flying:
+                    if attribute(context, other.correlate) is Attribution.UNATTRIBUTED:
+                        assert other.held is not None
+                        kind(other.held.untagged).append(record)
+        if unreadable is not None:
+            for other in flying:
+                assert other.held is not None
+                other.held.unreadable.append(unreadable)
+        untagged = self._untagged(kept.tools, probe)
+        self._judge_late([t for t in kept.tools if t not in untagged], current=None)
         stray = [
             turn
-            for turn in window.turns
-            if attribute(turn.context, last.correlate) is Attribution.UNATTRIBUTED
+            for turn in kept.turns
+            if attribute(turn.context, probe.correlate) is Attribution.UNATTRIBUTED
         ]
-        self._judge_late_usage([t for t in window.turns if t not in stray], current=None)
-        self._judge_late_records(window.llms, window.retrievals, current=None)
+        self._judge_late_usage([t for t in kept.turns if t not in stray], current=None)
+        self._judge_late_records(kept.llms, kept.retrievals, current=None)
         # In the run's spend once, and in each test's suspicion after.
-        self._suspect_usage(None, self._read_usage(stray), last.correlate)
-        self._suspect_ended(None, untagged, stray, unreadable, last=True)
-        self._look_at_agent()
+        self._suspect_usage(None, self._read_usage(stray), probe.correlate)
+        self._suspect_ended(None, untagged, stray, unreadable, last=last)
 
     def _untagged(self, tools: list[Trace], execution: _Execution) -> list[Trace]:
         return [
@@ -1852,7 +1913,14 @@ class TestRunner:
             f"of '{ceiling.test}', so it"
         )
         if not ceiling.in_flight:
-            self._stopped = f"{head} stopped there; raise the ceiling to run the rest"
+            if ceiling.left:
+                self._stopped = f"{head} stopped there; raise the ceiling to run the rest"
+            else:
+                # Nothing was left out (HB-33): the words of a run in order.
+                self._stopped = (
+                    f"--max-cost {amount(self._max_cost)}: the run spent {ceiling.spent}, "
+                    f"over its ceiling, by the end of its last test, '{ceiling.test}'"
+                )
             return
         over = over_limit(self._costs(), self._max_cost)
         past = {
@@ -1860,6 +1928,14 @@ class TestRunner:
             for name, cost in over.items()
         }
         tests = "1 test" if ceiling.in_flight == 1 else f"{ceiling.in_flight} tests"
+        if not ceiling.left:
+            self._stopped = (
+                f"--max-cost {amount(self._max_cost)}: the run spent {ceiling.spent} by the "
+                f"end of '{ceiling.test}'; the {tests} in flight then finished, and the run "
+                f"spent {_amounts(over)} in all, {_amounts(past)} over its ceiling, with no "
+                "test left to run"
+            )
+            return
         self._stopped = (
             f"{head} started no more tests; the {tests} in flight then finished, and the run "
             f"spent {_amounts(over)} in all, {_amounts(past)} over the ceiling; raise the "

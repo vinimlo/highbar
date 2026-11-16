@@ -95,11 +95,14 @@ class _Agent:
         self.most_in_flight = 0
         self._flying = 0
         self.after_read: Callable[[Window], None] | None = None
+        self.before_read: Callable[[], None] | None = None
+        self.threads: dict[str, threading.Thread] = {}  # message -> the thread that sent it
         self.path = Path("/tmp/fake-traces.jsonl")
 
     def send(self, message: str, *, values: Values) -> str:
         with self._lock:
             self.ids[message] = values.test_id
+            self.threads[message] = threading.current_thread()
             self.sent.append(message)
             self._flying += 1
             self.most_in_flight = max(self.most_in_flight, self._flying)
@@ -120,6 +123,8 @@ class _Agent:
             return len(self._windows)
 
     def collect(self, since: int) -> Window:
+        if self.before_read is not None:
+            self.before_read()
         with self._lock:
             windows = self._windows[since:]
             end = len(self._windows)
@@ -464,6 +469,28 @@ class TestStops:
         )
         assert [test.name for test in summary.tests] == ["t1", "t2", "t3"]
 
+    def test_hb8_max_cost_with_no_test_left_to_start_does_not_ask_to_run_the_rest(
+        self,
+    ) -> None:
+        """HB-33 with D4: past the ceiling with every test already started, nothing was
+        left out; the message still says what the tests in flight spent over it."""
+        usage = Usage(cost=0.25, currency="USD")
+
+        def script(agent: _Agent, message: str, test_id: str) -> None:
+            time.sleep(0.05 if message == "t1" else 0.4)
+            agent.write(_turn(test_id, usage))
+
+        summary = _runner(_Agent(script), jobs=3, max_cost=0.2).run(
+            _spec(*(Case(trigger=f"t{i}", expect=SAYS_OK) for i in range(1, 4)))
+        )
+
+        assert summary.stop_reason == BUDGET_EXCEEDED
+        assert summary.stopped == (
+            "--max-cost 0.2: the run spent 0.25 USD by the end of 't1'; the 2 tests in "
+            "flight then finished, and the run spent 0.75 USD in all, 0.55 USD over its "
+            "ceiling, with no test left to run"
+        )
+
     def test_hb8_max_errors_counts_in_the_order_executions_end_and_stops_dispatch(
         self,
     ) -> None:
@@ -532,6 +559,62 @@ class TestStops:
 
 class _Bug(BaseException):
     """What no code path in the runner catches: a bug in highbar itself."""
+
+
+class TestReplyFromTurn:
+    """--jobs with agent.reply: turn (HB-14): the wait for the turn is outside the lock,
+    and its reads give each record to the test it names."""
+
+    def test_hb8_a_reply_turn_read_by_another_tests_worker_still_reaches_its_test(
+        self,
+    ) -> None:
+        read_by: list[str] = []
+
+        def script(agent: _Agent, message: str, test_id: str) -> str:
+            if message == "b":
+                time.sleep(0.1)
+                reply = TurnRecord(ts=1.0, context={"test": test_id}, response="ok b")
+                agent.write(Window(turns=[reply]))
+            return ""  # the body of a 202: the reply comes in the turn
+
+        agent = _Agent(script)
+
+        def before_read() -> None:
+            # A's reply is written right before a read on b's thread: b's worker reads it.
+            if agent.threads.get("b") is threading.current_thread() and not read_by:
+                reply = TurnRecord(ts=2.0, context={"test": agent.ids["a"]}, response="ok a")
+                agent.write(Window(turns=[reply]))
+                read_by.append(threading.current_thread().name)
+
+        agent.before_read = before_read
+
+        summary = _runner(agent, jobs=2, reply_within=1.0).run(
+            _spec(Case(trigger="a", expect=SAYS_OK), Case(trigger="b", expect=SAYS_OK))
+        )
+
+        assert read_by, "b's worker was to read a's reply"
+        a, b = summary.tests
+        assert (a.status, b.status) == (Status.PASSED, Status.PASSED), (a.errors, b.errors)
+        assert a.phrasings[0].executions[0].turns[0].response == "ok a"
+
+    def test_hb8_a_missing_reply_is_still_an_error_that_max_errors_counts(self) -> None:
+        def script(agent: _Agent, message: str, test_id: str) -> str:
+            time.sleep(0.05)
+            agent.write(_turn(test_id))  # a turn with no response
+            return ""
+
+        agent = _Agent(script)
+
+        summary = _runner(agent, jobs=2, reply_within=0.2, max_errors=2).run(
+            _spec(*(Case(trigger=f"t{i}", expect=SAYS_OK) for i in range(6)))
+        )
+
+        assert agent.most_in_flight == 2
+        assert summary.stop_reason == REPEATED_ERRORS
+        assert summary.stopped is not None
+        assert summary.stopped.startswith("2 executions in a row failed"), summary.stopped
+        assert "agent.reply: turn: no turn record of this test" in summary.tests[0].errors[0]
+        assert all(test.status is Status.ERROR for test in summary.tests)
 
 
 class TestCrash:
