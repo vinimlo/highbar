@@ -193,7 +193,7 @@ Each test execution sends its id in the `X-Highbar-Test` header (and, when highb
 
 With `agent.traces.format: otlp`, the file holds OpenTelemetry spans instead: one OTLP/JSON `ExportTraceServiceRequest` per line (`resourceSpans[].scopeSpans[].spans[]`), as the Collector's `file` exporter writes it. The guide is [OpenTelemetry traces](/guides/opentelemetry). It is read by offset like this contract, and a line that is not valid JSON, or a tool or agent span that cannot be read, is an error for the test that read it, naming the line. Lines with logs or metrics and spans of other kinds are skipped.
 
-The mapping is versioned in highbar's code (`OTLP_MAPPING_VERSION`, now `0`), written against the OpenTelemetry GenAI semantic conventions 1.37 (development) and OpenInference:
+The mapping is versioned in highbar's code (`OTLP_MAPPING_VERSION`, now `0`). It follows OpenTelemetry's GenAI semantic conventions as published in Development status, which may still change, plus OpenInference's span kinds. It reads only the attributes in this table, and the span's `traceId`, start and end times and status:
 
 | Record | GenAI conventions | OpenInference |
 |---|---|---|
@@ -207,6 +207,7 @@ The mapping is versioned in highbar's code (`OTLP_MAPPING_VERSION`, now `0`), wr
 | `response` | the text parts of the last assistant message in `gen_ai.output.messages` | `output.value` |
 | `usage.input_tokens`, `output_tokens` | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | `llm.token_count.prompt`, `llm.token_count.completion` |
 | `usage.model` | `gen_ai.response.model`, else `gen_ai.request.model` | `llm.model_name` |
+| `usage.provider` | `gen_ai.provider.name`, else `gen_ai.system` | `llm.provider` |
 | `context.test` | the span's `traceId` | the same |
 
 Each message highbar sends carries a W3C `traceparent` whose trace id is the test execution's id, so `context.test` is the test a span belongs to. A tool span without arguments was exported with content capture off: a `params` check on it is an `error`, and so is a `returns` check on one without a result. `chat` and `LLM` spans (the `llm` record) and `RETRIEVER` spans (the `retrieval` record) are not read in version 0, and nothing in an OTLP file declares tools.

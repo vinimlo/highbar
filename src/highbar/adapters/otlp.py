@@ -5,14 +5,16 @@ Collector's ``file`` exporter writes it: ``resourceSpans[].scopeSpans[].spans[]`
 
 The mapping is versioned here, with the conventions it was written against:
 
-- GenAI semantic conventions (development status, as of semconv 1.37): a span with
-  ``gen_ai.operation.name = execute_tool`` is a tool call (``gen_ai.tool.name``,
-  ``gen_ai.tool.call.arguments``, ``gen_ai.tool.call.result``); ``invoke_agent`` is a
-  turn (``gen_ai.output.messages``, ``gen_ai.usage.input_tokens`` and
-  ``output_tokens``, ``gen_ai.response.model`` or ``gen_ai.request.model``).
-- OpenInference: ``openinference.span.kind = TOOL`` is a tool call (``tool.name``,
-  ``input.value``, ``output.value``); ``AGENT`` is a turn (``output.value``,
-  ``llm.token_count.prompt`` and ``completion``, ``llm.model_name``).
+- OpenTelemetry's GenAI semantic conventions, as published in Development status (they
+  may still change): a span with ``gen_ai.operation.name = execute_tool`` is a tool
+  call (``gen_ai.tool.name``, ``gen_ai.tool.call.arguments``,
+  ``gen_ai.tool.call.result``); ``invoke_agent`` is a turn (``gen_ai.output.messages``,
+  ``gen_ai.usage.input_tokens`` and ``output_tokens``, ``gen_ai.response.model`` or
+  ``gen_ai.request.model``, ``gen_ai.provider.name`` or ``gen_ai.system``).
+- OpenInference span kinds: ``openinference.span.kind = TOOL`` is a tool call
+  (``tool.name``, ``input.value``, ``output.value``); ``AGENT`` is a turn
+  (``output.value``, ``llm.token_count.prompt`` and ``completion``, ``llm.model_name``,
+  ``llm.provider``).
 
 A failed call is a span with status ERROR or an ``error.type``. Spans of other kinds
 (``chat``/``LLM``, ``RETRIEVER``...) are not read in v0.
@@ -38,7 +40,9 @@ from highbar._narrow import as_dict, as_list
 from highbar.domain.models import Trace, TurnRecord, Usage, Window
 
 OTLP_MAPPING_VERSION = 0
-OTLP_CONVENTIONS = "OpenTelemetry GenAI semconv 1.37 (development), OpenInference 0.1"
+OTLP_CONVENTIONS = (
+    "OpenTelemetry GenAI semantic conventions (Development status), OpenInference span kinds"
+)
 
 # OTLP/JSON's STATUS_CODE_ERROR, as a number or by its name.
 _STATUS_ERROR = (2, "2", "STATUS_CODE_ERROR")

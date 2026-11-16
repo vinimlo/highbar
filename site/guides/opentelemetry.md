@@ -52,7 +52,7 @@ So the agent's instrumentation must continue the incoming trace: an HTTP server 
 
 ## What highbar reads
 
-A tool call is a span that the [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) call `execute_tool`, or an OpenInference `TOOL` span. A turn, with its reply text and its tokens, is an `invoke_agent` span or an OpenInference `AGENT` span. The full mapping is in [the trace contract](/reference/trace-contract#opentelemetry-spans-otlp). Other spans (`chat`, `LLM`, `RETRIEVER`...) are not read yet.
+A tool call is a span that the [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) (in Development status, so they may still change) call `execute_tool`, or an OpenInference `TOOL` span. A turn, with its reply text and its tokens, is an `invoke_agent` span or an OpenInference `AGENT` span. The full mapping is in [the trace contract](/reference/trace-contract#opentelemetry-spans-otlp). Other spans (`chat`, `LLM`, `RETRIEVER`...) are not read yet.
 
 A span with status `ERROR`, or with an `error.type`, is a failed call: it does not satisfy an expected call unless the call declares `error`, and a `forbid` fails on it as on any call.
 
@@ -81,5 +81,5 @@ A span that arrives after its test was read counts for that test, as any late re
 ## What v0 does not do
 
 - `format: otlp` is for attach mode only.
-- An OTLP file declares no tools, so a `forbid` on a tool the agent never called gives only a warning at the end. Make sure every tool emits a span: a guardrail (`function_calls: []`) cannot tell a tool with no span from a tool that was not called.
+- An OTLP file declares no tools, so a guardrail (`forbid`, or `function_calls: []`) passes only because no span of that tool was read: it cannot tell a tool with no span from a tool that was not called. A `forbid` on a tool never seen in the run ends with a warning that says so. Make sure every tool emits an `execute_tool` or `TOOL` span.
 - `chat`/`LLM` and `RETRIEVER` spans, and so `expect.llm` and `expect.retrieval`, are left for a later version.
