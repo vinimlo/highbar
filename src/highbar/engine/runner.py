@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import difflib
+import threading
 import time
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -120,6 +122,13 @@ UNATTRIBUTED_USAGE_WARNING = (
     "the agent starts itself needs contextvars.copy_context() to keep the tag"
 )
 
+# With --jobs, a record names its test or it counts for none (HB-8): several tests are
+# in flight at once, so the window a record falls in says nothing about whose it is.
+JOBS_NOT_OBSERVED = (
+    "not observed: with --jobs, every record must carry agent.correlate (untagged records "
+    "cannot be told apart); {hint}, or run with --jobs 1"
+)
+
 UNDECLARED_WARNING = (
     "the agent has not declared the tools it records, so these guardrails cannot tell a "
     "tool it never records from one it did not call: {names}. highbar's Python SDK "
@@ -156,6 +165,20 @@ class _TurnLog:
 
 
 @dataclass
+class _Held:
+    """What other reads took in for an execution in flight, with --jobs (HB-8).
+
+    ``tagged``: its own records, counted in its next window as if it had read them.
+    ``untagged``: records with no context, which may be its own as well as the reader's.
+    ``unreadable``: lines that could not be read, which may be its own record.
+    """
+
+    tagged: Window = field(default_factory=Window)
+    untagged: Window = field(default_factory=Window)
+    unreadable: list[str] = field(default_factory=list[str])
+
+
+@dataclass
 class _Execution:
     """One execution of a test (one test id), kept for the whole run.
 
@@ -187,6 +210,8 @@ class _Execution:
     read: bool = False  # a window was read for it: a message that failed to send reads none
     # Why the send of its last turn failed, when the transport or HTTP did (HB-34).
     cause: InfraCause | None = None
+    # With --jobs, from its first message until it ends: other reads keep its records here.
+    held: _Held | None = None
 
     def close(self, result: TestResult) -> TestResult:
         self.errors, self.duration_ms = list(result.errors), result.duration_ms
@@ -281,6 +306,10 @@ def _tag_hint(correlate: Mapping[Any, Any]) -> str:
         f"give their context {', '.join(keys)} (agent.correlate): hb.turn({fields}) around "
         "the handling of each message, or a `context` field from another writer"
     )
+
+
+def _any_record(*windows: Window) -> bool:
+    return any(w.tools or w.turns or w.llms or w.retrievals for w in windows)
 
 
 def _merged_errors(results: list[TestResult], conditions: Mapping[str, str]) -> list[str]:
@@ -467,6 +496,26 @@ def _turn_label(
     return truncate(trigger, 80)
 
 
+class _PerTest(threading.local):
+    """What the test a thread runs now is: one per worker with --jobs (HB-8)."""
+
+    def __init__(self) -> None:
+        self.test_index = 0
+        self.args: Mapping[str, Any] = {}
+        self.history: Sequence[Mapping[str, str]] = ()
+        self.variation_count: int | None = None
+        self.execution: _Execution | None = None  # the last one it started
+
+
+@dataclass(frozen=True)
+class _Ceiling:
+    """Where --max-cost was passed with --jobs: tests still in flight then finish (D4)."""
+
+    test: str  # the test whose end passed it
+    spent: str  # what the run had spent then, as the message says it
+    in_flight: int
+
+
 class TestRunner:
     """Orchestrates test execution: start agent, send triggers, collect traces, assert.
 
@@ -496,6 +545,7 @@ class TestRunner:
         spent_untagged: Mapping[str, float] | None = None,
         max_errors: int | None = None,
         streak: ErrorStreak | None = None,
+        jobs: int = 1,
     ) -> None:
         self._adapter = adapter
         self._client = client
@@ -528,10 +578,13 @@ class TestRunner:
         # before this one may have started: the count goes on across them (HB-34).
         self._max_errors = max_errors
         self._streak = streak if streak is not None else ErrorStreak()
+        # --jobs: how many tests may be in flight at once (HB-8). 1 is the run as it was.
+        self._jobs = jobs
         # What a managed agent spent with no test context, each record once: the turns have
         # it twice, on the one it was read in and on the one it may be the late usage of.
         self._strays: list[Usage] = []
-        self._last_variation_count: int | None = None
+        # The state of the test in progress, one per thread: with --jobs, one per worker.
+        self._local = _PerTest()
         self._warned: set[str] = set()
         # The tools the agent declared it records (None until it declares any), and the
         # ones seen in its records: what a name in the spec is checked against (D4).
@@ -549,10 +602,6 @@ class TestRunner:
         self._agent_gone: str | None = None
         self._crash_told = False
         self._run_start = time.time()
-        self._test_index = 0
-        # The session.args of the test that runs now (HB-9), for each of its executions.
-        self._args: Mapping[str, Any] = {}
-        self._history: Sequence[Mapping[str, str]] = ()
         # What agent.run.setup returned (HB-10): {{run.*}} in every request and session.
         self._run_values: Mapping[str, Any] = {}
         # What each failure message says apart from the agent's reply (HB-27): a
@@ -561,6 +610,72 @@ class TestRunner:
         # Where the next read starts: each record is read once, and none is missed
         # between two tests (a late call is often written right there).
         self._cursor = 0
+        # --jobs (HB-8): one lock for everything but the send and the wait, the tests in
+        # spec order, and where the run of them stands.
+        self._lock = threading.Lock()
+        self._turn = threading.Condition(self._lock)
+        self._plan: list[tuple[int, Suite, Test]] = []
+        self._suites: list[Suite] = []
+        self._suites_told = 0
+        self._next = 0
+        self._in_flight: set[int] = set()
+        self._done: dict[int, tuple[str, TestResult]] = {}
+        self._flushed = 0
+        self._workers_left = 0
+        self._ceiling: _Ceiling | None = None
+        self._interrupting = False
+        self._crash: BaseException | None = None
+
+    # The state of the test in progress lives in self._local: with --jobs, each worker
+    # runs its own test.
+    @property
+    def _test_index(self) -> int:
+        return self._local.test_index
+
+    @_test_index.setter
+    def _test_index(self, value: int) -> None:
+        self._local.test_index = value
+
+    @property
+    def _args(self) -> Mapping[str, Any]:
+        """The session.args of the test that runs now (HB-9), for each of its executions."""
+        return self._local.args
+
+    @_args.setter
+    def _args(self, value: Mapping[str, Any]) -> None:
+        self._local.args = value
+
+    @property
+    def _history(self) -> Sequence[Mapping[str, str]]:
+        return self._local.history
+
+    @_history.setter
+    def _history(self, value: Sequence[Mapping[str, str]]) -> None:
+        self._local.history = value
+
+    @property
+    def _last_variation_count(self) -> int | None:
+        return self._local.variation_count
+
+    @_last_variation_count.setter
+    def _last_variation_count(self, value: int | None) -> None:
+        self._local.variation_count = value
+
+    @property
+    def _parallel(self) -> bool:
+        return self._jobs > 1
+
+    @contextmanager
+    def _unlocked(self) -> Iterator[None]:
+        """With --jobs, the send and the wait run without the lock: the rest waits for it."""
+        if not self._parallel:
+            yield
+            return
+        self._lock.release()
+        try:
+            yield
+        finally:
+            self._lock.acquire()
 
     def run(self, spec: Spec) -> RunSummary:
         """Run all suites in the spec."""
@@ -572,6 +687,7 @@ class TestRunner:
         self._inventory, self._seen, self._undeclared = None, set(), {}
         self._executions, self._findings, self._test_index = [], [], 0
         self._gates, self._reported, self._warnings = {}, {}, []
+        self._ceiling, self._interrupting, self._crash = None, False, None
         observes = spec.default_budget is not None or any(
             test.requires_observation for suite in spec.suites for test in suite.tests
         )
@@ -595,41 +711,10 @@ class TestRunner:
             self._cursor = self._collector.checkpoint()
             if observes:
                 self._learn_inventory()
-            for suite in spec.suites:
-                self._reporter.on_suite_start(suite)
-                for test in suite.tests:
-                    self._last_variation_count = None
-                    result = self._run_test(test)
-                    own = [f for f in self._findings if f.execution.test_index == self._test_index]
-                    # The rest stay in self._findings until applied: an interrupt can land
-                    # on any line below, and _settle must still find them.
-                    self._findings = [f for f in self._findings if f not in own]
-                    # A run's late call lands in the next run's read: it is part of this
-                    # test's result, not news about a reported one.
-                    if own:
-                        gate = self._gates[self._test_index]
-                        for finding in own:
-                            gate.demote(finding)
-                        result = replace(
-                            result,
-                            status=gate.status,
-                            counts=gate.counts,
-                            errors=[*result.errors, *(gate.describe(f) for f in own)],
-                        )
-                    name = _test_name(test, self._last_variation_count)
-                    self._reported[self._test_index] = _Reported(
-                        suite.name, test, name, result.status, result.duration_ms, [*result.errors]
-                    )
-                    self._reporter.on_test_result(name, _judged(test, result))
-                    self._report_late(self._findings)
-                    self._test_index += 1
-                    # A stop for repeated errors came first, in the test: it is the reason.
-                    if self._stopped is None:
-                        self._check_ceiling(name)
-                    if self._stopped is not None:
-                        break
-                if self._stopped is not None:
-                    break
+            if self._parallel:
+                self._run_parallel(spec)
+            else:
+                self._run_in_order(spec)
             if self._executions:
                 # The last test has no next one whose read would show its late calls, and
                 # one that checks only the reply still spent what a late `turn` reports.
@@ -653,6 +738,190 @@ class TestRunner:
         summary = self.snapshot()
         self._reporter.on_run_end(summary)
         return summary
+
+    def _run_in_order(self, spec: Spec) -> None:
+        """Each test after the one before it, as --jobs 1 runs them."""
+        for suite in spec.suites:
+            self._reporter.on_suite_start(suite)
+            for test in suite.tests:
+                self._last_variation_count = None
+                result = self._run_test(test)
+                own = [f for f in self._findings if f.execution.test_index == self._test_index]
+                # The rest stay in self._findings until applied: an interrupt can land
+                # on any line below, and _settle must still find them.
+                self._findings = [f for f in self._findings if f not in own]
+                # A run's late call lands in the next run's read: it is part of this
+                # test's result, not news about a reported one.
+                result = self._with_findings(self._test_index, result, own)
+                name = _test_name(test, self._last_variation_count)
+                self._reported[self._test_index] = _Reported(
+                    suite.name, test, name, result.status, result.duration_ms, [*result.errors]
+                )
+                self._reporter.on_test_result(name, _judged(test, result))
+                self._report_late(self._findings)
+                self._test_index += 1
+                # A stop for repeated errors came first, in the test: it is the reason.
+                if self._stopped is None:
+                    self._check_ceiling(name)
+                if self._stopped is not None:
+                    return
+
+    def _run_parallel(self, spec: Spec) -> None:
+        """Up to --jobs tests in flight at once, started in spec order (HB-8).
+
+        Each worker runs whole tests, holding the lock but for the send and the wait. The
+        results reach the reporter in spec order. A stop (--max-cost, --max-errors) starts
+        no more tests; Ctrl-C does the same, then waits for the sends in flight, within
+        agent.timeout. The workers are daemon threads: the signal handlers stay here.
+        """
+        self._suites = list(spec.suites)
+        self._plan = [
+            (number, suite, test)
+            for number, suite in enumerate(spec.suites)
+            for test in suite.tests
+        ]
+        self._suites_told, self._next, self._flushed = 0, 0, 0
+        self._in_flight, self._done = set(), {}
+        workers = [
+            threading.Thread(target=self._work, name=f"highbar-job-{n + 1}", daemon=True)
+            for n in range(min(self._jobs, len(self._plan)))
+        ]
+        self._workers_left = len(workers)
+        try:
+            for worker in workers:
+                worker.start()
+            with self._lock:
+                while self._workers_left:
+                    self._turn.wait(0.1)
+        except BaseException:
+            self._stop_workers(workers)
+            raise
+        if self._crash is not None:
+            raise self._crash
+        if self._stopped is None and self._ceiling is None:
+            # Suites with no test are told too, as a run in order tells them.
+            self._tell_suites(len(self._suites) - 1)
+        self._test_index = self._flushed
+
+    def _work(self) -> None:
+        """One worker: the next test of the plan, until there is none or the run stops."""
+        with self._lock:
+            try:
+                while (index := self._dispatch()) is not None:
+                    _, _, test = self._plan[index]
+                    self._test_index = index
+                    self._last_variation_count = None
+                    result = self._run_test(test)
+                    self._in_flight.discard(index)
+                    name = _test_name(test, self._last_variation_count)
+                    self._done[index] = (name, result)
+                    self._note_ceiling(name)
+                    self._flush()
+            except BaseException as e:
+                # Told on the main thread, after the other workers end.
+                if self._crash is None:
+                    self._crash = e
+            finally:
+                self._workers_left -= 1
+                self._turn.notify_all()
+
+    def _dispatch(self) -> int | None:
+        """The next test to start, or None: none left, or the run stops."""
+        stopping = (
+            self._stopped is not None
+            or self._ceiling is not None
+            or self._interrupting
+            or self._crash is not None
+        )
+        if stopping or self._next >= len(self._plan):
+            return None
+        index, self._next = self._next, self._next + 1
+        self._in_flight.add(index)
+        return index
+
+    def _note_ceiling(self, name: str) -> None:
+        """--max-cost with --jobs: past it, no test starts, and the ones in flight end (D4)."""
+        if self._max_cost is None or self._ceiling is not None or self._stopped is not None:
+            return
+        over = over_limit(self._costs(), self._max_cost)
+        if over:
+            spent = f"{_amounts(over)}{self._untagged_share(over)}"
+            self._ceiling = _Ceiling(name, spent, len(self._in_flight))
+
+    def _flush(self) -> None:
+        """Tell the reporter each finished test whose tests before it were told."""
+        while self._flushed in self._done:
+            self._tell(self._flushed)
+            self._flushed += 1
+        self._report_reported()
+
+    def _tell(self, index: int) -> None:
+        number, suite, test = self._plan[index]
+        self._tell_suites(number)
+        name, result = self._done.pop(index)
+        own = [f for f in self._findings if f.execution.test_index == index]
+        self._findings = [f for f in self._findings if f not in own]
+        result = self._with_findings(index, result, own)
+        self._reported[index] = _Reported(
+            suite.name, test, name, result.status, result.duration_ms, [*result.errors]
+        )
+        self._reporter.on_test_result(name, _judged(test, result))
+
+    def _tell_suites(self, number: int) -> None:
+        while self._suites_told <= number:
+            self._reporter.on_suite_start(self._suites[self._suites_told])
+            self._suites_told += 1
+
+    def _report_reported(self) -> None:
+        """What reads found about told tests; the rest waits for its test to be told."""
+        told = [f for f in self._findings if f.execution.test_index in self._reported]
+        rest = [f for f in self._findings if f.execution.test_index not in self._reported]
+        if told:
+            self._report_late(told)
+        self._findings = rest
+
+    def _stop_workers(self, workers: list[threading.Thread]) -> None:
+        """A signal: no test starts, the sends in flight get agent.timeout to end, and the
+        tests that ended with a verdict are told. The lock is kept from then on: a worker
+        still waiting for its reply changes nothing after this."""
+        self._interrupting = True
+        seconds = self._hook_timeout if self._hook_timeout is not None else 30.0
+        flying = len(self._in_flight)
+        if flying:
+            tests = "1 test" if flying == 1 else f"{flying} tests"
+            signals.say(
+                f"Waiting for the {tests} in flight to get a reply (at most {seconds:g}s, "
+                "agent.timeout), then stopping."
+            )
+        deadline = time.monotonic() + seconds
+        try:
+            for worker in workers:
+                worker.join(max(0.0, deadline - time.monotonic()))
+            sealed = self._lock.acquire(timeout=max(0.1, deadline - time.monotonic()))
+        except BaseException:
+            # A second signal: stop waiting.
+            return
+        if not sealed:
+            return
+        for index in sorted(self._done):
+            gate = self._gates.get(index)
+            if gate is None or not gate.interrupted:
+                self._tell(index)
+        self._report_reported()
+
+    def _with_findings(self, index: int, result: TestResult, own: list[_Finding]) -> TestResult:
+        """``result`` with what reads found about its own executions before it was told."""
+        if not own:
+            return result
+        gate = self._gates[index]
+        for finding in own:
+            gate.demote(finding)
+        return replace(
+            result,
+            status=gate.status,
+            counts=gate.counts,
+            errors=[*result.errors, *(gate.describe(f) for f in own)],
+        )
 
     def snapshot(self) -> RunSummary:
         """Where the run stands: all of it once ``run()`` returned, or what finished.
@@ -869,7 +1138,15 @@ class TestRunner:
         """The last execution besides ``execution`` whose window was read: what comes next
         may be its late records. One that read none already ended unverified, and stopping
         at it would let the test before it pass on records nobody checked it against."""
-        return next((e for e in reversed(self._executions) if e.read and e is not execution), None)
+        return next(
+            (
+                e
+                for e in reversed(self._executions)
+                # With --jobs, one still in flight gets the records it may own in its window.
+                if e.read and e is not execution and e.held is None
+            ),
+            None,
+        )
 
     def _read(self) -> tuple[Window, str | None]:
         """The records written since the cursor, and why a line among them cannot be read.
@@ -951,6 +1228,84 @@ class TestRunner:
             self._findings.append(_Finding(last, Status.ERROR, unreadable))
         # The last look at the agent: gone by now, it may have been gone all along.
         self._look_at_agent()
+
+    def _distribute(
+        self, window: Window, reader: _Execution, unreadable: str | None
+    ) -> tuple[Window, Window, str | None]:
+        """--jobs: the records of a read, each for the execution it names (HB-8).
+
+        A record of another execution in flight is kept for it, as if it had read it.
+        One with no context could be any of theirs: it stays in this window and is
+        shared with each of them, and so is a line that cannot be read. Returns this
+        execution's window, what the reads before shared with it, and why a line it
+        read, or was shared, cannot be read.
+        """
+        flying = [e for e in self._executions if e.held is not None and e is not reader]
+        held = reader.held or _Held()
+        reader.held = _Held()  # emptied: what comes from now on waits for its next read
+        own = held.tagged
+        mine = Window(
+            tools=[*own.tools],
+            turns=[*own.turns],
+            llms=[*own.llms],
+            retrievals=[*own.retrievals],
+            hellos=window.hellos,
+            declarations=window.declarations,
+            end=window.end,
+        )
+        parts: list[tuple[list[Any], Callable[[Window], list[Any]]]] = [
+            (window.tools, lambda w: w.tools),
+            (window.turns, lambda w: w.turns),
+            (window.llms, lambda w: w.llms),
+            (window.retrievals, lambda w: w.retrievals),
+        ]
+        for records, kind in parts:
+            for record in records:
+                context: Mapping[str, Any] = record.context
+                owner = next(
+                    (e for e in flying if attribute(context, e.correlate) is Attribution.MINE),
+                    None,
+                )
+                if owner is not None:
+                    assert owner.held is not None
+                    kind(owner.held.tagged).append(record)
+                    continue
+                kind(mine).append(record)
+                if attribute(context, reader.correlate) is not Attribution.UNATTRIBUTED:
+                    continue
+                for other in flying:
+                    if attribute(context, other.correlate) is Attribution.UNATTRIBUTED:
+                        assert other.held is not None
+                        kind(other.held.untagged).append(record)
+        if unreadable is not None:
+            for other in flying:
+                assert other.held is not None
+                other.held.unreadable.append(unreadable)
+        return mine, held.untagged, unreadable or next(iter(held.unreadable), None)
+
+    def _release(self, execution: _Execution) -> None:
+        """--jobs: an execution ends. What other reads kept for it since its last read
+        counts as late, as it would in the read after its window (HB-8)."""
+        held, execution.held = execution.held, None
+        if held is None:
+            return
+        tagged = held.tagged
+        self._judge_late(tagged.tools, current=None)
+        self._judge_late_usage(tagged.turns, current=None)
+        self._judge_late_records(tagged.llms, tagged.retrievals, current=None)
+        untagged = classify(held.untagged, execution.correlate).unattributed
+        self._suspect(execution, untagged.tools)
+        stray = self._read_usage(untagged.turns)
+        if stray and execution.turns:
+            execution.turns[-1].untagged.extend(stray)
+            check = self._budgets_of(execution)
+            if execution.passed and check.unverified:
+                execution.passed = False
+                self._findings.append(
+                    _Finding(execution, Status.ERROR, "; ".join(check.unverified))
+                )
+        for error in held.unreadable[:1]:
+            self._suspect_unreadable(execution, error)
 
     def _untagged(self, tools: list[Trace], execution: _Execution) -> list[Trace]:
         return [
@@ -1341,6 +1696,9 @@ class TestRunner:
         """
         if self._max_cost is None:
             return
+        if self._ceiling is not None:
+            self._stop_after_flight(self._ceiling)
+            return
         over = over_limit(self._costs(), self._max_cost)
         if over:
             self._stop_reason = BUDGET_EXCEEDED
@@ -1349,6 +1707,30 @@ class TestRunner:
                 f"{self._untagged_share(over)} by the end of '{last_test}', so it stopped "
                 "there; raise the ceiling to run the rest"
             )
+
+    def _stop_after_flight(self, ceiling: _Ceiling) -> None:
+        """--max-cost with --jobs, once the tests in flight ended: what they spent past the
+        ceiling is said, never passed in silence (D4)."""
+        assert self._max_cost is not None
+        self._stop_reason = BUDGET_EXCEEDED
+        head = (
+            f"--max-cost {amount(self._max_cost)}: the run spent {ceiling.spent} by the end "
+            f"of '{ceiling.test}', so it"
+        )
+        if not ceiling.in_flight:
+            self._stopped = f"{head} stopped there; raise the ceiling to run the rest"
+            return
+        over = over_limit(self._costs(), self._max_cost)
+        past = {
+            name: add_costs({name: cost}, {name: -self._max_cost})[name]
+            for name, cost in over.items()
+        }
+        tests = "1 test" if ceiling.in_flight == 1 else f"{ceiling.in_flight} tests"
+        self._stopped = (
+            f"{head} started no more tests; the {tests} in flight then finished, and the run "
+            f"spent {_amounts(over)} in all, {_amounts(past)} over the ceiling; raise the "
+            "ceiling to run the rest"
+        )
 
     def _tally(self, execution: _Execution, result: TestResult, name: str) -> None:
         """After each execution: --max-errors of them in a row that failed for one cause
@@ -1363,7 +1745,8 @@ class TestRunner:
             return
         cause = execution.cause if result.status is Status.ERROR else None
         count = self._streak.add(cause)
-        if cause is not None and count >= self._max_errors:
+        # With --jobs, a test in flight can end one more after the stop: the first says why.
+        if cause is not None and count >= self._max_errors and self._stopped is None:
             self._stop_reason = REPEATED_ERRORS
             self._stopped = stop_message(count, cause, name)
 
@@ -1549,8 +1932,10 @@ class TestRunner:
                 )
                 results.append(result)
                 ran.append(result.status)
-                self._tally(self._executions[-1], result, name)
-                if self._stopped is not None:
+                execution = self._local.execution
+                assert execution is not None
+                self._tally(execution, result, name)
+                if self._stopped is not None or self._interrupting:
                     break
             passed = sum(1 for r in results if r.passed)
             errors.extend(label + error for error in _merged_errors(results, self._conditions))
@@ -1558,7 +1943,7 @@ class TestRunner:
                 errors.append(f"{label}{passed}/{len(results)} runs passed (min {min_pass})")
             for r in results:
                 traces.extend(r.traces)
-            if self._stopped is not None:
+            if self._stopped is not None or self._interrupting:
                 break
 
         done, planned = sum(len(statuses) for statuses in gate.runs), runs * len(phrasings)
@@ -1645,10 +2030,12 @@ class TestRunner:
             budget=budget,
         )
         self._executions.append(execution)
+        self._local.execution = execution
         session: dict[str, Any] = {}
         if self._session is not None:
             try:
-                session = self._session.setup(context)
+                with self._unlocked():
+                    session = self._session.setup(context)
             except Exception as e:
                 # No session, so nothing to tear down, and nothing was sent.
                 return execution.close(
@@ -1663,11 +2050,13 @@ class TestRunner:
         finally:
             if self._session is not None:
                 try:
-                    self._session.teardown(context, session)
+                    with self._unlocked():
+                        self._session.teardown(context, session)
                 except Exception as e:
                     # The test's result stands; a session left open is worth knowing.
                     reason = str(e) if isinstance(e, SessionError) else f"{type(e).__name__}: {e}"
                     self._warn(f"{name}: session teardown failed: {reason}")
+            self._release(execution)
 
     def _turns(
         self,
@@ -1778,10 +2167,14 @@ class TestRunner:
             )
 
         sent_at = time.time()
+        if self._parallel and execution.held is None:
+            # In flight from here: what other reads take in for it is kept for it.
+            execution.held = _Held()
         try:
-            response = self._client.send(
-                resolved_trigger, values=replace(values, message=resolved_trigger)
-            )
+            with self._unlocked():
+                response = self._client.send(
+                    resolved_trigger, values=replace(values, message=resolved_trigger)
+                )
         except AgentResponseError as e:
             # A failure of the transport or of HTTP is what --max-errors counts (HB-34).
             execution.cause = e.cause
@@ -1793,14 +2186,26 @@ class TestRunner:
             return unverified(f"HTTP error: {e}")
         log.response, log.response_ms = response, (time.time() - sent_at) * 1000
 
-        time.sleep(self._settle_time)
+        with self._unlocked():
+            time.sleep(self._settle_time)
         window, unreadable = self._read()
         self._cursor = window.end
         execution.read = True
         self._absorb(window)
+        shared = Window()
+        if self._parallel:
+            window, shared, unreadable = self._distribute(window, execution, unreadable)
         previous = self._last_read(execution)
         result = self._verdict(
-            window, response, expect, execution, log, previous, start, observes=observes
+            window,
+            response,
+            expect,
+            execution,
+            log,
+            previous,
+            start,
+            observes=observes,
+            shared=shared,
         )
         if expect.check is not None and result.status is not Status.ERROR:
             result = self._run_check(expect.check, result, execution, log, values, response)
@@ -1827,22 +2232,30 @@ class TestRunner:
         start: float,
         *,
         observes: bool,
+        shared: Window | None = None,
     ) -> TestResult:
-        """What ``window`` says of this turn: its records counted, and it checked against them."""
+        """What ``window`` says of this turn: its records counted, and it checked against them.
+
+        ``shared`` (--jobs) holds the untagged records other reads took in while this turn
+        was in flight: they may be its own, as the untagged ones in ``window`` may be.
+        """
 
         def unverified(error: str) -> TestResult:
             duration = (time.time() - start) * 1000
             return TestResult(status=Status.ERROR, errors=[error], duration_ms=duration)
 
         classified = classify(window, execution.correlate)
+        # What other reads shared with this one: only what has none of its keys either.
+        shared = classify(shared or Window(), execution.correlate).unattributed
         untagged = classified.unattributed.tools
-        if untagged and classified.correlated:
+        if (untagged or shared.tools) and (classified.correlated or self._parallel):
             self._warn_once(UNATTRIBUTED_WARNING, execution.correlate)
         elif untagged and (self._managed or not observes):
             # An attached test that checks tool calls errors instead, and says why (FR2).
             self._warn_once(NO_CONTEXT_WARNING, execution.correlate)
 
-        if not classified.correlated:
+        # With --jobs, nothing counts on faith: several tests are in flight (HB-8).
+        if not classified.correlated and not self._parallel:
             stray = self._read_usage(window.turns)
             self._suspect_window(previous, stray, execution.correlate)
             if observes and not self._managed:
@@ -1873,9 +2286,16 @@ class TestRunner:
             self._suspect(previous, untagged)
             log.untagged = self._read_usage(classified.unattributed.turns)
             self._suspect_usage(previous, log.untagged, execution.correlate)
+            # Shared, it is already in the run's spend once, from the read that took it in.
+            log.untagged += self._read_usage(shared.turns)
+            untagged = [*untagged, *shared.tools]
             mine = classified.mine
             seen = mine.tools or mine.turns or mine.llms or mine.retrievals
             if observes and not seen:
+                if self._parallel and (
+                    _any_record(classified.unattributed, shared) or not classified.correlated
+                ):
+                    return unverified(JOBS_NOT_OBSERVED.format(hint=_tag_hint(execution.correlate)))
                 return unverified(self._not_observed(classified, execution.correlate))
             traces = classified.mine.tools
             llms, retrievals = classified.mine.llms, classified.mine.retrievals
