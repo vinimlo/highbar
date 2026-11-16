@@ -203,7 +203,7 @@ The mapping is versioned in highbar's code (`OTLP_MAPPING_VERSION`, now `0`). It
 | `args` | `gen_ai.tool.call.arguments`, a JSON object (as text or as a map) | `input.value` |
 | `result` | `gen_ai.tool.call.result`; text that is JSON is parsed | `output.value` |
 | `error` | status `ERROR` (its message), or `error.type` | the same |
-| `started_at`, `ended_at` | `startTimeUnixNano`, `endTimeUnixNano` | the same |
+| `started_at`, `ended_at` | `startTimeUnixNano`, `endTimeUnixNano`; unknown when missing, never 0 | the same |
 | a `turn` record | `gen_ai.operation.name` = `invoke_agent` | `openinference.span.kind` = `AGENT` |
 | `response` | the text parts of the last assistant message in `gen_ai.output.messages` | `output.value` |
 | `usage.input_tokens`, `output_tokens` | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | `llm.token_count.prompt`, `llm.token_count.completion` |
@@ -211,7 +211,9 @@ The mapping is versioned in highbar's code (`OTLP_MAPPING_VERSION`, now `0`). It
 | `usage.provider` | `gen_ai.provider.name`, else `gen_ai.system` | `llm.provider` |
 | `context.test` | the span's `traceId` | the same |
 
-Each message highbar sends carries a W3C `traceparent` whose trace id is the test execution's id, so `context.test` is the test a span belongs to. A tool span without arguments was exported with content capture off: a `params` check on it is an `error`, and so is a `returns` check on one without a result. `chat` and `LLM` spans (the `llm` record) and `RETRIEVER` spans (the `retrieval` record) are not read in version 0, and nothing in an OTLP file declares tools.
+Each message highbar sends carries a W3C `traceparent` whose trace id is the test execution's id, so `context.test` is the test a span belongs to. A span whose trace id highbar did not send in the run (a tool run in a worker that started a new root trace) has no test context: it is an untagged record, and every test it would change is an `error`. A tool span without arguments was exported with content capture off: a `params` check on it is an `error`, and so is a `returns` check on one without a result, and an `ordered` check on a span without its times. `chat` and `LLM` spans (the `llm` record) and `RETRIEVER` spans (the `retrieval` record) are not read in version 0.
+
+Nothing in an OTLP file declares tools: the spec lists them in `agent.traces.tools`, which takes the place of the `tools` record. Without it, a test whose pass rests on the absence of a span (`forbid`, `function_calls: []`, `exclusive`) is an `error`. See [list the tools](/guides/opentelemetry#list-the-tools).
 
 ## A reference emitter
 
