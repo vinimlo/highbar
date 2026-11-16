@@ -447,6 +447,53 @@ def variations(
 
 
 @app.command()
+def compare(
+    base: Annotated[
+        list[str],
+        typer.Option("--base", help="A JSON report, or a folder of them: each one is a round."),
+    ],
+    head: Annotated[
+        list[str],
+        typer.Option("--head", help="The same, for the side under test."),
+    ],
+    fail_on_regression: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-regression",
+            help=(
+                "Exit 1 when a test is worse: Holm p under 0.05, "
+                "2+ rounds a side, rounds that agree."
+            ),
+        ),
+    ] = False,
+    report: Annotated[
+        str | None,
+        typer.Option("--report", help="json=FILE: the comparison as JSON, for CI."),
+    ] = None,
+) -> None:
+    """Compare two groups of runs (--report json= files) test by test."""
+    # Imported here, so `run` does not load what only `compare` uses.
+    from highbar.compare.core import CompareError
+    from highbar.compare.core import compare as compare_rounds
+    from highbar.compare.output import load_side, render, write_json
+
+    if report is not None and not report.startswith("json="):
+        console.print("[red]--report takes json=FILE for compare.[/red]")
+        raise typer.Exit(EXIT_UNRUNNABLE)
+    try:
+        seen: dict[str, Path] = {}
+        rows = compare_rounds(load_side(base, seen), load_side(head, seen))
+    except CompareError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(EXIT_UNRUNNABLE) from exc
+    render(rows, console)
+    if report is not None:
+        write_json(report.removeprefix("json="), rows, base, head)
+    worse = any(row.verdict == "worse" for row in rows)
+    raise typer.Exit(EXIT_FAILED if fail_on_regression and worse else EXIT_OK)
+
+
+@app.command()
 def validate(
     spec_path: str = typer.Argument(
         default="",
