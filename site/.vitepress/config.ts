@@ -42,6 +42,7 @@ export default defineConfig({
           { text: 'Variations', link: '/guides/variations' },
           { text: 'Repetition and CI gates', link: '/guides/repetition' },
           { text: 'Comparing two configurations', link: '/guides/comparing' },
+          { text: 'Exporting results', link: '/guides/exporting-results' },
           { text: 'Troubleshooting', link: '/guides/troubleshooting' },
         ],
       },
