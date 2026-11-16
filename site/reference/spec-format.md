@@ -27,6 +27,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `session` | mapping | none | `setup` and `teardown` hooks, each a command, `{python: "module:function"}` or `{http: {url, method, headers, body}}`. |
 | `run` | mapping | none | `setup` and `teardown` hooks that run once per spec: the `setup` before the agent starts, the `teardown` on every way out after it. The same three kinds as `session`, with no test's placeholder; what the `setup` returns is <code v-pre>{{run.&lt;path&gt;}}</code>. See [before and after the run](/guides/attach-mode#before-and-after-the-run). |
 | `correlate` | mapping | <code v-pre>{test: "{{test.id}}"}</code> | The context keys that link a trace record to a test. |
+| `llm_proxy` | boolean | `false` | Count the agent's model calls at the source: highbar puts a proxy between the agent and its provider, and what the proxy reads is the usage budgets and `--max-cost` hold. Only with `start`. See [usage counted at the source](#usage-counted-at-the-source-agent-llm-proxy). |
 
 `${NAME}` anywhere under `agent` is replaced by the environment variable when the spec is loaded; a missing variable is an error. A value in `request`, `session`, `run` or a URL's password, query or fragment is masked in the output; the `traces` path, `start` and a URL's host and path are shown ([which values are masked](/guides/attach-mode)). Placeholders (<code v-pre>{{message}}</code>, <code v-pre>{{test.id}}</code>, <code v-pre>{{test.name}}</code>, <code v-pre>{{test.args.&lt;path&gt;}}</code>, <code v-pre>{{session.&lt;path&gt;}}</code>, <code v-pre>{{run.&lt;path&gt;}}</code>) are allowed in `request`, `correlate`, session commands and the URL, headers and body of a session's HTTP hook; the `run` teardown takes only <code v-pre>{{run.&lt;path&gt;}}</code>, and the `run` setup none. See [attach mode and sessions](/guides/attach-mode).
 
@@ -118,6 +119,32 @@ A limit on a turn covers the records read in that turn's window. Records carry n
 `max_cost` has no currency of its own. A sum in any currency above it fails the budget; costs in more than one currency that are all within it end in `error`, because they do not add up to one number. A cost without a `currency` counts as missing. The agent's cost and the price table are in the [trace contract](/reference/trace-contract#usage-tokens-and-cost).
 
 A budget needs the turn's record, so it counts as a check on what the agent recorded: in attach mode it needs `agent.traces`, and a test with one needs a record of its own, like a test that checks tool calls.
+
+### Usage counted at the source: `agent.llm_proxy`
+
+A budget and `--max-cost` hold what the agent writes in its `turn` records. An agent that leaves a call out, or reports `cost: 0` for a key it brings itself, passes a budget it went over. With `llm_proxy: true`, highbar counts the calls itself:
+
+```yaml agent
+agent:
+  start: "python agent.py"
+  endpoint: "http://127.0.0.1:8000/chat"
+  llm_proxy: true
+```
+
+highbar starts a proxy on a free local port before the agent, and starts the agent with `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL` pointing at it. The official SDKs, and most clients built on them, read those variables. Each request goes on to where the agent would have sent it (the variable's value before highbar set it, or the provider's own URL), with its key untouched, and the reply comes back as the provider sent it. On the way, the proxy reads the usage of each model call: OpenAI-compatible `chat/completions` and `responses` (OpenRouter, DeepSeek and local servers included) and Anthropic `messages`, streamed or not. It writes one `llm` record per call to the trace file ([the proxy's records](/reference/trace-contract#records-from-highbar-s-llm-proxy)). It never logs a header or a body.
+
+| What happened | Result |
+|---|---|
+| The proxy read the turn's model calls. | Their tokens are the turn's usage, and their cost: the provider's own (OpenRouter's `usage.cost`), or the price table's on the model the reply names. A `cost` the agent writes, `0` included, no longer counts. The agent's `usage` is shown in the report as `agent_usage`, and not added. |
+| The agent's `turn` reports more tokens than the proxy saw. | A call went around the proxy. A warning names the test, and the larger count holds. |
+| A model call whose usage the proxy could not read: a stream that ended without it, an error reply, a provider it could not reach. | `error` for the test's budget and for `--max-cost`, never zero tokens. |
+| A call that is not a model call, like a list of the models. | Passed through, and not read: a warning says so, and it counts for no budget. |
+| A turn with no model call through the proxy. | Its own `usage` counts, as without the proxy. |
+| The proxy could not write a record to the trace file. | Every test of the run with a budget, or with `--max-cost`, is an `error`. |
+
+A model name with a snapshot date that the price table does not list, like `gpt-4.1-2025-04-14` or `claude-sonnet-4-5-20250929`, is priced as the model without its date.
+
+Tests run one at a time with it: the agent's calls carry no test id, so a call belongs to the test in flight when the proxy saw it, and `--jobs` above 1 exits with code 2. `expect.llm` still checks the agent's own `llm` records, not the proxy's. In attach mode the agent's environment is not highbar's to set, and the agent may serve others, so `llm_proxy` there is an error in the spec.
 
 ## `function_calls[]`
 
