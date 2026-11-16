@@ -259,3 +259,18 @@ def test_review_73_a_boolean_operand_on_an_error_does_not_load(tmp_path: Path, e
 def test_review_73_a_text_operand_on_an_error_still_loads(tmp_path: Path) -> None:
     call = parse_spec(_spec_with_error(tmp_path, '{contains: "Timeout"}')).suites[0].tests[0]
     assert call.expect.function_calls[0].error == {"contains": "Timeout"}  # type: ignore[index]
+
+
+@pytest.mark.parametrize("error", ["{equals: 1}", "{equals: [a]}", "{equals: {a: 1}}"])
+def test_review_78_an_error_equals_that_is_not_text_does_not_load(
+    tmp_path: Path, error: str
+) -> None:
+    # An error is text: equals anything else could never hold.
+    with pytest.raises(SpecError, match="is not text"):
+        parse_spec(_spec_with_error(tmp_path, error))
+
+
+def test_review_78_contains_a_number_on_an_error_still_loads(tmp_path: Path) -> None:
+    # contains reads its operand as text, so 404 is "404": it can hold.
+    test = parse_spec(_spec_with_error(tmp_path, "{contains: 404}")).suites[0].tests[0]
+    assert test.expect.function_calls[0].error == {"contains": 404}  # type: ignore[index]
