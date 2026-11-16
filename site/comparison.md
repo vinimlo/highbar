@@ -13,7 +13,7 @@ Every statement about another tool links to its documentation, read on 2026-10-2
 | LLM-graded checks | No | Yes | Yes | Yes | Yes |
 | How it reaches the agent | HTTP to a running agent, which writes a trace file | Providers: model APIs, an HTTP endpoint, scripts, agent SDKs; trajectories from OpenTelemetry spans | The agent as a Python function, instrumented with `@observe` | Traces from production; experiments run your `task` function | Runs the model and its tools itself; other agent frameworks through its agent bridge |
 | Repetition | `runs` and `min_pass` per test | `--repeat`, and a pass-rate threshold for the whole eval | `-r N`, a threshold per metric | Not found in its docs | `--epochs`, with reducers like `at_least_n` and `pass_at_k` |
-| CI gate | Exit codes 0, 1, 2, 3 | Exit code 100 on failure; a GitHub Action that comments on PRs | `deepeval test run` fails the build | `langfuse/experiment-action` | Check the eval log in a script |
+| CI gate | Exit codes 0, 1, 2, 3, 4 | Exit code 100 on failure; a GitHub Action that comments on PRs | `deepeval test run` fails the build | `langfuse/experiment-action` | Check the eval log in a script |
 | Needs a server or account | No | No | No (a hosted platform is optional) | A Langfuse instance and API keys | No |
 | License | MIT | MIT | Apache 2.0 | MIT, except `ee` folders | MIT |
 

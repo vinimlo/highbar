@@ -28,5 +28,5 @@ features:
   - title: Any language
     details: A Python SDK records tools with a decorator. Any other agent writes the trace contract, one JSON line per call.
   - title: Made for CI
-    details: Exit codes 0, 1, 2 and 3. A failure says what the agent did instead.
+    details: Exit codes 0, 1, 2, 3 and 4. A failure says what the agent did instead.
 ---
