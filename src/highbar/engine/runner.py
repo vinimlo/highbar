@@ -827,11 +827,20 @@ class TestRunner:
         """A test highbar itself failed on is an error, and the tests after it are told
         (review of #95): what ran of it is no verdict."""
         self._in_flight.discard(index)
+        message = f"highbar failed while running this test: {type(error).__name__}: {error}"
         gate = self._gates.get(index)
         if gate is not None:
             gate.interrupted = True
+            # The execution it failed in has a status too, or the report could not show it.
+            execution = self._local.execution
+            if execution is not None and execution.test_index == index:
+                runs = (
+                    gate.runs[execution.phrasing] if execution.phrasing < len(gate.runs) else None
+                )
+                if runs is not None and len(runs) == execution.run:
+                    runs.append(Status.ERROR)
+                    execution.errors = [message]
         _, _, test = self._plan[index]
-        message = f"highbar failed while running this test: {type(error).__name__}: {error}"
         result = TestResult(status=Status.ERROR, errors=[message], duration_ms=0.0)
         self._done[index] = (_test_name(test, self._last_variation_count), result)
         # The first failure is the one raised; the report keeps what was told.
