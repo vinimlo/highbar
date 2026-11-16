@@ -27,7 +27,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `session` | mapping | none | `setup` and `teardown` hooks, each a command, `{python: "module:function"}` or `{http: {url, method, headers, body}}`. |
 | `run` | mapping | none | `setup` and `teardown` hooks that run once per spec: the `setup` before the agent starts, the `teardown` on every way out after it. The same three kinds as `session`, with no test's placeholder; what the `setup` returns is <code v-pre>{{run.&lt;path&gt;}}</code>. See [before and after the run](/guides/attach-mode#before-and-after-the-run). |
 | `correlate` | mapping | <code v-pre>{test: "{{test.id}}"}</code> | The context keys that link a trace record to a test. |
-| `llm_proxy` | boolean | `false` | Count the agent's model calls at the source: highbar puts a proxy between the agent and its provider, and what the proxy reads is the usage budgets and `--max-cost` hold. Only with `start`. See [usage counted at the source](#usage-counted-at-the-source-agent-llm-proxy). |
+| `llm_proxy` | boolean or mapping | `false` | Count the agent's model calls at the source: highbar puts a proxy between the agent and its provider, and what the proxy reads is the usage budgets and `--max-cost` hold. A mapping, `{openai: <url>, anthropic: <url>}`, also says where each provider's calls go. Only with `start`. See [usage counted at the source](#usage-counted-at-the-source-agent-llm-proxy). |
 
 `${NAME}` anywhere under `agent` is replaced by the environment variable when the spec is loaded; a missing variable is an error. A value in `request`, `session`, `run` or a URL's password, query or fragment is masked in the output; the `traces` path, `start` and a URL's host and path are shown ([which values are masked](/guides/attach-mode)). Placeholders (<code v-pre>{{message}}</code>, <code v-pre>{{test.id}}</code>, <code v-pre>{{test.name}}</code>, <code v-pre>{{test.args.&lt;path&gt;}}</code>, <code v-pre>{{session.&lt;path&gt;}}</code>, <code v-pre>{{run.&lt;path&gt;}}</code>) are allowed in `request`, `correlate`, session commands and the URL, headers and body of a session's HTTP hook; the `run` teardown takes only <code v-pre>{{run.&lt;path&gt;}}</code>, and the `run` setup none. See [attach mode and sessions](/guides/attach-mode).
 
@@ -131,13 +131,28 @@ agent:
   llm_proxy: true
 ```
 
-highbar starts a proxy on a free local port before the agent, and starts the agent with `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL` pointing at it. The official SDKs, and most clients built on them, read those variables. Each request goes on to where the agent would have sent it (the variable's value before highbar set it, or the provider's own URL), with its key untouched, and the reply comes back as the provider sent it. On the way, the proxy reads the usage of each model call: OpenAI-compatible `chat/completions` and `responses` (OpenRouter, DeepSeek and local servers included) and Anthropic `messages`, streamed or not. It writes one `llm` record per call to the trace file ([the proxy's records](/reference/trace-contract#records-from-highbar-s-llm-proxy)). It never logs a header or a body.
+highbar starts a proxy on a free local port before the agent, and starts the agent with `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL` pointing at it. The official SDKs, and most clients built on them, read those variables. Each request goes on to where the agent would have sent it (the variable's value in highbar's environment before it set it, or the provider's own URL), with its key untouched, and the reply comes back as the provider sent it.
+
+An agent that keeps its base URL in a `.env` file of its own, read when it starts, has none in highbar's environment, so its calls would go to the provider's own URL. Give the upstream in the spec instead, for one provider or both:
+
+```yaml agent
+agent:
+  start: "python agent.py"
+  endpoint: "http://127.0.0.1:8000/chat"
+  llm_proxy:
+    openai: "https://openrouter.ai/api/v1"
+```
+
+An agent that loads its `.env` with `override=True` replaces highbar's `OPENAI_BASE_URL` with its own, and its calls go around the proxy: the warning that a call went around it, or that none went through, says so. On the way, the proxy reads the usage of each model call: OpenAI-compatible `chat/completions` and `responses` (OpenRouter, DeepSeek and local servers included) and Anthropic `messages`, streamed or not. It writes one `llm` record per call to the trace file ([the proxy's records](/reference/trace-contract#records-from-highbar-s-llm-proxy)). It never logs a header or a body.
 
 | What happened | Result |
 |---|---|
-| The proxy read the turn's model calls. | Their tokens are the turn's usage, and their cost: the provider's own (OpenRouter's `usage.cost`), or the price table's on the model the reply names. A `cost` the agent writes, `0` included, no longer counts. The agent's `usage` is shown in the report as `agent_usage`, and not added. |
+| The proxy read the turn's model calls. | Their tokens are the turn's usage, and their cost: the provider's own (OpenRouter's `usage.cost`), or the price table's on the model the reply names. The agent's `usage` is shown in the report as `agent_usage`, and not added. |
+| The agent's `cost` is more than the proxy's. | The larger holds. A `cost: 0`, or any cost below the proxy's, never lowers it. |
+| The proxy cannot price a call (a deployment name, a model of your own, one newer than the table). | The agent's `cost` is a lower bound: over `max_cost` or `--max-cost` the budget fails and the run stops, as without the proxy. Under it, the cost is incomplete, and a `max_cost` is an `error`. |
+| The provider rejected a call with a 4xx and no usage, like a 429 the SDK then retried. | It used nothing: zero tokens, no cost, and its `error` in the record. A 5xx may have run the model, so it is a call the proxy could not read. |
 | The agent's `turn` reports more tokens than the proxy saw. | A call went around the proxy. A warning names the test, and the larger count holds. |
-| A model call whose usage the proxy could not read: a stream that ended without it, an error reply, a provider it could not reach. | `error` for the test's budget and for `--max-cost`, never zero tokens. |
+| A model call whose usage the proxy could not read: a stream that ended without it, a 5xx, a reply cut off, a provider it could not reach. | `error` for the test's budget and for `--max-cost`, never zero tokens. |
 | A call that is not a model call, like a list of the models. | Passed through, and not read: a warning says so, and it counts for no budget. |
 | A turn with no model call through the proxy. | Its own `usage` counts, as without the proxy. |
 | The proxy could not write a record to the trace file. | Every test of the run with a budget, or with `--max-cost`, is an `error`. |
