@@ -107,8 +107,14 @@ def test_hb47_a_bare_call_check_passes_on_calling_every_tool(tmp_path: Path) -> 
             function_calls:
               - name: search
                 params: {query: {icontains: "dress"}}
+        - name: never books unasked
+          trigger: "hi"
+          expect:
+            forbid: [book]
+            response: {icontains: "hello"}
         """,
     )
+    # The spec names a second tool, so "every tool" does more than the right answer.
     assert found["searches"] == ("every tool",)
     assert found["searches for a dress"] == ()
 
@@ -289,7 +295,7 @@ def test_hb47_an_order_by_name_only_is_vacuous_whichever_order_the_spec_names(
         - name: forbids a
           trigger: "x"
           expect:
-            forbid: [a]
+            forbid: [a, z]
             response: {contains: "x"}
         - name: b then a
           trigger: "y"
@@ -300,8 +306,9 @@ def test_hb47_an_order_by_name_only_is_vacuous_whichever_order_the_spec_names(
               - name: a
         """,
     )
-    # The spec names a first; "every tool" calls the test's own tools first, in its
-    # order, and the rest after, so the test, which does not rule out extra calls, holds.
+    # The spec names a first, and z, which the test does not expect; "every tool" calls
+    # the test's own tools first, in its order, and z after, so the test, which does
+    # not rule out other calls, holds on more than the right answer.
     assert "every tool" in found["b then a"]
 
 
@@ -337,10 +344,43 @@ def test_review_80_a_long_order_by_name_only_is_vacuous(tmp_path: Path, count: i
     # its reverse both miss c, a, b.
     names = ["a", "b", "c", "d"][:count]
     lines: list[str] = []
-    for name in names:  # the spec names them in this order first
+    for name in [*names, "z"]:  # the spec names them in this order first, z unexpected
         lines += [f"- name: forbids {name}", "  trigger: x", "  expect:"]
         lines += [f"    forbid: [{name}]", "    response: {contains: x}"]
     lines += ["- name: in order", "  trigger: y", "  expect:", "    ordered: true"]
     lines += ["    function_calls:", *(f"      - name: {n}" for n in names[2:] + names[:2])]
     found = _probe(tmp_path, "\n".join(lines) + "\n")
     assert "every tool" in found["in order"]
+
+
+@pytest.mark.parametrize(
+    "tests",
+    [
+        # Y1: the spec's only tool, alone.
+        """
+        - name: hands over
+          trigger: "I want a person"
+          expect:
+            exclusive: true
+            function_calls:
+              - name: transfer_to_human
+        """,
+        # Y2: every tool the spec names, in the test's order.
+        """
+        - name: hands over
+          trigger: "I want a person"
+          expect:
+            exclusive: true
+            ordered: true
+            function_calls:
+              - name: b
+              - name: a
+        """,
+    ],
+)
+def test_review_80_every_tool_that_adds_nothing_is_the_right_answer(
+    tmp_path: Path, tests: str
+) -> None:
+    # Re-review of #80: when the test expects every tool the spec names, "every tool"
+    # calls exactly the right answer, which is no vacuum.
+    assert _probe(tmp_path, tests)["hands over"] == ()

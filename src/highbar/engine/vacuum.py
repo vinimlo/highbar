@@ -73,8 +73,11 @@ def _agents(tools: tuple[str, ...], every_text: list[str], test: Test) -> dict[s
     agents: dict[str, TrivialAgent] = {
         "silent": lambda _turn: _Doing(reply=""),
         "echo": lambda turn: _Doing(reply=turn.trigger),
-        "every tool": lambda turn: _Doing(reply="", calls=_every_tool(tools, turn)),
     }
+    # Calling exactly the tools the test expects is its right answer, not a vacuum
+    # (re-review of #80): "every tool" counts only when it calls more in some turn.
+    if any(len(_every_tool(tools, turn)) > len(_expected(turn)) for turn in _turns(test)):
+        agents["every tool"] = lambda turn: _Doing(reply="", calls=_every_tool(tools, turn))
     # "every option" names each text the spec looks for, this test's among them. It
     # says something only when it also names one this test does not ask for: alone,
     # the test's own text is just the right answer (review of #76).
@@ -122,10 +125,14 @@ def _beyond_trivial(test: Test) -> str | None:
 def _every_tool(tools: tuple[str, ...], turn: Turn) -> tuple[str, ...]:
     """Every tool the spec names: the ones this turn expects first, in its order, then
     the rest. A test that checks the order by name alone, and does not rule out other
-    calls, holds on it at any length (review of #80). Calling exactly the expected
-    tools is left out: for a tool that takes nothing, that is the right answer."""
-    expected = [call.accepted_names[0] for call in turn.expect.function_calls or []]
-    return tuple(dict.fromkeys([*expected, *tools]))
+    calls, holds on it at any length (review of #80)."""
+    return tuple(dict.fromkeys([*_expected(turn), *tools]))
+
+
+def _expected(turn: Turn) -> tuple[str, ...]:
+    """The tools the turn expects, once each, in its order."""
+    names = [call.accepted_names[0] for call in turn.expect.function_calls or []]
+    return tuple(dict.fromkeys(names))
 
 
 def _same_answer(text: str, own: list[str]) -> bool:
