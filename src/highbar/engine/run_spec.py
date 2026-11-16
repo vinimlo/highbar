@@ -79,6 +79,7 @@ def run_spec(
     spent_untagged: Mapping[str, float] | None = None,
     max_errors: int | None = None,
     streak: ErrorStreak | None = None,
+    more_after: bool = False,
 ) -> RunSummary:
     """Run one spec against its agent.
 
@@ -128,6 +129,7 @@ def run_spec(
             spent_untagged=spent_untagged,
             max_errors=max_errors,
             streak=streak,
+            more_after=more_after,
         )
         return _run(runner, spec, on_end)
 
@@ -164,6 +166,7 @@ def run_spec(
         spent_untagged=spent_untagged,
         max_errors=max_errors,
         streak=streak,
+        more_after=more_after,
     )
 
     try:
@@ -195,6 +198,7 @@ def _runner(
     spent_untagged: Mapping[str, float] | None,
     max_errors: int | None,
     streak: ErrorStreak | None,
+    more_after: bool,
 ) -> TestRunner:
     return TestRunner(
         adapter=adapter,  # type: ignore[arg-type]
@@ -217,6 +221,7 @@ def _runner(
         spent_untagged=spent_untagged,
         max_errors=max_errors,
         streak=streak,
+        more_after=more_after,
     )
 
 

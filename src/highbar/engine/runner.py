@@ -501,6 +501,7 @@ class TestRunner:
         spent_untagged: Mapping[str, float] | None = None,
         max_errors: int | None = None,
         streak: ErrorStreak | None = None,
+        more_after: bool = False,
     ) -> None:
         self._adapter = adapter
         self._client = client
@@ -531,6 +532,9 @@ class TestRunner:
         self._hook_timeout = hook_timeout
         self._spent: Mapping[str, float] = spent or {}
         self._spent_untagged: Mapping[str, float] = spent_untagged or {}
+        # More specs of the run come after this one: a stop leaves them out (HB-33).
+        self._more_after = more_after
+        self._planned = 0
         self._stopped: str | None = None
         self._stop_reason: str | None = None  # BUDGET_EXCEEDED or REPEATED_ERRORS
         # --max-errors (None or 0: off), and the errors in a row so far, which the specs
@@ -581,6 +585,7 @@ class TestRunner:
         self._warned = set()
         self._inventory, self._seen, self._undeclared = None, set(), {}
         self._executions, self._findings, self._test_index = [], [], 0
+        self._planned = sum(len(suite.tests) for suite in spec.suites)
         self._gates, self._reported, self._warnings = {}, {}, []
         observes = spec.default_budget is not None or any(
             test.requires_observation for suite in spec.suites for test in suite.tests
@@ -635,7 +640,7 @@ class TestRunner:
                     self._test_index += 1
                     # A stop for repeated errors came first, in the test: it is the reason.
                     if self._stopped is None:
-                        self._check_ceiling(name)
+                        self._check_ceiling(name, last=self._test_index == self._planned)
                     if self._stopped is not None:
                         break
                 if self._stopped is not None:
@@ -648,7 +653,7 @@ class TestRunner:
                 self._report_late(self._findings)
                 # That read can add to what the run spent: it may have ended over its ceiling.
                 if self._stopped is None:
-                    self._check_ceiling(self._reported[self._test_index - 1].name)
+                    self._check_ceiling(self._reported[self._test_index - 1].name, last=True)
             self._warn_undeclared()
             self._warn_unmetered()
         finally:
@@ -1361,22 +1366,32 @@ class TestRunner:
     def _usages(self) -> list[Usage | None]:
         return [turn.usage for execution in self._executions for turn in execution.turns]
 
-    def _check_ceiling(self, last_test: str) -> None:
+    def _check_ceiling(self, last_test: str, *, last: bool) -> None:
         """At the end of a test: over --max-cost, the run stops here.
 
         A currency's sum is held against the ceiling on its own, as a budget's is: a run
-        that spends in two currencies must still have one.
+        that spends in two currencies must still have one. ``last`` is whether that was
+        the spec's last test: with no spec after it either, nothing was left out, and
+        the message does not ask to run the rest (HB-33).
         """
         if self._max_cost is None:
             return
         over = over_limit(self._costs(), self._max_cost)
         if over:
             self._stop_reason = BUDGET_EXCEEDED
-            self._stopped = (
+            spent = (
                 f"--max-cost {amount(self._max_cost)}: the run spent {_amounts(over)}"
-                f"{self._untagged_share(over)} by the end of '{last_test}', so it stopped "
-                "there; raise the ceiling to run the rest"
+                f"{self._untagged_share(over)}"
             )
+            if last and not self._more_after:
+                self._stopped = (
+                    f"{spent}, over its ceiling, by the end of its last test, '{last_test}'"
+                )
+            else:
+                self._stopped = (
+                    f"{spent} by the end of '{last_test}', so it stopped there; raise the "
+                    "ceiling to run the rest"
+                )
 
     def _tally(self, execution: _Execution, result: TestResult, name: str) -> None:
         """After each execution: --max-errors of them in a row that failed for one cause
