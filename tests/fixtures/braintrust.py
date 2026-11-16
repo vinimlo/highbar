@@ -203,22 +203,39 @@ def sample_outcomes() -> tuple[TestOutcome, ...]:
 
 
 def write_report(
-    path: Path, *, outcomes: tuple[TestOutcome, ...] | None = None, code: int | None = 1
+    path: Path,
+    *,
+    outcomes: tuple[TestOutcome, ...] | None = None,
+    code: int | None = 1,
+    stopped: tuple[str, str] | None = None,
+    complete: bool = True,
 ) -> dict[str, Any]:
-    """A report as `highbar run --report json=` writes it; ``code`` None: the run died."""
+    """A report as `highbar run --report json=` writes it; ``code`` None: the run died.
+
+    ``stopped`` is (reason, message), as the CLI gives ``JsonReport.stop``; ``complete``
+    False is a spec that did not run all of its tests.
+    """
     spec_path = path.parent / "shop.highbar.yaml"
     spec_path.write_text("suites: []\n", encoding="utf-8")
     spec = Spec(
         agent=AgentConfig(endpoint="http://x/chat"), suites=[Suite(name="S", tests=[Case()])]
     )
     chosen = sample_outcomes() if outcomes is None else outcomes
+    statuses = [test.status for test in chosen]
     summary = RunSummary(
-        total=len(chosen), passed=0, failed=0, errored=0, duration_ms=1.0, tests=chosen
+        total=len(chosen),
+        passed=statuses.count(Status.PASSED),
+        failed=statuses.count(Status.FAILED),
+        errored=statuses.count(Status.ERROR),
+        duration_ms=1.0,
+        tests=chosen,
     )
     report = JsonReport(path, version="9.9.9")
     report.start()
     report.plan([(str(spec_path), spec)])
-    report.add(str(spec_path), spec, summary, True)
+    report.add(str(spec_path), spec, summary, complete)
+    if stopped is not None:
+        report.stop(*stopped)
     if code is not None:
         report.finish(code)
     body = json.loads(path.read_text(encoding="utf-8"))

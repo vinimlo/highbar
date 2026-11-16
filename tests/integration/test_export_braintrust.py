@@ -75,11 +75,12 @@ class TestSending:
 
         assert result.exit_code == 0, result.output
         events = _by_test(fake.inserted)
-        assert events["Orders/ships"]["scores"] == {"highbar": 1}
-        assert events["Orders/refund"]["scores"] == {"highbar": 0}
+        assert events["Orders/ships"]["scores"] == {"highbar": 1, "highbar_verified": 1}
+        assert events["Orders/refund"]["scores"] == {"highbar": 0, "highbar_verified": 1}
         # An error could not be verified: null, which Braintrust leaves out of its
         # averages, and never 0.
-        assert events["Orders/cancel"]["scores"] == {"highbar": None}
+        # highbar_verified is 0 for it, so a dashboard still shows that it was not verified.
+        assert events["Orders/cancel"]["scores"] == {"highbar": None, "highbar_verified": 0}
         assert "5 events" in result.output
 
     def test_the_project_and_experiment_carry_the_names(
@@ -101,6 +102,21 @@ class TestSending:
 
         assert result.exit_code == 0, result.output
         assert fake.to("/v1/experiment")[0].body["name"] == f"nightly {STARTED}"
+
+    def test_the_experiment_says_what_kind_of_run_it_is(
+        self, report: Path, fake: FakeBraintrust
+    ) -> None:
+        result = _export(report, fake)
+
+        assert result.exit_code == 0, result.output
+        metadata = fake.to("/v1/experiment")[0].body["metadata"]
+        assert metadata["complete"] is True
+        assert metadata["stopped"] is None
+        assert metadata["exit_code"] == 1
+        assert (metadata["passed"], metadata["failed"], metadata["error"]) == (3, 1, 1)
+        assert metadata["started_at"] == STARTED
+        assert "git_sha" in metadata
+        assert all(e["metadata"]["run_complete"] is True for e in fake.inserted)
 
     def test_every_call_carries_the_bearer_key(self, report: Path, fake: FakeBraintrust) -> None:
         result = _export(report, fake)
@@ -171,7 +187,7 @@ class TestContent:
         _export(report, fake)
 
         event = _by_test(fake.inserted)["Controls/must fail"]
-        assert event["scores"] == {"highbar": 1}
+        assert event["scores"] == {"highbar": 1, "highbar_verified": 1}
         meta = event["metadata"]
         assert meta["status"] == "passed"
         assert meta["observed_status"] == "failed"
@@ -192,7 +208,7 @@ class TestContent:
 
         assert result.exit_code == 0, result.output
         [event] = fake.inserted
-        assert event["scores"] == {"highbar": 0}
+        assert event["scores"] == {"highbar": 0, "highbar_verified": 1}
         assert event["metadata"]["status"] == "failed"
         assert "negative control no longer catches" in event["metadata"]["errors"][0]
 
@@ -307,6 +323,136 @@ class TestRefusals:
         assert result.exit_code == 2, result.output
         assert "CI_BT_KEY" in result.output
         assert fake.requests == []
+
+
+class TestStoppedRuns:
+    """A run stopped halfway is as partial as one that died (review F1)."""
+
+    STOP = ("repeated_errors", "3 executions in a row failed with HTTP 500 from /chat")
+
+    def _stopped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("BRAINTRUST_API_KEY", KEY)
+        path = tmp_path / "stopped.json"
+        body = write_report(path, code=4, stopped=self.STOP, complete=False)
+        assert body["complete"] is False
+        return path
+
+    def test_f1_a_stopped_run_is_exit_2_and_says_what_stopped_it(
+        self, tmp_path: Path, fake: FakeBraintrust, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = _export(self._stopped(tmp_path, monkeypatch), fake)
+
+        assert result.exit_code == 2, result.output
+        assert "did not run every test" in result.output
+        assert "repeated_errors: 3 executions in a row failed" in result.output
+        assert "--partial" in result.output
+        assert fake.requests == []
+
+    def test_f1_partial_exports_it_and_marks_it(
+        self, tmp_path: Path, fake: FakeBraintrust, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = _export(self._stopped(tmp_path, monkeypatch), fake, "--partial")
+
+        assert result.exit_code == 0, result.output
+        assert "partial run" in result.output
+        assert "repeated_errors" in result.output
+        metadata = fake.to("/v1/experiment")[0].body["metadata"]
+        assert metadata["complete"] is False
+        assert metadata["stopped"] == {"reason": self.STOP[0], "message": self.STOP[1]}
+        assert metadata["exit_code"] == 4
+        assert fake.inserted
+        assert all(e["metadata"]["run_complete"] is False for e in fake.inserted)
+
+    def test_f1_partial_does_not_take_a_run_that_died(
+        self, tmp_path: Path, fake: FakeBraintrust, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("BRAINTRUST_API_KEY", KEY)
+        path = tmp_path / "died.json"
+        write_report(path, code=None)
+
+        result = _export(path, fake, "--partial")
+
+        assert result.exit_code == 2, result.output
+        assert "did not finish" in result.output
+
+
+class TestKey:
+    @pytest.mark.parametrize("ending", ["\n", "\r\n", " ", "\t"])
+    def test_whitespace_around_the_key_is_stripped(
+        self, report: Path, fake: FakeBraintrust, monkeypatch: pytest.MonkeyPatch, ending: str
+    ) -> None:
+        monkeypatch.setenv("BRAINTRUST_API_KEY", f" {KEY}{ending}")
+
+        result = _export(report, fake)
+
+        assert result.exit_code == 0, result.output
+        assert fake.requests[0].headers["authorization"] == f"Bearer {KEY}"
+        assert len(fake.to("/v1/project")) == 1  # not retried as "no answer"
+
+    @pytest.mark.parametrize(
+        "key",
+        ["bt-sk-0123456789abcdéf", "bt-sk-0123\n456789abcdef", "bt-sk-0123\x1b456789abcdef"],
+        ids=["non-ascii", "newline-inside", "escape"],
+    )
+    def test_a_key_a_header_cannot_carry_is_exit_2(
+        self,
+        report: Path,
+        fake: FakeBraintrust,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        key: str,
+    ) -> None:
+        monkeypatch.setenv("BRAINTRUST_API_KEY", key)
+        caplog.set_level(logging.DEBUG)
+
+        result = _export(report, fake)
+
+        assert result.exit_code == 2, result.output
+        assert isinstance(result.exception, SystemExit)  # a message, not a traceback
+        assert "BRAINTRUST_API_KEY" in result.output
+        assert "printable ASCII" in result.output
+        for shown in (result.output, result.stderr, caplog.text):
+            assert "0123" not in shown and "456789" not in shown
+        assert fake.requests == []
+
+    def test_whitespace_only_is_missing(
+        self, report: Path, fake: FakeBraintrust, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("BRAINTRUST_API_KEY", " \r\n")
+
+        result = _export(report, fake)
+
+        assert result.exit_code == 2, result.output
+        assert "BRAINTRUST_API_KEY is not set" in result.output
+
+
+class TestNoTraceback:
+    def test_an_api_url_with_no_host_is_exit_2(self, report: Path) -> None:
+        result = runner.invoke(
+            app, ["export", "braintrust", str(report), "--project", "p", "--api-url", "http://"]
+        )
+
+        assert result.exit_code == 2, result.output
+        assert isinstance(result.exception, SystemExit)
+        assert "--api-url" in result.output
+
+    def test_anything_unexpected_is_one_masked_line(
+        self, report: Path, fake: FakeBraintrust, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken(*_: object) -> None:
+            raise RuntimeError(f"something broke near Bearer {KEY}")
+
+        monkeypatch.setattr("highbar.export.braintrust.Client.insert", broken)
+
+        result = _export(report, fake)
+
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit)
+        assert KEY not in result.output and KEY not in result.stderr
+        assert "RuntimeError" in result.output
+        assert "0 of 5 events sent" in result.output
 
 
 class TestFailures:

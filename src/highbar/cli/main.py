@@ -34,11 +34,16 @@ from highbar.export.braintrust import (
     DEFAULT_KEY_ENV,
     Client,
     ExportFailed,
+    KeyRefused,
     ReportRefused,
     build_events,
+    experiment_metadata,
     experiment_name,
     export,
+    partial_note,
+    read_key,
     read_report,
+    url_problem,
 )
 from highbar.reporters.json_report import JsonReport, ReportError
 from highbar.reporters.junit_report import JUnitReport
@@ -597,36 +602,35 @@ def export_braintrust(
     api_url: Annotated[
         str, typer.Option("--api-url", metavar="URL", help="The Braintrust API to send to.")
     ] = DEFAULT_API_URL,
+    partial: Annotated[
+        bool,
+        typer.Option(
+            "--partial",
+            help="Export a run that stopped before every test ran (complete: false), "
+            "marked as partial. Without it, such a report exits 2.",
+        ),
+    ] = False,
 ) -> None:
     """Send a run's results to Braintrust: one experiment event per execution."""
     path = Path(report_path)
     try:
-        body = read_report(path)
+        body = read_report(path, partial=partial)
         events = build_events(body)
-    except ReportRefused as e:
-        console.print(f"  [red]✗[/red] {escape(str(e))}", soft_wrap=True)
+        if not project.strip():
+            raise ReportRefused("--project needs the name of a Braintrust project")
+        if (problem := url_problem(api_url)) is not None:
+            raise ReportRefused(problem)
+        key = read_key(api_key_env, os.environ.get(api_key_env))
+    except (ReportRefused, KeyRefused) as e:
+        console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)
         raise typer.Exit(EXIT_UNRUNNABLE) from None
-    if not project.strip():
-        console.print("  [red]✗[/red] --project needs the name of a Braintrust project")
-        raise typer.Exit(EXIT_UNRUNNABLE)
-    if not api_url.startswith(("http://", "https://")):
-        console.print(f"  [red]✗[/red] --api-url must be an http(s) URL, got {escape(api_url)}")
-        raise typer.Exit(EXIT_UNRUNNABLE)
-    key = os.environ.get(api_key_env, "")
-    if not key.strip():
-        console.print(
-            f"  [red]✗[/red] {escape(api_key_env)} is not set: put the Braintrust API key "
-            "in it, or name the variable that holds it with --api-key-env",
-            soft_wrap=True,
-        )
-        raise typer.Exit(EXIT_UNRUNNABLE)
     name = experiment or experiment_name(path, body)
     client = Client(api_url, key, api_key_env)
     try:
-        export(events, client, project=project, experiment=name)
+        export(events, client, project=project, experiment=name, metadata=experiment_metadata(body))
     except ExportFailed as e:
         console.print(
-            f"  [red]✗[/red] Braintrust: {escape(e.reason)}. {e.sent} of {e.total} events "
+            f"  [red]\u2717[/red] Braintrust: {escape(e.reason)}. {e.sent} of {e.total} events "
             f"sent, {e.total - e.sent} not sent; sending again is safe, each event keeps its id",
             soft_wrap=True,
         )
@@ -640,6 +644,8 @@ def export_braintrust(
         f"{scores.count(None)} error (score null).",
         soft_wrap=True,
     )
+    if (note := partial_note(body)) is not None:
+        console.print(f"  [yellow]![/yellow] {escape(note)}.", soft_wrap=True)
 
 
 @app.command()

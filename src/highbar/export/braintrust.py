@@ -16,6 +16,10 @@ event's id comes from the run and the execution's place in it.
 
 The score is ``highbar``: 1 passed, 0 failed, and null for an error. An error was not
 verified, so it is neither, and a 0 would count it as a wrong answer in every average.
+Braintrust leaves a null out of its average, so ``highbar_verified`` (1 passed or
+failed, 0 error) keeps the errors in sight: 1 pass and 9 errors would otherwise read as
+10 passes. A run that stopped before every test ran is refused unless asked for, and the
+experiment's metadata says what kind of run it was.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from highbar.engine.secrets import redact
 DEFAULT_API_URL = "https://api.braintrust.dev"
 DEFAULT_KEY_ENV = "BRAINTRUST_API_KEY"
 SCORE = "highbar"
+VERIFIED = "highbar_verified"
 # The report formats this reader knows (`schema_version` changes only on a break).
 SCHEMA_VERSIONS = (1,)
 # Events per insert request. The API reference states no limit on a request's events,
@@ -51,10 +56,15 @@ TIMEOUT_S = 30.0
 BODY_CHARS = 200
 
 _SCORES: dict[Status, int | None] = {Status.PASSED: 1, Status.FAILED: 0, Status.ERROR: None}
+_VERIFIED: dict[Status, int] = {Status.PASSED: 1, Status.FAILED: 1, Status.ERROR: 0}
 
 
 class ReportRefused(Exception):
     """The file is not a finished highbar JSON report this version can read."""
+
+
+class KeyRefused(Exception):
+    """The API key cannot be used. The message names the variable, never the value."""
 
 
 class ApiError(Exception):
@@ -71,8 +81,12 @@ class ExportFailed(Exception):
         self.total = total
 
 
-def read_report(path: Path) -> dict[str, Any]:
-    """The report at ``path``, or ``ReportRefused`` saying why it cannot be sent."""
+def read_report(path: Path, *, partial: bool = False) -> dict[str, Any]:
+    """The report at ``path``, or ``ReportRefused`` saying why it cannot be sent.
+
+    ``partial`` takes a run that ended but did not run every test (``complete: false``):
+    a run that died (``exit_code: null``) is refused either way.
+    """
     try:
         data = path.read_bytes()
     except OSError as e:
@@ -97,7 +111,83 @@ def read_report(path: Path) -> dict[str, Any]:
             f"{path} is from a run that did not finish (exit_code is null): it was killed "
             "or is still going, so its results are partial; export a finished run"
         )
+    if body.get("complete") is not True and not partial:
+        raise ReportRefused(
+            f"{path} is from a run that did not run every test (complete: false), "
+            f"{_why_stopped(body)}; its experiment would read as a whole run: pass --partial "
+            "to export it as a partial one"
+        )
     return body
+
+
+def _why_stopped(body: dict[str, Any]) -> str:
+    """What stopped the run, as the report's other formats say it."""
+    stopped = as_dict(body.get("stopped"))
+    code = body.get("exit_code")
+    if stopped is None:
+        return f"with no reason recorded (exit code {code})"
+    return f"{stopped.get('reason')}: {stopped.get('message')} (exit code {code})"
+
+
+def partial_note(body: dict[str, Any]) -> str | None:
+    """What the summary line adds for a run that did not run every test, or None."""
+    if body.get("complete") is True:
+        return None
+    specs = [as_dict(spec) or {} for spec in as_list(body.get("specs")) or []]
+    short = sum(spec.get("complete") is not True for spec in specs)
+    return (
+        f"A partial run, {_why_stopped(body)}; {short} of {len(specs)} specs did not run "
+        "all of their tests"
+    )
+
+
+def experiment_metadata(body: dict[str, Any]) -> dict[str, Any]:
+    """What kind of run the experiment holds: whole or stopped, and how its tests ended."""
+    summary = as_dict(body.get("summary")) or {}
+    return {
+        "source": "highbar",
+        "highbar_version": body.get("highbar_version"),
+        "complete": body.get("complete"),
+        "stopped": body.get("stopped"),
+        "exit_code": body.get("exit_code"),
+        "passed": summary.get("passed"),
+        "failed": summary.get("failed"),
+        "error": summary.get("errored"),
+        "started_at": body.get("started_at"),
+        "git_sha": body.get("git_sha"),
+    }
+
+
+def url_problem(api_url: str) -> str | None:
+    """Why ``api_url`` cannot be the API's base, or None."""
+    try:
+        url = httpx.URL(api_url)
+    except (httpx.InvalidURL, ValueError, TypeError):
+        url = None
+    if url is None or url.scheme not in ("http", "https") or not url.host:
+        return f"--api-url must be an http(s) URL with a host, got {api_url}"
+    return None
+
+
+def read_key(variable: str, value: str | None) -> str:
+    """The key in ``value``, without the whitespace around it. Raises ``KeyRefused``.
+
+    ``export KEY=$(cat file)`` and a .env with CRLF leave a line ending on the key, and an
+    HTTP header cannot carry one. What is left must be printable ASCII; the message never
+    shows any of it.
+    """
+    key = (value or "").strip()
+    if not key:
+        raise KeyRefused(
+            f"{variable} is not set: put the Braintrust API key in it, or name the variable "
+            "that holds it with --api-key-env"
+        )
+    if not (key.isascii() and key.isprintable()):
+        raise KeyRefused(
+            f"{variable} holds a character an HTTP header cannot carry (an API key is "
+            "printable ASCII): check what was put in it"
+        )
+    return key
 
 
 def experiment_name(path: Path, report: dict[str, Any]) -> str:
@@ -112,6 +202,7 @@ def build_events(report: dict[str, Any]) -> list[dict[str, Any]]:
         "report_started_at": report.get("started_at"),
         "highbar_version": report.get("highbar_version"),
         "git_sha": report.get("git_sha"),
+        "run_complete": report.get("complete") is True,
     }
     events: list[dict[str, Any]] = []
     for spec in _items(report, "specs"):
@@ -151,7 +242,7 @@ def build_events(report: dict[str, Any]) -> list[dict[str, Any]]:
                             "id": event_id,
                             "input": event_input,
                             "output": output,
-                            "scores": {SCORE: _SCORES[status]},
+                            "scores": {SCORE: _SCORES[status], VERIFIED: _VERIFIED[status]},
                             "metadata": metadata,
                             "metrics": _metrics(execution, metadata),
                         }
@@ -249,8 +340,9 @@ class Client:
     def project(self, name: str) -> str:
         return self._id(self._post("/v1/project", {"name": name}), "project")
 
-    def experiment(self, project_id: str, name: str) -> str:
-        body = {"project_id": project_id, "name": name}
+    def experiment(self, project_id: str, name: str, metadata: dict[str, Any]) -> str:
+        """An experiment of that name already there is returned as it is, metadata too."""
+        body = {"project_id": project_id, "name": name, "metadata": metadata}
         return self._id(self._post("/v1/experiment", body), "experiment")
 
     def insert(self, experiment_id: str, events: list[dict[str, Any]]) -> None:
@@ -290,19 +382,37 @@ class Client:
             text = text[:BODY_CHARS] + "…"
         return f"HTTP {response.status_code} from POST {path}: {text}"
 
+    def mask(self, text: str) -> str:
+        """``text`` with the key as ``${VAR}``."""
+        return redact(text, self._secrets)
+
     def _mask(self, text: str) -> str:
         return redact(text, self._secrets)
 
 
-def export(events: list[dict[str, Any]], client: Client, *, project: str, experiment: str) -> None:
-    """Send ``events`` into the experiment. Raises ``ExportFailed`` with the count sent."""
+def export(
+    events: list[dict[str, Any]],
+    client: Client,
+    *,
+    project: str,
+    experiment: str,
+    metadata: dict[str, Any],
+) -> None:
+    """Send ``events`` into the experiment. Raises ``ExportFailed`` with the count sent.
+
+    Anything at all that goes wrong becomes ``ExportFailed``, its text masked: a
+    traceback is the one output the masking would not cover.
+    """
     sent = 0
     try:
         project_id = client.project(project)
-        experiment_id = client.experiment(project_id, experiment)
+        experiment_id = client.experiment(project_id, experiment, metadata)
         for start in range(0, len(events), BATCH_SIZE):
             batch = events[start : start + BATCH_SIZE]
             client.insert(experiment_id, batch)
             sent += len(batch)
     except ApiError as e:
         raise ExportFailed(str(e), sent, len(events)) from None
+    except Exception as e:
+        reason = client.mask(f"{type(e).__name__}: {e}")
+        raise ExportFailed(reason, sent, len(events)) from None
