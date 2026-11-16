@@ -1348,8 +1348,11 @@ def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
         if operand is None or isinstance(operand, dict | list):
             # A null, a list or an object would be compared as its Python repr ("None",
             # "[1, 2]"): never what an error says (reviews of #79 and #81).
+            # Named as the YAML author wrote it: null, or nothing after the colon.
+            value: object = operand
+            shown = "an empty value (null)" if value is None else repr(value)
             raise SpecError(
-                f"{where}.error.{key}: {operand!r} is not text, and an error is; "
+                f"{where}.error.{key}: {shown} is not text, and an error is; "
                 f'write the text it must hold, such as {{{key}: "Timeout"}}'
             )
         if key == "equals" and operand == "":
