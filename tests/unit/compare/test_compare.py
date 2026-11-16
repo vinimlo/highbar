@@ -89,7 +89,7 @@ def test_review_errors_count_as_not_passed() -> None:
     base = [read_round(_report(("warranty", 5, 5))) for _ in range(2)]
     head = [read_round(_report(("warranty", 5, 0, 5))) for _ in range(2)]
     row = _row(compare(base, head))
-    assert (row.head.passed, row.head.judged, row.head.errors) == (10, 20, 10)
+    assert (row.head.passed, row.head.executions, row.head.errors) == (10, 20, 10)
     assert row.verdict is None
 
 
@@ -100,6 +100,23 @@ def test_review_more_errors_on_head_is_worse() -> None:
     row = _row(compare(base, head))
     assert row.verdict == "worse"
     assert "36 error" in row.reason
+
+
+def test_review_an_error_never_makes_the_head_look_better() -> None:
+    # Review of #69 at 7976aea, note (b): a base that errors everywhere made any head "better".
+    base = [read_round(_report(("warranty", 0, 0, 10))) for _ in range(4)]
+    head = [read_round(_report(("warranty", 10, 0))) for _ in range(4)]
+    row = _row(compare(base, head))
+    assert row.verdict is None
+    assert "40 error executions on base" in row.reason
+
+
+def test_a_head_better_beyond_the_bases_errors_is_still_better() -> None:
+    # Base: 2 passed, 7 failed, 1 error a round. Even with its errors as passes it is
+    # 12/40 against 40/40, so the head is better whichever way they went.
+    base = [read_round(_report(("warranty", 2, 7, 1))) for _ in range(4)]
+    head = [read_round(_report(("warranty", 10, 0))) for _ in range(4)]
+    assert _row(compare(base, head)).verdict == "better"
 
 
 def test_a_changed_definition_is_not_compared() -> None:
