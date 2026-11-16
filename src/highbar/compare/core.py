@@ -67,6 +67,11 @@ class Side:
         return sum(r.passed + r.failed + r.errors for r in self.rounds)
 
     @property
+    def measured_rounds(self) -> int:
+        """Rounds with at least one execution of the test: an empty one measured nothing."""
+        return sum(1 for r in self.rounds if r.passed + r.failed + r.errors)
+
+    @property
     def rate(self) -> float:
         return self.passed / self.executions if self.executions else 0.0
 
@@ -223,7 +228,7 @@ def _judge(row: Row, p_holm: float) -> Row:
     split = [name for name, side in (("base", base), ("head", head)) if side.disagree_p < ALPHA]
     if base.executions == 0 or head.executions == 0:
         reason = "no execution verified on a side: no conclusion"
-    elif min(len(base.rounds), len(head.rounds)) < MIN_ROUNDS:
+    elif min(base.measured_rounds, head.measured_rounds) < MIN_ROUNDS:
         reason = FEW_ROUNDS
     elif row.base_errors_decide:
         reason = (
