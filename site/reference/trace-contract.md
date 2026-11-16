@@ -205,9 +205,10 @@ def hello(tools: list[str]) -> None:
     _write({"type": "hello", "sdk": "reference-emitter/1", "pid": os.getpid(), "tools": tools})
 
 
-def tool(fn, args, *, result=None, error=None, started_at, test=None) -> None:
-    """One tool call. `error` says why it failed, also when it returned the failure."""
-    record = {"fn": fn, "args": args, "result": result, "error": error}
+def tool(fn, args, *, result=..., error=None, started_at, test=None) -> None:
+    """One tool call. `error` says why it failed. No `result=`: the return was not seen."""
+    record = {"fn": fn, "args": args, "error": error}
+    record |= {} if result is ... else {"result": result}  # unseen is not "returned null"
     _write({"type": "tool", **record, "started_at": started_at, "ended_at": time.time()}, test)
 
 
