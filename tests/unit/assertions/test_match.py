@@ -584,3 +584,38 @@ class TestHB38BoolIsNotANumber:
         assert subset_match({"x": {"equals": False}}, {"x": False}) is True
         assert subset_match({"x": {"contains": True}}, {"x": [False, True]}) is True
         assert subset_match({"x": {"contains_all": [1, 2]}}, {"x": [2, 1]}) is True
+
+
+class TestHB46ABooleanHasNoText:
+    """Review of #71: the text matchers read True as "True", so `contains: "Tr"` held on
+    `true`, and `not_contains`/`not_matches` held on any boolean without checking text.
+    A boolean has no text form, as None has none: positive and negative checks fail.
+    """
+
+    @pytest.mark.parametrize(
+        "matcher",
+        [
+            {"contains": "Tr"},
+            {"icontains": "true"},
+            {"matches": "^True$"},
+            {"imatches": "^true$"},
+            {"not_contains": "x"},
+            {"not_icontains": "x"},
+            {"not_matches": "^x$"},
+            {"not_imatches": "^x$"},
+        ],
+    )
+    def test_hb46_a_text_matcher_on_a_boolean_fails(self, matcher: dict[str, object]) -> None:
+        assert subset_match({"x": matcher}, {"x": True}) is False
+        assert subset_match({"x": matcher}, {"x": False}) is False
+
+    def test_hb46_a_boolean_operand_is_not_text(self) -> None:
+        # `contains: true` held on the text "True" (and on "untrue").
+        assert subset_match({"x": {"contains": True}}, {"x": "True"}) is False
+        assert subset_match({"x": {"not_contains": True}}, {"x": "no"}) is False
+
+    def test_hb46_numbers_and_text_still_read_as_text(self) -> None:
+        assert subset_match({"x": {"contains": "42"}}, {"x": 1042}) is True
+        assert subset_match({"x": {"matches": r"^\d+\.5$"}}, {"x": 2.5}) is True
+        assert subset_match({"x": {"not_contains": "x"}}, {"x": "abc"}) is True
+        assert subset_match({"x": {"contains": True}}, {"x": [False, True]}) is True
