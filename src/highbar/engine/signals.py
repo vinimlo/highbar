@@ -58,6 +58,11 @@ def holding_signals(notice: str | None = None) -> Iterator[None]:
             signal.raise_signal(held[0])
 
 
+def say(line: str) -> None:
+    """One line to stderr, as the notice of a held signal is said."""
+    _say(line)
+
+
 def _say(line: str) -> None:
     """Straight to stderr's file descriptor: the handler can land in the middle of a
     write to sys.stderr, and a buffered write from inside it would raise "reentrant call".

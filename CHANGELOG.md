@@ -4,6 +4,7 @@
 
 ### Added
 
+- `highbar run --jobs N`: up to N tests in flight at once, started in spec order, each with its phrasings, runs and turns one after the other. Only the send and the wait run side by side; reading the trace file and judging happen one at a time, and the results reach the terminal and the report in spec order. Every record must carry `agent.correlate`: with N above 1 a record with no test context counts for no test, and a test that checks what the agent recorded and has none of its own is an `error`, never a pass on another test's records. An untagged call or usage, or a line that cannot be read, leaves unverified every test it could belong to whose result it would change, the ones that already ended included. `--max-cost` lets the tests in flight finish, and its message says how many there were and how much the run spent over the ceiling; `--max-errors` counts executions as they end; Ctrl-C waits for the messages in flight, within `agent.timeout`. Python session hooks are called one at a time, and must be thread-safe. `--jobs 1`, the default, runs as before.
 - `agent.reply: turn`, for an agent that answers later through a queue (a webhook that says `202`): the reply is the `response` of the test's `turn` record, and highbar waits for it up to `agent.timeout`. A reply that does not come, comes only untagged, or is empty or only spaces, is an `error`, and for `--max-errors` it is one more execution with no reply, as an empty body is: a worker that is down stops the run instead of waiting `agent.timeout` for every execution left.
 
 ### Changed

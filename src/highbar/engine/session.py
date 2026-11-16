@@ -217,6 +217,9 @@ class SessionHooks:
         self._timeout_s = timeout_ms / 1000
         self._functions: dict[str, Callable[..., Any]] = {}
         self._worker: _Worker | None = None
+        # Python hooks are called one at a time (HB-8): with --jobs, several tests open
+        # and close sessions at once, and the output of the run is routed around each call.
+        self._python = threading.RLock()
         # The lines a failure shows go to the terminal: masked like any message.
         self._secrets = dict(secrets or {})
         self._log = _HookLog(spec_path)
@@ -341,6 +344,10 @@ class SessionHooks:
         return [str(message) for message in messages]
 
     def _call(self, what: str, *args: Any) -> Any:
+        with self._python:
+            return self._call_one(what, *args)
+
+    def _call_one(self, what: str, *args: Any) -> Any:
         function = self._functions[what]
         unread = [
             arg.run
@@ -356,6 +363,10 @@ class SessionHooks:
         return result
 
     def _in_worker(self, what: str, action: str, task: Callable[[], Any]) -> Any:
+        with self._python:
+            return self._in_worker_one(what, action, task)
+
+    def _in_worker_one(self, what: str, action: str, task: Callable[[], Any]) -> Any:
         if self._worker is None:
             self._worker = _Worker(self._log)
         mark = self._log.mark()

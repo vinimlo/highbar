@@ -113,6 +113,40 @@ class TestExitCodes:
         assert "Total: 1 passed | 1 failed | 0.02s" in result.output
 
 
+class TestJobs:
+    """HB-8: --jobs is 1 unless given, and a count under 1 exits 2 before anything runs."""
+
+    @pytest.mark.parametrize(
+        ("args", "expected"), [([], 1), (["--jobs", "3"], 3), (["--jobs=2"], 2)]
+    )
+    def test_hb8_the_option_reaches_the_runner(
+        self, project: Path, args: list[str], expected: int
+    ) -> None:
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", *args])
+
+        assert result.exit_code == 0, result.output
+        assert fake.call_args.kwargs["jobs"] == expected
+
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_hb8_a_count_under_one_exits_2_before_anything_runs(
+        self, project: Path, value: str
+    ) -> None:
+        report = project / "report.json"
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            result = runner.invoke(
+                app, ["run", "specs/", f"--jobs={value}", "--report", f"json={report}"]
+            )
+
+        assert result.exit_code == 2, result.output
+        assert "--jobs must be a whole number of at least 1" in result.output
+        fake.assert_not_called()
+        data = json.loads(report.read_text(encoding="utf-8"))
+        assert (data["exit_code"], data["stopped"]["reason"]) == (2, "usage_error")
+
+
 class TestMaxErrors:
     """HB-34: --max-errors is 5 unless given, 0 turns it off; its stop exits with 4."""
 
