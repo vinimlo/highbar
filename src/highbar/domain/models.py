@@ -274,8 +274,11 @@ class AgentConfig:
     # Each value expanded from ${NAME}, and the name: what output must never show.
     secrets: dict[str, str] = field(default_factory=dict[str, str])
     # HB-30: the agent's model calls go through highbar's LLM proxy, whose count of them
-    # is the usage budgets and --max-cost hold. Managed mode only.
+    # is the usage budgets and --max-cost hold. Managed mode only. The upstreams, by
+    # provider ("openai", "anthropic"), when the spec gives them: they take the place of
+    # the environment's base URLs.
     llm_proxy: bool = False
+    llm_proxy_upstreams: dict[str, str] = field(default_factory=dict[str, str])
 
     @property
     def managed(self) -> bool:

@@ -500,9 +500,7 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
             f"{where}: startup_timeout only applies with 'start' "
             "(in attach mode highbar does not start the agent)"
         )
-    llm_proxy = raw.get("llm_proxy", False)
-    if not isinstance(llm_proxy, bool):
-        raise SpecError(f"{where}: llm_proxy must be true or false, got {llm_proxy!r}")
+    llm_proxy, llm_upstreams = _parse_llm_proxy(raw.get("llm_proxy", False))
     if llm_proxy and not managed:
         raise SpecError(
             f"{where}: llm_proxy needs 'start': highbar points the agent's model client at "
@@ -547,6 +545,7 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
         response=_parse_response_path(raw["response"]) if "response" in raw else None,
         reply=_parse_reply(raw),
         llm_proxy=llm_proxy,
+        llm_proxy_upstreams=llm_upstreams,
         traces=traces,
         session=session,
         run=_parse_run(raw["run"], read_result) if "run" in raw else None,
@@ -758,6 +757,30 @@ def _parse_response_path(raw: Any) -> str:
             f"or choices.0.message.content, got {raw!r}"
         )
     return raw
+
+
+def _parse_llm_proxy(raw: Any) -> tuple[bool, dict[str, str]]:
+    """``agent.llm_proxy``: true or false, or the upstream of each provider (HB-30).
+
+    A mapping turns it on, and its URLs take the place of the environment's base URLs: an
+    agent that reads its own from a .env file has none in highbar's environment.
+    """
+    upstreams = as_dict(raw)
+    if upstreams is None:
+        if not isinstance(raw, bool):
+            raise SpecError(
+                "agent: llm_proxy must be true or false, or a mapping of provider to base "
+                f"URL ({{openai: <url>, anthropic: <url>}}), got {raw!r}"
+            )
+        return raw, {}
+    check_keys(upstreams, "llm_proxy", "agent.llm_proxy")
+    found: dict[str, str] = {}
+    for key in user_keys(upstreams):
+        url = upstreams[key]
+        require_type(url, str, "agent", f"llm_proxy.{key} must be a string (a base URL)")
+        _check_url(url, f"llm_proxy.{key}")
+        found[key] = url
+    return True, found
 
 
 def _parse_reply(raw: dict[str, Any]) -> str:

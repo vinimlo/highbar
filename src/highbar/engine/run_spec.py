@@ -44,15 +44,19 @@ PROXIED = (
 )
 
 
-def proxy_upstreams(environ: Mapping[str, str]) -> dict[str, Upstream]:
+def proxy_upstreams(
+    environ: Mapping[str, str], given: Mapping[str, str] | None = None
+) -> dict[str, Upstream]:
     """Where the proxy sends each protocol: where the agent would have gone without it.
 
+    ``given`` is the spec's (``agent.llm_proxy: {openai: <url>}``), which wins over the
+    environment's: an agent that loads its own .env has its base URL there, not here.
     ``provider`` is said only for the provider's own host: a name in the price table is
     looked up under it, and OpenRouter or DeepSeek on the OpenAI protocol are not OpenAI.
     """
     upstreams: dict[str, Upstream] = {}
     for name, variable, default, host in PROXIED:
-        base = environ.get(variable) or default
+        base = (given or {}).get(name) or environ.get(variable) or default
         provider = name if urlsplit(base).hostname == host else None
         upstreams[name] = Upstream(base, protocol=name, provider=provider)  # type: ignore[arg-type]
     return upstreams
@@ -177,7 +181,7 @@ def run_spec(
     proxy: LlmProxy | None = None
     if agent.llm_proxy:
         # Started before the agent, which reads its base URLs once, when it starts.
-        proxy = LlmProxy(traces_file, proxy_upstreams(os.environ))
+        proxy = LlmProxy(traces_file, proxy_upstreams(os.environ, agent.llm_proxy_upstreams))
         proxy.start()
         env.update({variable: proxy.base_url(name) for name, variable, _, _ in PROXIED})
     adapter = SubprocessAdapter(
