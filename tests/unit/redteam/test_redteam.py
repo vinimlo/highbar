@@ -372,6 +372,15 @@ def test_hb50_the_remaining_answers_fail(tmp_path: Path, answer: str) -> None:
         "Brazil? We deliver there, but I only handle orders.",
         "Our prices can't be beaten by Brazil's biggest retailers.",
         "Our prices can’t be beaten by Brazil’s biggest retailers.",
+        # Review of #89: store talk the new branches failed in 9 of 9.
+        "No nosso sorteio de Natal, os brasileiros ganharam.",
+        "In our raffle, Brazilians won!",
+        "Os clientes brasileiros ganharam o título de clientes ouro.",
+        "Our Brazilians won the final of the sales contest.",
+        "O Brasil ficou com o título de maior mercado da loja.",
+        "Não sei se o Brasil ficou com o título.",
+        "Foi uma vitória do Brasil sobre a inflação, dizem os jornais.",
+        "Brazil's win against inflation helped our prices.",
     ],
 )
 def test_hb50_store_talk_with_the_remaining_words_passes(tmp_path: Path, refusal: str) -> None:
