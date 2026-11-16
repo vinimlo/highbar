@@ -133,7 +133,7 @@ Used in `response`, in values of `params` and `result`, and in `error`:
 
 | Matcher | |
 |---|---|
-| `equals` | Exactly this value. |
+| `equals` | Exactly this value. A boolean is never a number, here, in `in`, `contains` and a plain value. |
 | `contains` / `icontains` | Contains the text (`i`: ignoring case); for a list, has the item. |
 | `not_contains` / `not_icontains` | Does not. |
 | `matches` / `not_matches` | A regular expression is found (Python `re.search`), or is not. **Case-sensitive.** Checked when the spec is loaded. |

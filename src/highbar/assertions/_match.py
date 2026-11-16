@@ -49,6 +49,28 @@ def value_match(expected: Any, actual: Any) -> bool:
     expected_dict, actual_dict = as_dict(expected), as_dict(actual)
     if expected_dict is not None and actual_dict is not None:
         return subset_match(expected_dict, actual_dict)
+    return same_value(expected, actual)
+
+
+def same_value(expected: Any, actual: Any) -> bool:
+    """Equality where a boolean is never a number (HB-38), at any depth.
+
+    In Python ``True == 1`` and ``False == 0``, so ``retries: 0`` held on ``false``. A
+    model that sends ``1`` where the tool takes a boolean made the mistake the test is
+    there to catch. A number still equals a number (``1 == 1.0``).
+    """
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        return isinstance(expected, bool) and isinstance(actual, bool) and expected == actual
+    expected_dict, actual_dict = as_dict(expected), as_dict(actual)
+    if expected_dict is not None and actual_dict is not None:
+        return expected_dict.keys() == actual_dict.keys() and all(
+            same_value(v, actual_dict[k]) for k, v in expected_dict.items()
+        )
+    expected_items, actual_items = _items(expected), _items(actual)
+    if expected_items is not None and actual_items is not None:
+        return len(expected_items) == len(actual_items) and all(
+            same_value(e, a) for e, a in zip(expected_items, actual_items, strict=True)
+        )
     return bool(expected == actual)
 
 
@@ -72,7 +94,7 @@ def _contains(actual: Any, operand: Any, *, ignore_case: bool) -> bool | None:
         if ignore_case and isinstance(operand, str):
             folded = operand.casefold()
             return any(isinstance(item, str) and item.casefold() == folded for item in items)
-        return operand in items
+        return any(same_value(operand, item) for item in items)
 
     text = _as_text(actual)
     if text is None:
@@ -145,7 +167,7 @@ def _length(holds: Callable[[Any, Any], Any]) -> Callable[[Any, Any], bool]:
 
 def _one_of(actual: Any, operand: Any) -> bool:
     # The same comparison as `equals`, against each listed value.
-    return any(bool(actual == option) for option in operand)
+    return any(same_value(option, actual) for option in operand)
 
 
 def _contains_all(actual: Any, operand: Any) -> bool:
@@ -175,7 +197,7 @@ def _every_item(actual: Any, operand: Any) -> bool:
 # dialect. The `i` variants ignore case. `equals` is the escape hatch for a literal value
 # that happens to look like a matcher.
 _TEXT_CONDITIONS: dict[str, Callable[[Any, Any], bool]] = {
-    "equals": lambda actual, operand: bool(actual == operand),
+    "equals": lambda actual, operand: same_value(operand, actual),
     "contains": _positive(ignore_case=False),
     "icontains": _positive(ignore_case=True),
     "not_contains": _negative(ignore_case=False),
