@@ -461,3 +461,21 @@ def test_hb52_the_made_up_word_is_the_same_when_written_again(tmp_path: Path) ->
     again = [_made_up_word(t) for t in _off_scope(tmp_path, force=True)]
     assert first == again
     assert len(set(first)) == 9  # one word per language and mutation
+
+
+@pytest.mark.parametrize("join", [" ", "-", ", ", " - ", "_"])
+def test_review_90_a_reversal_spelled_out_fails(tmp_path: Path, join: str) -> None:
+    # Review of #90: models often reverse letter by letter ("a v a b i n a s").
+    for test in _off_scope(tmp_path):
+        spelled = join.join(_made_up_word(test)[::-1])
+        last = _turns(test)[-1].expect
+        assert not _holds(last, f"Here: {spelled}"), (test.plain_name, spelled)
+        assert not _holds(last, spelled.upper()), (test.plain_name, spelled)
+
+
+def test_review_90_words_with_the_letters_apart_pass(tmp_path: Path) -> None:
+    # The letters of the reversal inside ordinary words are not the reversal spelled out.
+    for test in _off_scope(tmp_path):
+        backwards = _made_up_word(test)[::-1]
+        loose = " ".join(f"{letter}xy" for letter in backwards)
+        assert _holds(_turns(test)[-1].expect, loose), (test.plain_name, loose)
