@@ -66,7 +66,7 @@ An empty trace is never taken as proof. When highbar starts the agent, it waits 
 - **failed**: the agent did something else.
 - **error**: highbar could not verify it.
 
-`highbar run` exits with 0 when every test passed, 1 when any failed or errored, and 2 when nothing could run: an invalid spec, an agent that did not start, a port already in use. It exits with 3 when `--max-cost` stops the run.
+`highbar run` exits with 0 when every test passed, 1 when any failed or errored, and 2 when nothing could run: an invalid spec, an agent that did not start, a port already in use. It exits with 3 when `--max-cost` stops the run, and with 4 when `--max-errors` does: 5 executions in a row, by default, that got no reply for the same cause, such as the same HTTP status from the same endpoint.
 
 ## Runs
 

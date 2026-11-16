@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,7 +13,7 @@ import pytest
 from typer.testing import CliRunner
 
 from highbar.cli.main import _discover_specs, app, console
-from highbar.domain.models import RunSummary
+from highbar.domain.models import BUDGET_EXCEEDED, REPEATED_ERRORS, RunSummary
 from highbar.engine.run_spec import agent_log_path
 from highbar.reporters.json_report import ReportError
 
@@ -110,6 +111,100 @@ class TestExitCodes:
 
         assert result.exit_code == 1, result.output
         assert "Total: 1 passed | 1 failed | 0.02s" in result.output
+
+
+class TestMaxErrors:
+    """HB-34: --max-errors is 5 unless given, 0 turns it off; its stop exits with 4."""
+
+    STOP = (
+        "5 executions in a row failed with HTTP 500 from http://localhost:8000/chat "
+        "(last: 'me mostra o [cardápio]'); the infrastructure failed, not the agent, so the "
+        "run stopped. Exits with 4."
+    )
+
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            ([], 5),
+            (["--max-errors", "3"], 3),
+            (["--max-errors=1"], 1),
+            (["--max-errors", "0"], None),
+        ],
+    )
+    def test_hb34_the_option_reaches_the_runner(
+        self, project: Path, args: list[str], expected: int | None
+    ) -> None:
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", *args])
+
+        assert result.exit_code == 0, result.output
+        assert fake.call_args.kwargs["max_errors"] == expected
+
+    @pytest.mark.parametrize("args", [["--max-errors", "-1"], ["--max-errors=-1"]])
+    def test_hb34_ac11_a_negative_count_exits_2_before_anything_runs(
+        self, project: Path, args: list[str]
+    ) -> None:
+        report = project / "report.json"
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            result = runner.invoke(app, ["run", "specs/", *args, "--report", f"json={report}"])
+
+        assert result.exit_code == 2, result.output
+        assert "--max-errors must be a whole number of at least 0" in result.output
+        fake.assert_not_called()
+        data = json.loads(report.read_text(encoding="utf-8"))
+        assert (data["exit_code"], data["stopped"]["reason"]) == (2, "usage_error")
+
+    @pytest.mark.parametrize("value", ["abc", "2.5"])
+    def test_hb34_ac11_a_count_that_is_not_a_whole_number_exits_2(
+        self, project: Path, value: str
+    ) -> None:
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            result = runner.invoke(app, ["run", "specs/", f"--max-errors={value}"])
+
+        assert result.exit_code == 2, result.output
+        assert "--max-errors" in result.output
+        fake.assert_not_called()
+
+    def _stopping(self, project: Path, reason: str) -> tuple[int, str, dict[str, object], int]:
+        """Two specs, the first stopped for ``reason``: the code, the output, the report,
+        and how many specs ran."""
+        second = project / "specs" / "menu" / "other.highbar.yaml"
+        second.write_text(textwrap.dedent(SPEC), encoding="utf-8")
+        report = project / "report.json"
+        stopped = replace(_summary(errored=1), stopped=self.STOP, stop_reason=reason)
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.side_effect = [stopped, _summary(passed=1)]
+            fake.return_value.snapshot.return_value = stopped
+            result = runner.invoke(app, ["run", "specs/", "--report", f"json={report}"])
+
+        data = json.loads(report.read_text(encoding="utf-8"))
+        return result.exit_code, result.output, data, fake.return_value.run.call_count
+
+    def test_hb34_ac10_repeated_errors_exit_4_and_the_specs_left_do_not_run(
+        self, project: Path
+    ) -> None:
+        code, output, data, ran = self._stopping(project, REPEATED_ERRORS)
+
+        assert code == 4, output
+        assert ran == 1
+        assert "5 executions in a row failed with HTTP 500" in output
+        assert "(last: 'me mostra o [cardápio]')" in output
+        assert data["exit_code"] == 4
+        assert data["stopped"] == {"reason": "repeated_errors", "message": self.STOP}
+        assert data["complete"] is False
+
+    def test_hb34_ac10_a_ceiling_still_exits_3_and_the_specs_left_do_not_run(
+        self, project: Path
+    ) -> None:
+        code, output, data, ran = self._stopping(project, BUDGET_EXCEEDED)
+
+        assert code == 3, output
+        assert ran == 1
+        assert data["stopped"]["reason"] == "budget_exceeded"
+        assert data["exit_code"] == 3
 
 
 class TestSpecErrors:
