@@ -107,6 +107,11 @@ class LlmCall:
 
     Its tokens are shown, not summed: the `turn`'s usage is what budgets read, so
     nothing counts twice (decision E3, on the card).
+
+    ``source`` says who wrote it: ``"proxy"`` for highbar's LLM proxy (HB-30), None for
+    the agent. ``read`` is False when the writer saw the call and could not read its
+    usage, with ``unread`` saying why; None means the writer did not say. A token field
+    that is None is unknown, never zero, and an unread call's count is not whole.
     """
 
     ts: float
@@ -121,6 +126,11 @@ class LlmCall:
     cache_tokens: int | None = None
     latency_ms: float | None = None
     error: str | None = None
+    source: str | None = None
+    read: bool | None = None
+    unread: str | None = None  # why the usage was not read, when read is False
+    cost: float | None = None  # what the provider said the call cost (OpenRouter)
+    currency: str | None = None
 
 
 @dataclass(frozen=True)
