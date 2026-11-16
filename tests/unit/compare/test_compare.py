@@ -190,3 +190,15 @@ def test_cost_tokens_and_latency_are_means_per_execution() -> None:
     assert row.base.mean_ms == pytest.approx(1000.0)
     assert row.base.mean_cost == {"USD": pytest.approx(0.002)}
     assert row.base.mean_input_tokens == pytest.approx(20.0)
+
+
+def test_hb45_a_round_with_no_executions_is_not_a_round() -> None:
+    # Review of #72: one real round plus two empty ones passed MIN_ROUNDS and gave
+    # "worse" on a single round of the base.
+    base = [read_round(_report(("warranty", 10, 0)))] + [
+        read_round(_report(("warranty", 0, 0)))
+    ] * 2
+    head = [read_round(_report(("warranty", 3, 7))) for _ in range(3)]
+    row = _row(compare(base, head))
+    assert row.verdict is None
+    assert "fewer than 3 rounds" in row.reason
