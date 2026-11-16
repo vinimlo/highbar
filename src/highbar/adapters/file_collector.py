@@ -33,7 +33,16 @@ from pathlib import Path
 from typing import Any
 
 from highbar._narrow import as_dict, as_list
-from highbar.domain.models import Hello, LlmCall, Trace, TurnRecord, Usage, Window
+from highbar.domain.models import (
+    Hello,
+    LlmCall,
+    Retrieval,
+    RetrievedItem,
+    Trace,
+    TurnRecord,
+    Usage,
+    Window,
+)
 from highbar.engine.observation import AgentNotObservedError
 
 CONTRACT_VERSION = 1
@@ -404,6 +413,8 @@ def _add(window: Window, raw: bytes) -> None:
         window.declarations.append(_names(record, "names"))
     elif kind == "llm":
         window.llms.append(_llm(record))
+    elif kind == "retrieval":
+        window.retrievals.append(_retrieval(record))
     # Any other type is from a newer emitter: ignored, as the contract says.
 
 
@@ -512,6 +523,44 @@ def _llm(record: dict[str, Any]) -> LlmCall:
         cache_tokens=_whole(record.get("cache_tokens")),
         latency_ms=_number(record, "latency_ms", 0.0) if latency is not None else None,
         error=str(error) if error else None,  # false, "" and null all say "no error"
+    )
+
+
+def _retrieval(record: dict[str, Any]) -> Retrieval:
+    """What entered the prompt (HB-3). The items are strict: every check reads them."""
+    raw_items = record.get("items", [])
+    items = as_list(raw_items)
+    if items is None or not all(as_dict(item) is not None for item in items):
+        raise _BadLine(f"'items' must be a list of objects, got {raw_items!r}")
+    read: list[RetrievedItem] = []
+    for n, raw in enumerate(items):
+        item = as_dict(raw) or {}
+        if item.get("id") is None and item.get("title") is None:
+            raise _BadLine(f"items[{n}] has neither 'id' nor 'title': no check can name it")
+        raw_chunks = item.get("chunks", [])
+        chunks = as_list(raw_chunks)
+        if chunks is None or not all(_whole(chunk) is not None for chunk in chunks):
+            raise _BadLine(f"items[{n}].chunks must be a list of whole numbers, got {raw_chunks!r}")
+        read.append(
+            RetrievedItem(
+                id=_text(item.get("id")),
+                title=_text(item.get("title")),
+                source=_text(item.get("source")),
+                chunks=tuple(int(chunk) for chunk in chunks),
+                tokens=_whole(item.get("tokens")),
+            )
+        )
+    expired = as_list(record.get("expired")) or []
+    return Retrieval(
+        ts=_number(record, "ts", 0.0),
+        context=_context(record),
+        query=_text(record.get("query")),
+        search_query=_text(record.get("search_query")),
+        strategy=_text(record.get("strategy")),
+        skipped_reason=_text(record.get("skipped_reason")),
+        items=tuple(read),
+        expired=tuple(entry for entry in (as_dict(e) for e in expired) if entry is not None),
+        tokens=_whole(record.get("tokens")),
     )
 
 

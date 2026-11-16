@@ -121,6 +121,33 @@ class LlmCall:
 
 
 @dataclass(frozen=True)
+class RetrievedItem:
+    """One document in a prompt: a training, a manual. ``source``: retrieved, expanded or
+    sticky (kept from an earlier turn). ``chunks``: the indexes of its parts that went in."""
+
+    id: str | None = None
+    title: str | None = None
+    source: str | None = None
+    chunks: tuple[int, ...] = ()
+    tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class Retrieval:
+    """A `retrieval` record: what entered the prompt for one message (HB-3)."""
+
+    ts: float
+    context: dict[str, Any] = field(default_factory=dict[str, Any])
+    query: str | None = None
+    search_query: str | None = None
+    strategy: str | None = None
+    skipped_reason: str | None = None
+    items: tuple[RetrievedItem, ...] = ()
+    expired: tuple[dict[str, Any], ...] = ()
+    tokens: int | None = None
+
+
+@dataclass(frozen=True)
 class Hello:
     """A `hello` record: an emitter started writing to the trace file."""
 
@@ -137,6 +164,7 @@ class Window:
     turns: list[TurnRecord] = field(default_factory=list[TurnRecord])
     hellos: list[Hello] = field(default_factory=list[Hello])
     llms: list[LlmCall] = field(default_factory=list[LlmCall])
+    retrievals: list[Retrieval] = field(default_factory=list[Retrieval])
     # The tools the agent declared it records, one tuple per declaration (spec D4).
     declarations: list[tuple[str, ...]] = field(default_factory=list[tuple[str, ...]])
     # Where the next read starts: every record is read once, none falls between reads.
@@ -296,6 +324,27 @@ class LlmExpect:
 
 
 @dataclass(frozen=True)
+class ItemRef:
+    """A document named in ``expect.retrieval.includes``: its id or title, and how it
+    must have come in, when that matters."""
+
+    key: str
+    source: str | None = None
+
+
+@dataclass(frozen=True)
+class RetrievalExpect:
+    """``expect.retrieval`` (HB-3). ``includes``/``excludes`` read every record of the test;
+    ``max_items``/``max_tokens`` hold for each record, one prompt each."""
+
+    includes: tuple[ItemRef, ...] = ()
+    excludes: tuple[str, ...] = ()
+    max_items: int | None = None
+    max_tokens: int | None = None
+    chunks_in_order: bool = False
+
+
+@dataclass(frozen=True)
 class Expect:
     """Expected outcomes for a test or turn."""
 
@@ -307,6 +356,7 @@ class Expect:
     budget: Budget | None = None  # per turn in a turn, per execution in a test
     check: str | None = None  # "module:function" of the author's own check (HB-12)
     llm: LlmExpect | None = None  # the calls to the model (HB-11)
+    retrieval: RetrievalExpect | None = None  # what entered the prompt (HB-3)
 
     @property
     def requires_observation(self) -> bool:
@@ -321,6 +371,7 @@ class Expect:
             or bool(self.forbid)
             or self.budget is not None
             or self.llm is not None
+            or self.retrieval is not None
         )
 
 

@@ -62,9 +62,21 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "history_message": frozenset({"role", "content"}),
     "turn": frozenset({"name", "trigger", "expect", "variations"}),
     "expect": frozenset(
-        {"function_calls", "response", "ordered", "exclusive", "forbid", "budget", "check", "llm"}
+        {
+            "function_calls",
+            "response",
+            "ordered",
+            "exclusive",
+            "forbid",
+            "budget",
+            "check",
+            "llm",
+            "retrieval",
+        }
     ),
     "llm": frozenset({"model", "fallback", "last_role", "max_calls"}),
+    "retrieval": frozenset({"includes", "excludes", "max_items", "max_tokens", "chunks_in_order"}),
+    "retrieval_item": frozenset({"id", "title", "source"}),
     "check": frozenset({"python"}),
     "budget": frozenset({"max_input_tokens", "max_cost"}),
     "function_call": frozenset({"name", "params", "result", "error"}),
