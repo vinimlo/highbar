@@ -89,6 +89,27 @@ A `cost` from the writer always stands. Without one, highbar works it out from `
 
 Write `turn` before the reply goes out. A `turn` with `usage` recorded after its test's window closed still counts for that test, like a late tool call: it goes in the sums, and the test's budget is checked again, so a run within it can now fail. Raise `agent.settle_time` if that happens.
 
+## `llm`: one call to the model
+
+One per call, a failed one or a fallback included. Every field is optional; older versions of highbar ignore the record, and the contract stays at v1. `hb.llm(...)` writes it from Python.
+
+| Field | Type | |
+|---|---|---|
+| `model` | string | The model the call went to. |
+| `provider` | string | Its provider. |
+| `attempt` | integer | 1 for the first try, more for a retry. |
+| `fallback_from` | string | The model this call stands in for, when it is a fallback. |
+| `roles` | list of strings | The role of each message sent, in order: `["system", "user", "system"]`. Anything else in `roles` makes the line unreadable. |
+| `input_tokens`, `output_tokens`, `cache_tokens` | integers | What the call used. Not added to `usage` or to any budget: the `turn`'s `usage` stays the one count, so nothing counts twice. |
+| `latency_ms` | number | How long the call took. |
+| `error` | string | Why the call failed. Absent, `null`, `false` or `""`: it did not. |
+
+It goes to a test by its `context`, like a `tool` record, and it is proof that the agent handled the message. One recorded after its test's window closed still counts for that test, which is checked again. [`expect.llm`](/guides/assertions#calls-to-the-model-llm) checks these records.
+
+```json
+{"v": 1, "type": "llm", "ts": 1792983750.101, "model": "deepseek-flash", "provider": "openrouter", "attempt": 2, "fallback_from": "gpt-4o-mini", "roles": ["system", "user", "system"], "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
+```
+
 ## `hello`: the writer started
 
 | Field | Type | |

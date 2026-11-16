@@ -34,6 +34,7 @@ from highbar.domain.models import (
     FunctionCallExpect,
     Hook,
     HttpHook,
+    LlmExpect,
     PythonHook,
     RequestConfig,
     ResponseExpect,
@@ -1097,6 +1098,7 @@ def _parse_expect(raw: Any, where: str) -> Expect:
 
     budget = _parse_budget(raw["budget"], where) if "budget" in raw else None
     check = _parse_check(raw["check"], f"{where}.check") if "check" in raw else None
+    llm = _parse_llm(raw["llm"], f"{where}.llm") if "llm" in raw else None
 
     return Expect(
         function_calls=function_calls,
@@ -1104,8 +1106,55 @@ def _parse_expect(raw: Any, where: str) -> Expect:
         forbid=forbid,
         budget=budget,
         check=check,
+        llm=llm,
         **flags,
     )
+
+
+def _parse_llm(raw: Any, where: str) -> LlmExpect:
+    """``expect.llm`` (HB-11): the test's calls to the model, from its `llm` records."""
+    require_type(raw, dict, where, "llm must be a mapping")
+    check_keys(raw, "llm", where)
+    if not user_keys(raw):
+        raise SpecError(f"{where}: llm checks nothing (use model, fallback, last_role, max_calls)")
+    model: dict[str, Any] | None = None
+    if "model" in raw:
+        value = raw["model"]
+        if isinstance(value, str) and value:
+            model = {"equals": value}
+        else:
+            matcher = as_dict(value)
+            if matcher is None:
+                raise SpecError(f"{where}: model must be a name or a text matcher")
+            model = {}
+            for key, operand in matcher.items():
+                if key not in TEXT_MATCHER_KEYS:
+                    raise SpecError(
+                        f"{where}.model: unknown matcher {key!r} "
+                        f"(use {', '.join(sorted(TEXT_MATCHER_KEYS))})"
+                    )
+                if not isinstance(operand, str) or not operand:
+                    raise SpecError(f"{where}.model: {key} must be a non-empty string")
+                if key in REGEX_KEYS:
+                    try:
+                        re.compile(operand)
+                    except re.error as e:
+                        raise SpecError(f"{where}.model.{key}: invalid regex: {e}") from None
+                model[key] = operand
+            if not model:
+                raise SpecError(f"{where}.model: no matcher")
+    fallback = raw.get("fallback")
+    if "fallback" in raw:
+        require_type(fallback, bool, where, "fallback must be true or false")
+    last_role = raw.get("last_role")
+    if "last_role" in raw and (not isinstance(last_role, str) or not last_role):
+        raise SpecError(f"{where}: last_role must be a role name, like system")
+    max_calls = raw.get("max_calls")
+    if "max_calls" in raw and (
+        isinstance(max_calls, bool) or not isinstance(max_calls, int) or max_calls < 1
+    ):
+        raise SpecError(f"{where}: max_calls must be a whole number of at least 1")
+    return LlmExpect(model=model, fallback=fallback, last_role=last_role, max_calls=max_calls)
 
 
 def _parse_check(raw: Any, where: str) -> str:

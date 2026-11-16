@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from highbar._narrow import as_dict, as_list
-from highbar.domain.models import Hello, Trace, TurnRecord, Usage, Window
+from highbar.domain.models import Hello, LlmCall, Trace, TurnRecord, Usage, Window
 from highbar.engine.observation import AgentNotObservedError
 
 CONTRACT_VERSION = 1
@@ -402,6 +402,8 @@ def _add(window: Window, raw: bytes) -> None:
             window.declarations.append(names)
     elif kind == "tools":
         window.declarations.append(_names(record, "names"))
+    elif kind == "llm":
+        window.llms.append(_llm(record))
     # Any other type is from a newer emitter: ignored, as the contract says.
 
 
@@ -484,6 +486,37 @@ def _names(record: dict[str, Any], key: str) -> tuple[str, ...]:
     if names is None or not all(isinstance(name, str) for name in names):
         raise _BadLine(f"'{key}' must be a list of tool names")
     return tuple(str(name) for name in names)
+
+
+def _llm(record: dict[str, Any]) -> LlmCall:
+    """One call to the model (HB-11). Only ``roles`` is strict: a check reads its order."""
+    raw_roles = record.get("roles")
+    roles: tuple[str, ...] | None = None
+    if raw_roles is not None:
+        items = as_list(raw_roles)
+        if items is None or not all(isinstance(role, str) for role in items):
+            raise _BadLine(f"'roles' must be a list of role names, got {raw_roles!r}")
+        roles = tuple(items)
+    error = record.get("error")
+    latency = record.get("latency_ms")
+    return LlmCall(
+        ts=_number(record, "ts", 0.0),
+        context=_context(record),
+        model=_text(record.get("model")),
+        provider=_text(record.get("provider")),
+        attempt=_whole(record.get("attempt")),
+        fallback_from=_text(record.get("fallback_from")),
+        roles=roles,
+        input_tokens=_whole(record.get("input_tokens")),
+        output_tokens=_whole(record.get("output_tokens")),
+        cache_tokens=_whole(record.get("cache_tokens")),
+        latency_ms=_number(record, "latency_ms", 0.0) if latency is not None else None,
+        error=str(error) if error else None,  # false, "" and null all say "no error"
+    )
+
+
+def _whole(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _context(record: dict[str, Any]) -> dict[str, Any]:

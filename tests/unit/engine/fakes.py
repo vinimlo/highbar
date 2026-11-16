@@ -72,6 +72,7 @@ class FakeAgent:
         return Window(
             tools=[tool for window in windows for tool in window.tools],
             turns=[turn for window in windows for turn in window.turns],
+            llms=[call for window in windows for call in window.llms],
             hellos=list(self._hellos),
             end=len(self._log),
         )

@@ -11,7 +11,7 @@ import atexit
 import os
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
@@ -161,6 +161,45 @@ class Highbar:
             now if ended_at is None else ended_at,
             context.merged(context_fields),
         )
+
+    def llm(
+        self,
+        *,
+        model: str | None = None,
+        provider: str | None = None,
+        attempt: int | None = None,
+        fallback_from: str | None = None,
+        roles: Sequence[str] | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cache_tokens: int | None = None,
+        latency_ms: float | None = None,
+        error: str | None = None,
+        **context_fields: Any,
+    ) -> None:
+        """Record one call to the model, a failed one or a fallback included (HB-11).
+
+        ``roles`` are the roles of the messages sent, in order: ``expect.llm.last_role``
+        reads the last one. Extra keyword arguments go to the record's ``context``.
+        """
+        fields = {
+            "model": model,
+            "provider": provider,
+            "attempt": attempt,
+            "fallback_from": fallback_from,
+            "roles": list(roles) if roles is not None else None,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_tokens": cache_tokens,
+            "latency_ms": latency_ms,
+            "error": error,
+        }
+        record: dict[str, Any] = {"type": "llm", "ts": time.time()}
+        record.update({key: value for key, value in fields.items() if value is not None})
+        record_context = context.merged(context_fields)
+        if record_context:
+            record["context"] = record_context
+        self._write(record)
 
     @contextmanager
     def turn(self, *, message: str | None = None, **context_fields: Any) -> Iterator[TurnHandle]:

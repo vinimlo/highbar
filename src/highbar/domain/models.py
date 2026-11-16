@@ -99,6 +99,28 @@ class TurnRecord:
 
 
 @dataclass(frozen=True)
+class LlmCall:
+    """An `llm` record: one call to the model, a failed one or a fallback included (HB-11).
+
+    Its tokens are shown, not summed: the `turn`'s usage is what budgets read, so
+    nothing counts twice (decision E3, on the card).
+    """
+
+    ts: float
+    context: dict[str, Any] = field(default_factory=dict[str, Any])
+    model: str | None = None
+    provider: str | None = None
+    attempt: int | None = None
+    fallback_from: str | None = None
+    roles: tuple[str, ...] | None = None  # the roles of the messages sent, in order
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_tokens: int | None = None
+    latency_ms: float | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class Hello:
     """A `hello` record: an emitter started writing to the trace file."""
 
@@ -114,6 +136,7 @@ class Window:
     tools: list[Trace] = field(default_factory=list[Trace])
     turns: list[TurnRecord] = field(default_factory=list[TurnRecord])
     hellos: list[Hello] = field(default_factory=list[Hello])
+    llms: list[LlmCall] = field(default_factory=list[LlmCall])
     # The tools the agent declared it records, one tuple per declaration (spec D4).
     declarations: list[tuple[str, ...]] = field(default_factory=list[tuple[str, ...]])
     # Where the next read starts: every record is read once, none falls between reads.
@@ -258,6 +281,21 @@ class Budget:
 
 
 @dataclass(frozen=True)
+class LlmExpect:
+    """``expect.llm`` (HB-11): checks of the test's calls to the model (decision E4).
+
+    ``model`` is a text matcher on the call that answered, the last without ``error``.
+    ``last_role`` holds for every call. ``fallback`` is whether any call came from another
+    model or was a retry. ``max_calls`` counts the failed calls too.
+    """
+
+    model: dict[str, Any] | None = None
+    fallback: bool | None = None
+    last_role: str | None = None
+    max_calls: int | None = None
+
+
+@dataclass(frozen=True)
 class Expect:
     """Expected outcomes for a test or turn."""
 
@@ -268,6 +306,7 @@ class Expect:
     forbid: tuple[str, ...] = ()  # tools that must not be called, failed or not
     budget: Budget | None = None  # per turn in a turn, per execution in a test
     check: str | None = None  # "module:function" of the author's own check (HB-12)
+    llm: LlmExpect | None = None  # the calls to the model (HB-11)
 
     @property
     def requires_observation(self) -> bool:
@@ -277,7 +316,12 @@ class Expect:
         nothing unless the message reached an agent that would have recorded one. A
         budget reads the usage of the turn's own record.
         """
-        return self.function_calls is not None or bool(self.forbid) or self.budget is not None
+        return (
+            self.function_calls is not None
+            or bool(self.forbid)
+            or self.budget is not None
+            or self.llm is not None
+        )
 
 
 @dataclass(frozen=True)
