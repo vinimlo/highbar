@@ -1830,6 +1830,14 @@ class TestRunner:
                     f"agent.reply: turn: no turn record of this test with a response in "
                     f"{self._reply_within:g}s (agent.timeout), so its reply was not checked"
                 )
+            elif not reply.strip():
+                # Checked as "", it would pass every not_contains and every guardrail on
+                # text, as an empty HTTP body would (review of #91).
+                execution.cause = InfraCause("empty_reply", self._endpoint)
+                late_reply = (
+                    "agent.reply: turn: the turn record's response is empty, so there is "
+                    "no text to check"
+                )
             response = reply or ""
         log.response, log.response_ms = response, (time.time() - sent_at) * 1000
 

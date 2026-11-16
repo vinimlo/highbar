@@ -98,9 +98,10 @@ agent:
 ```
 
 - Any `2xx` is accepted, with or without a body. Another status is still an `error`.
-- highbar waits for that `turn` up to `agent.timeout`, then `settle_time` more, for the records written after it. A reply that does not come in time makes the test an `error`, not a pass.
+- highbar waits for that `turn` up to `agent.timeout`, then `settle_time` more, for the records written after it. A reply that does not come in time, or a `response` that is empty or only spaces, makes the test an `error`, not a pass.
 - Only a `turn` tagged as this test's counts, through [correlation](/guides/attach-mode#which-records-belong-to-a-test). The worker must carry the test id from the request to the record it writes, as `hb.turn(test=...)` does in the example above. An untagged turn may be another test's reply.
 - `agent.response`, a path in the HTTP body, does not go with `reply: turn`.
+- The reply is the first of this test's turns with a `response`. A worker that writes two per message ("one moment..." and then the answer) has only the first checked: write the answer in one turn.
 
 ## Checking the connection
 

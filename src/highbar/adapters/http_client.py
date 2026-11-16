@@ -31,7 +31,9 @@ REPLY_KEYS = ("response", "message", "content", "text", "reply")
 TEST_HEADER = "X-Highbar-Test"
 
 
-CauseKind = Literal["http_status", "connect", "timeout", "transport", "empty_body", "no_reply"]
+CauseKind = Literal[
+    "http_status", "connect", "timeout", "transport", "empty_body", "no_reply", "empty_reply"
+]
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,8 @@ class InfraCause:
             return f"with no response from {self.endpoint} within agent.timeout{wait}"
         if self.kind == "empty_body":
             return f"with an empty body from {self.endpoint}"
+        if self.kind == "empty_reply":
+            return f"with an empty reply in the turn record, for messages to {self.endpoint}"
         if self.kind == "no_reply":
             # agent.reply: turn (HB-14): the message went, its reply never came.
             wait = f" ({self.seconds:g}s)" if self.seconds is not None else ""

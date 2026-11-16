@@ -179,3 +179,58 @@ class TestMaxErrors:
 
         assert len(agent.sent) == 8
         assert summary.stop_reason is None
+
+
+GUARD = Expect(response=ResponseExpect(matcher={"not_contains": "password"}))
+
+
+class TestEmptyReply:
+    """Review of #91: a reply that is empty or only spaces would pass every guard on
+    text, as an empty HTTP body would (C1). It is an error, and counts for --max-errors."""
+
+    @pytest.mark.parametrize("empty", ["", "   ", "\n\t"])
+    def test_hb14_an_empty_reply_in_the_turn_is_an_error(self, empty: str) -> None:
+        agent = FakeAgent(_later(empty))
+        (test,) = (
+            Runner(
+                adapter=MagicMock(),
+                client=agent,  # pyright: ignore[reportArgumentType]
+                collector=agent,
+                assertions=[FunctionCallsAssertion(), ResponseAssertion()],
+                reporter=MagicMock(),
+                settle_time=0,
+                reply_within=0.3,
+            )
+            .run(
+                Spec(
+                    agent=AgentConfig(endpoint="http://127.0.0.1:1/chat", reply="turn"),
+                    suites=[Suite("S", [Case(trigger="t", expect=GUARD)])],
+                )
+            )
+            .tests
+        )
+
+        assert test.status is Status.ERROR, test.errors
+        assert any("empty" in e for e in test.errors), test.errors
+
+    def test_hb14_empty_replies_count_for_max_errors(self) -> None:
+        agent = FakeAgent(_later("  "))
+        summary = Runner(
+            adapter=MagicMock(),
+            client=agent,  # pyright: ignore[reportArgumentType]
+            collector=agent,
+            assertions=[FunctionCallsAssertion(), ResponseAssertion()],
+            reporter=MagicMock(),
+            settle_time=0,
+            reply_within=0.3,
+            max_errors=3,
+        ).run(
+            Spec(
+                agent=AgentConfig(endpoint="http://127.0.0.1:1/chat", reply="turn"),
+                suites=[Suite("S", [Case(trigger="t", expect=GUARD, runs=6)])],
+            )
+        )
+
+        assert len(agent.sent) == 3
+        assert summary.stop_reason == REPEATED_ERRORS
+        assert summary.stopped is not None and "empty reply" in summary.stopped, summary.stopped
