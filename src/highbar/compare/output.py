@@ -11,7 +11,7 @@ from typing import Any
 from rich.console import Console
 from rich.markup import escape
 
-from highbar.compare.core import ALPHA, ONE_ROUND, CompareError, Round, Row, Side, read_round
+from highbar.compare.core import ALPHA, FEW_ROUNDS, CompareError, Round, Row, Side, read_round
 
 COMPARE_SCHEMA_VERSION = 1
 
@@ -82,9 +82,9 @@ def render(rows: Sequence[Row], console: Console) -> None:
             console.print(f"      → {escape(row.reason)}", soft_wrap=True)
         if row.verdict is None and (row.p < ALPHA or row.base_errors_decide):
             reason = row.reason
-            if reason == ONE_ROUND:
+            if reason == FEW_ROUNDS:
                 one_round = True
-                reason = "one round on a side: no conclusion (see below)"
+                reason = FEW_ROUNDS.split(";")[0] + " (see below)"
             console.print(f"      → {escape(reason)}", soft_wrap=True)
         means = _means(row.base, row.head)
         if means and _moved(row.base, row.head):
@@ -101,7 +101,7 @@ def render(rows: Sequence[Row], console: Console) -> None:
         counts.append(f"{skipped} not compared")
     console.print("\n  " + " | ".join(counts), soft_wrap=True)
     if one_round:
-        console.print(f"  {escape(ONE_ROUND)}.", soft_wrap=True)
+        console.print(f"  {escape(FEW_ROUNDS)}.", soft_wrap=True)
 
 
 def write_json(path: str, rows: Sequence[Row], base: Sequence[str], head: Sequence[str]) -> None:

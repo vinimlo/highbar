@@ -54,7 +54,7 @@ def test_his_warranty_case_exits_0_with_no_verdict(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "warranty" in result.output
     assert "1/5" in result.output and "5/5" in result.output
-    assert "one round on a side" in result.output
+    assert "fewer than 3 rounds on a side" in result.output
 
 
 def test_a_real_regression_fails_the_gate(tmp_path: Path) -> None:
@@ -69,19 +69,19 @@ def test_a_real_regression_fails_the_gate(tmp_path: Path) -> None:
 
 def test_sides_take_files_and_folders_repeated(tmp_path: Path) -> None:
     a = _write(tmp_path / "a1.json", ("warranty", 10, 0))
-    b = _write(tmp_path / "a2.json", ("warranty", 10, 0))
-    head = _rounds(tmp_path / "on", 2, ("warranty", 1, 9))
+    b = _rounds(tmp_path / "more", 2, ("warranty", 10, 0))
+    head = _rounds(tmp_path / "on", 3, ("warranty", 1, 9))
     result = runner.invoke(
         app, ["compare", "--base", str(a), "--base", str(b), "--head", str(head)]
     )
     assert result.exit_code == 0, result.output
-    assert "20/20" in result.output and "2/20" in result.output
+    assert "30/30" in result.output and "3/30" in result.output
     assert "worse" in result.output
 
 
 def test_json_report_has_the_rows(tmp_path: Path) -> None:
-    base = _rounds(tmp_path / "off", 2, ("warranty", 10, 0))
-    head = _rounds(tmp_path / "on", 2, ("warranty", 1, 9))
+    base = _rounds(tmp_path / "off", 3, ("warranty", 10, 0))
+    head = _rounds(tmp_path / "on", 3, ("warranty", 1, 9))
     out = tmp_path / "compare.json"
     result = runner.invoke(
         app, ["compare", "--base", str(base), "--head", str(head), "--report", f"json={out}"]
@@ -90,11 +90,11 @@ def test_json_report_has_the_rows(tmp_path: Path) -> None:
     rows = json.loads(out.read_text())["tests"]
     assert rows[0]["test"] == "warranty"
     assert rows[0]["verdict"] == "worse"
-    assert rows[0]["base"]["passed"] == 20
+    assert rows[0]["base"]["passed"] == 30
     # Review note (c): "executions" holds every one, errors included; no "judged" beside "error".
-    assert rows[0]["base"]["executions"] == 20
+    assert rows[0]["base"]["executions"] == 30
     assert "judged" not in rows[0]["base"]
-    assert rows[0]["base"]["rounds"] == [{"passed": 10, "failed": 0, "error": 0}] * 2
+    assert rows[0]["base"]["rounds"] == [{"passed": 10, "failed": 0, "error": 0}] * 3
     assert rows[0]["head"]["mean_cost"] == {"USD": 0.001}
 
 
