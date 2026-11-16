@@ -1368,6 +1368,18 @@ def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
                 f"{where}.error.{key}: a boolean is not text, and an error is; "
                 f'write the text it must hold, such as {{{key}: "Timeout"}}'
             )
+        if isinstance(operand, dict | list):
+            # A list or an object would be compared as its Python repr: never what an
+            # error says (review of #79).
+            raise SpecError(
+                f"{where}.error.{key}: {operand!r} is not text, and an error is; "
+                f'write the text it must hold, such as {{{key}: "Timeout"}}'
+            )
+        if key == "equals" and operand == "":
+            raise SpecError(
+                f"{where}.error.equals: an empty error is no error, so this never holds; "
+                "write error: false for a call that must not fail"
+            )
         if key == "equals" and not isinstance(operand, str):
             # equals compares as is, and an error is text: 1 never equals "1".
             raise SpecError(
