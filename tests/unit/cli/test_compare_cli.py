@@ -172,3 +172,16 @@ def test_review_a_reformatted_copy_is_the_same_round(tmp_path: Path) -> None:
     )
     assert result.exit_code == 2, result.output
     assert "the same report" in result.output
+
+
+def test_review_why_an_erroring_base_is_not_beaten_is_shown(tmp_path: Path) -> None:
+    base = tmp_path / "down"
+    for i in range(4):
+        _write(base / f"r{i}.json", ("warranty", 0, 0))
+        body = json.loads((base / f"r{i}.json").read_text())
+        body["specs"][0]["tests"][0]["counts"] = {"passed": 0, "failed": 0, "error": 10}
+        (base / f"r{i}.json").write_text(json.dumps(body))
+    head = _rounds(tmp_path / "up", 4, ("warranty", 10, 0))
+    result = runner.invoke(app, ["compare", "--base", str(base), "--head", str(head)])
+    assert result.exit_code == 0, result.output
+    assert "rests on the 40 error executions on base" in result.output

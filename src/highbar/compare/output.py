@@ -80,7 +80,7 @@ def render(rows: Sequence[Row], console: Console) -> None:
         )
         if row.verdict is not None and (row.base.errors or row.head.errors):
             console.print(f"      → {escape(row.reason)}", soft_wrap=True)
-        if row.verdict is None and row.p < ALPHA:
+        if row.verdict is None and (row.p < ALPHA or row.base_errors_decide):
             reason = row.reason
             if reason == ONE_ROUND:
                 one_round = True
