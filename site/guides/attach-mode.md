@@ -236,6 +236,8 @@ That works in a single-turn test only. In a conversation, from the second turn o
 
 ## Which records belong to a test
 
+An agent that exports OpenTelemetry spans is matched by trace id instead: see [OpenTelemetry traces](/guides/opentelemetry).
+
 A test counts the trace records whose `context` matches `agent.correlate`. The default, <code v-pre>{test: "{{test.id}}"}</code>, matches the test id that `highbar.asgi.Middleware` and `hb.turn()` put in every record. When the test id cannot reach the code that records the calls, correlate on what can, like the conversation the session opened (as above).
 
 In attach mode, a test that checks tool calls needs at least one record of its own. Without it, the test is an `error` that says what was read:

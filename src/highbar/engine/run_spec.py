@@ -140,11 +140,14 @@ def run_spec(
         response_path=agent.response,
         timeout_ms=agent.timeout,
         body_is_reply=agent.reply == "body",
+        traceparent=agent.trace_format == "otlp",
     )
 
     if agent.start is None:
         collector: TraceCollector = (
-            trace_collector(agent.traces) if agent.traces else NoTraceCollector()
+            trace_collector(agent.traces, trace_format=agent.trace_format)
+            if agent.traces
+            else NoTraceCollector()
         )
         runner = _runner(
             spec,
@@ -273,6 +276,7 @@ def _runner(
         streak=streak,
         jobs=jobs,
         more_after=more_after,
+        trace_format=spec.agent.trace_format,
         proxy=proxy,
     )
 

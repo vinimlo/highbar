@@ -23,8 +23,9 @@ _QUOTE = re.compile(r"^\s*(?:>\s?)+")
 # What a fragment is wrapped in to become a spec that can be validated.
 _AGENT = {"start": "python agent.py", "endpoint": "http://127.0.0.1:8731/chat"}
 _TEST = {"trigger": "hi", "expect": {"response": {"contains": "hi"}}}
-# YAML that is not a spec, declared as such in the fence: ```yaml workflow
-OTHER_YAML_ROLES = frozenset({"workflow"})
+# YAML that is not a spec, declared as such in the fence: ```yaml workflow, or the
+# OpenTelemetry Collector's config (```yaml collector, HB-48)
+OTHER_YAML_ROLES = frozenset({"workflow", "collector"})
 
 
 @dataclass(frozen=True)
