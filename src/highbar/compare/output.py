@@ -116,7 +116,7 @@ def write_json(path: str, rows: Sequence[Row], base: Sequence[str], head: Sequen
 
 def _rate(side: Side) -> str:
     low, high = side.interval
-    rounds = len(side.rounds)
+    rounds = side.measured_rounds
     text = f"{side.passed}/{side.executions} in {rounds} round{'s' if rounds != 1 else ''}"
     text += f" ({low:.0%}–{high:.0%})"
     if side.errors:
