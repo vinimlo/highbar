@@ -12,7 +12,7 @@ free, and it needs neither the spec's agent nor its sessions.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 
 from highbar.assertions.function_calls import FunctionCallsAssertion
@@ -47,19 +47,14 @@ TrivialAgent = Callable[[str], _Doing]
 def probe_spec(spec: Spec) -> list[Finding]:
     """Every test but the negative controls (``expect_status``), in spec order."""
     tools = _tool_names(spec)
-    everything = " · ".join(_texts_looked_for(spec))
-    agents: dict[str, TrivialAgent] = {
-        "silent": lambda _message: _Doing(reply=""),
-        "echo": lambda message: _Doing(reply=message),
-        "every tool": lambda _message: _Doing(reply="", calls=tools),
-        "every option": lambda _message: _Doing(reply=everything),
-    }
+    every_text = _texts_looked_for(_expects(spec))
     findings: list[Finding] = []
     for suite in spec.suites:
         for test in suite.tests:
             if test.expect_status is not None:
                 continue  # a test meant to fail is a control, not a claim
             not_judged = _beyond_trivial(test)
+            agents = _agents(tools, every_text, test)
             passes_on = (
                 ()
                 if not_judged
@@ -67,6 +62,22 @@ def probe_spec(spec: Spec) -> list[Finding]:
             )
             findings.append(Finding(suite.name, test.plain_name, passes_on, not_judged))
     return findings
+
+
+def _agents(tools: tuple[str, ...], every_text: list[str], test: Test) -> dict[str, TrivialAgent]:
+    agents: dict[str, TrivialAgent] = {
+        "silent": lambda _message: _Doing(reply=""),
+        "echo": lambda message: _Doing(reply=message),
+        "every tool": lambda _message: _Doing(reply="", calls=tools),
+    }
+    # "every option" names each text the spec looks for, this test's among them. It
+    # says something only when it also names one this test does not ask for: alone,
+    # the test's own text is just the right answer (review of #76).
+    own = set(_texts_looked_for(turn.expect for turn in _turns(test)))
+    if any(text not in own for text in every_text):
+        everything = " · ".join(every_text)
+        agents["every option"] = lambda _message: _Doing(reply=everything)
+    return agents
 
 
 def _passes(test: Test, agent: TrivialAgent) -> bool:
@@ -126,10 +137,10 @@ def _tool_names(spec: Spec) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _texts_looked_for(spec: Spec) -> list[str]:
-    """Every text a reply in the spec must contain: what "every option" names at once."""
+def _texts_looked_for(expects: Iterable[Expect]) -> list[str]:
+    """Every text these replies must contain: what "every option" names at once."""
     texts: dict[str, None] = {}
-    for expect in _expects(spec):
+    for expect in expects:
         if expect.response is None:
             continue
         for key in _POSITIVE_TEXT:

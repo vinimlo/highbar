@@ -184,3 +184,36 @@ def test_hb47_a_negative_control_is_left_out(tmp_path: Path) -> None:
         """,
     )
     assert "control" not in found
+
+
+def test_review_76_the_right_answer_alone_is_not_every_option(tmp_path: Path) -> None:
+    # Review of #76: in a one-test spec, "every option" replied with the test's own
+    # text, which is the right answer, and the test was marked vacuous.
+    found = _probe(
+        tmp_path,
+        """
+        - name: capital
+          trigger: "capital of France?"
+          expect:
+            response: {contains: "Paris"}
+        """,
+    )
+    assert found["capital"] == ()
+
+
+def test_review_76_naming_another_tests_answer_too_still_counts(tmp_path: Path) -> None:
+    found = _probe(
+        tmp_path,
+        """
+        - name: France
+          trigger: "capital of France?"
+          expect:
+            response: {contains: "Paris"}
+        - name: Italy
+          trigger: "capital of Italy?"
+          expect:
+            response: {contains: "Rome"}
+        """,
+    )
+    assert found["France"] == ("every option",)
+    assert found["Italy"] == ("every option",)
