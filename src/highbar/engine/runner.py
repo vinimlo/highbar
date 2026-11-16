@@ -13,8 +13,10 @@ from highbar.adapters import file_collector, subprocess_adapter
 from highbar.adapters.file_collector import TraceFormatError
 from highbar.adapters.http_client import AgentResponseError, HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
-from highbar.assertions.llm import LlmNotObserved, check_llm
+from highbar.assertions.llm import check_llm
+from highbar.assertions.records import RecordNotObserved
 from highbar.assertions.response import truncate
+from highbar.assertions.retrieval import check_retrieval
 from highbar.domain.models import (
     Budget,
     Counts,
@@ -22,6 +24,7 @@ from highbar.domain.models import (
     Expect,
     LlmCall,
     PhrasingOutcome,
+    Retrieval,
     RunSummary,
     Spec,
     Status,
@@ -164,7 +167,9 @@ class _Execution:
     expect: Expect | None = None  # of its last turn
     response: str = ""
     tools: list[Trace] = field(default_factory=list[Trace])
-    llms: list[LlmCall] = field(default_factory=list[LlmCall])  # its calls to the model (HB-11)
+    # Its records of the types beyond tool calls (HB-11, HB-3), as late ones add to them.
+    llms: list[LlmCall] = field(default_factory=list[LlmCall])
+    retrievals: list[Retrieval] = field(default_factory=list[Retrieval])
     passed: bool = False
     # No record of its own in a managed run: it rests on the agent highbar started being
     # the one that answered, which it may not be once that agent is gone (HB-43).
@@ -373,6 +378,26 @@ def _suites(tests: tuple[TestOutcome, ...]) -> tuple[SuiteOutcome, ...]:
     for test in tests:
         usages.setdefault(test.suite, []).extend(test.usages)
     return tuple(SuiteOutcome(name, add_up(turns)) for name, turns in usages.items())
+
+
+def _record_checks(
+    expect: Expect, llms: list[LlmCall], retrievals: list[Retrieval]
+) -> tuple[list[str], list[str]]:
+    """The checks of the record types beyond tool calls: their failures, and what could
+    not be checked for want of a record (HB-11, HB-3; decision E1)."""
+    failures: list[str] = []
+    unseen: list[str] = []
+    if expect.llm is not None:
+        try:
+            failures += check_llm(llms, expect.llm)
+        except RecordNotObserved as e:
+            unseen.append(str(e))
+    if expect.retrieval is not None:
+        try:
+            failures += check_retrieval(retrievals, expect.retrieval)
+        except RecordNotObserved as e:
+            unseen.append(str(e))
+    return failures, unseen
 
 
 def _test_name(test: Test, variations_run: int | None = None) -> str:
@@ -855,7 +880,7 @@ class TestRunner:
             if attribute(turn.context, last.correlate) is Attribution.UNATTRIBUTED
         ]
         self._judge_late_usage([t for t in window.turns if t not in stray], current=None)
-        self._judge_late_llms(window.llms, current=None)
+        self._judge_late_records(window.llms, window.retrievals, current=None)
         self._suspect_usage(last, self._read_usage(stray), last.correlate)
         if unreadable is not None and last.passed:
             # No test comes after the last one: the line may be its late call or usage.
@@ -907,26 +932,32 @@ class TestRunner:
                     )
                 )
 
-    def _judge_late_llms(self, calls: list[LlmCall], current: _Execution | None) -> None:
-        """Calls to the model tagged with an earlier execution count for it (HB-11, E1)."""
-        late: dict[int, tuple[_Execution, list[LlmCall]]] = {}
-        for call in calls:
+    def _judge_late_records(
+        self, llms: list[LlmCall], retrievals: list[Retrieval], current: _Execution | None
+    ) -> None:
+        """Records beyond tool calls, tagged with an earlier execution, count for it (E1)."""
+        late: dict[int, tuple[_Execution, int]] = {}
+        for call in llms:
             owner = self._owner(call.context, current)
             if owner is not None:
-                late.setdefault(id(owner), (owner, []))[1].append(call)
-        for execution, more in late.values():
-            was_passing = execution.passed and execution.expect is not None
-            execution.llms = [*execution.llms, *more]
-            if not was_passing or execution.expect is None or execution.expect.llm is None:
+                owner.llms = [*owner.llms, call]
+                late[id(owner)] = (owner, late.get(id(owner), (owner, 0))[1] + 1)
+        for record in retrievals:
+            owner = self._owner(record.context, current)
+            if owner is not None:
+                owner.retrievals = [*owner.retrievals, record]
+                late[id(owner)] = (owner, late.get(id(owner), (owner, 0))[1] + 1)
+        for execution, count in late.values():
+            if not (execution.passed and execution.expect is not None):
                 continue
-            errors = check_llm(execution.llms, execution.expect.llm)
+            errors, _ = _record_checks(execution.expect, execution.llms, execution.retrievals)
             if errors:
                 execution.passed = False
                 self._findings.append(
                     _Finding(
                         execution,
                         Status.FAILED,
-                        f"{len(more)} `llm` record(s) arrived after the test's window closed "
+                        f"{count} record(s) arrived after the test's window closed "
                         f"(settle_time {self._settle_time * 1000:.0f} ms): "
                         f"{'; '.join(errors)}. Raise agent.settle_time to read it in time",
                     )
@@ -1702,7 +1733,7 @@ class TestRunner:
             # Nothing in the window is tagged: it is all there is to go by. An attached
             # agent may be serving others, and their tokens are not this test's.
             traces = window.tools
-            llms = window.llms
+            llms, retrievals = window.llms, window.retrievals
             log.tools = list(traces)
             log.records = stray if self._managed else []
             log.turns = list(window.turns)
@@ -1717,15 +1748,18 @@ class TestRunner:
         else:
             self._judge_late(classified.other.tools, current=execution)
             self._judge_late_usage(classified.other.turns, current=execution)
-            self._judge_late_llms(classified.other.llms, current=execution)
+            self._judge_late_records(
+                classified.other.llms, classified.other.retrievals, current=execution
+            )
             self._suspect(previous, untagged)
             log.untagged = self._read_usage(classified.unattributed.turns)
             self._suspect_usage(previous, log.untagged, execution.correlate)
-            seen = classified.mine.tools or classified.mine.turns or classified.mine.llms
+            mine = classified.mine
+            seen = mine.tools or mine.turns or mine.llms or mine.retrievals
             if observes and not seen:
                 return unverified(self._not_observed(classified, execution.correlate))
             traces = classified.mine.tools
-            llms = classified.mine.llms
+            llms, retrievals = classified.mine.llms, classified.mine.retrievals
             log.tools = list(traces)
             log.records = self._read_usage(classified.mine.turns)
             log.turns = list(classified.mine.turns)
@@ -1765,17 +1799,17 @@ class TestRunner:
                 return unverified("; ".join(budget.unverified))
             errors = [*errors, *budget.unverified]
 
-        if expect.llm is not None:
-            # No `llm` record: nothing was checked, which only an earlier failure outranks.
-            try:
-                errors = [*errors, *check_llm(llms, expect.llm)]
-            except LlmNotObserved as e:
-                if not errors:
-                    return unverified(str(e))
-                errors = [*errors, str(e)]
+        failures, unseen = _record_checks(expect, llms, retrievals)
+        errors = [*errors, *failures]
+        if unseen:
+            # No record of a type it checks: nothing was checked there, which only a
+            # failure outranks (decision E2).
+            if not errors:
+                return unverified("; ".join(unseen))
+            errors = [*errors, *unseen]
 
         execution.expect, execution.response = expect, response
-        execution.llms = list(llms)
+        execution.llms, execution.retrievals = list(llms), list(retrievals)
         execution.tools, execution.passed = list(traces), not errors
         duration = (time.time() - start) * 1000
         return TestResult(

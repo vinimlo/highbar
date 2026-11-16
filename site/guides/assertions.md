@@ -160,6 +160,28 @@ expect:
 
 A test with no `llm` record of its own is an `error`, never a pass: `fallback: false` would otherwise pass on an agent that records nothing. When another check already failed the test, it stays `failed`, and the missing records are named too.
 
+## What entered the prompt: `retrieval`
+
+A reply that is right can still be right by luck: with two near-identical manuals in the prompt, an agent can quote the right deadline in one round and the wrong one in the next. An agent that records what it put in the prompt, in a [`retrieval` record](/reference/trace-contract#retrieval-what-entered-the-prompt), lets the test check that directly:
+
+```yaml test
+trigger: "and the deadline?"
+expect:
+  retrieval:
+    includes: [tr-7, {id: tr-2, source: sticky}]
+    excludes: [Draft]
+    max_items: 3
+    max_tokens: 2000
+    chunks_in_order: true
+```
+
+- `includes`: documents, by id or title, that went into a prompt of this test. With `source`, they must have come that way: `expanded`, `retrieved` or `sticky`.
+- `excludes`: documents that must not have gone in.
+- `max_items`, `max_tokens`: for each prompt, one record each. Without a `tokens` of its own, a record's documents' `tokens` add up; when they cannot, the check fails and says so.
+- `chunks_in_order`: each document's chunks went in ascending.
+
+A test with no `retrieval` record of its own is an `error`, never a pass, as with [`llm`](#calls-to-the-model-llm).
+
 ## A check of your own: `check`
 
 Some outcomes are in neither the reply nor a tool call: a list the agent must have cleared, a row it must have written. `check` names a Python function that looks for them:

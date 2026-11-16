@@ -7,10 +7,11 @@ check, and that is never a pass.
 from __future__ import annotations
 
 from highbar.assertions._match import value_match
+from highbar.assertions.records import RecordNotObserved
 from highbar.domain.models import LlmCall, LlmExpect
 
 
-class LlmNotObserved(Exception):
+class LlmNotObserved(RecordNotObserved):
     """No `llm` record for the test: its expect.llm could not be checked (an `error`)."""
 
 

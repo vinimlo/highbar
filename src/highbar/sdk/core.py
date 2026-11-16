@@ -201,6 +201,41 @@ class Highbar:
             record["context"] = record_context
         self._write(record)
 
+    def retrieval(
+        self,
+        *,
+        items: Sequence[Mapping[str, Any]] = (),
+        query: str | None = None,
+        search_query: str | None = None,
+        strategy: str | None = None,
+        skipped_reason: str | None = None,
+        expired: Sequence[Mapping[str, Any]] | None = None,
+        tokens: int | None = None,
+        **context_fields: Any,
+    ) -> None:
+        """Record what entered the prompt for this message (HB-3): each document as
+        ``{"id", "title", "source", "chunks", "tokens"}``. Extra keyword arguments go to
+        the record's ``context``.
+        """
+        fields = {
+            "query": query,
+            "search_query": search_query,
+            "strategy": strategy,
+            "skipped_reason": skipped_reason,
+            "expired": [_plain(entry) for entry in expired] if expired is not None else None,
+            "tokens": tokens,
+        }
+        record: dict[str, Any] = {
+            "type": "retrieval",
+            "ts": time.time(),
+            "items": [_plain(item) for item in items],
+        }
+        record.update({key: value for key, value in fields.items() if value is not None})
+        record_context = context.merged(context_fields)
+        if record_context:
+            record["context"] = record_context
+        self._write(record)
+
     @contextmanager
     def turn(self, *, message: str | None = None, **context_fields: Any) -> Iterator[TurnHandle]:
         """Mark the handling of one message: writes a `turn` record when the block ends.

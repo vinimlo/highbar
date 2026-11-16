@@ -110,6 +110,23 @@ It goes to a test by its `context`, like a `tool` record, and it is proof that t
 {"v": 1, "type": "llm", "ts": 1792983750.101, "model": "deepseek-flash", "provider": "openrouter", "attempt": 2, "fallback_from": "gpt-4o-mini", "roles": ["system", "user", "system"], "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
 ```
 
+## `retrieval`: what entered the prompt
+
+One per message: the documents the agent put in the prompt, and how. Every field is optional, but each document needs an `id` or a `title`, and its `chunks` must be whole numbers: anything else makes the line unreadable. `hb.retrieval(...)` writes it from Python.
+
+| Field | Type | |
+|---|---|---|
+| `items` | list | The documents: `{id, title, source, chunks, tokens}`. `source` is `retrieved`, `expanded` (brought in whole) or `sticky` (kept from an earlier turn); `chunks` are the indexes of its parts that went in, in the order they went in. |
+| `query`, `search_query`, `strategy`, `skipped_reason` | strings | What was searched, how, and why nothing was, when nothing was. |
+| `expired` | list | Documents that left the prompt: `{id, reason}`. |
+| `tokens` | integer | The tokens the documents took. Without it, the documents' own `tokens` add up, when every one has them. |
+
+It goes to a test by its `context`, like a `tool` record. It is proof that the agent handled the message, and it is not a tool call: `function_calls: []` and `exclusive` do not see it. One recorded after its test's window closed still counts for that test, which is checked again. [`expect.retrieval`](/guides/assertions#what-entered-the-prompt-retrieval) checks these records.
+
+```json
+{"v": 1, "type": "retrieval", "ts": 1792983750.090, "query": "and the deadline?", "items": [{"id": "tr-7", "title": "Warranty", "source": "expanded", "chunks": [0, 1, 2], "tokens": 900}], "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
+```
+
 ## `hello`: the writer started
 
 | Field | Type | |

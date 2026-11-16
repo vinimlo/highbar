@@ -34,10 +34,12 @@ from highbar.domain.models import (
     FunctionCallExpect,
     Hook,
     HttpHook,
+    ItemRef,
     LlmExpect,
     PythonHook,
     RequestConfig,
     ResponseExpect,
+    RetrievalExpect,
     RunConfig,
     SessionConfig,
     Spec,
@@ -1099,6 +1101,9 @@ def _parse_expect(raw: Any, where: str) -> Expect:
     budget = _parse_budget(raw["budget"], where) if "budget" in raw else None
     check = _parse_check(raw["check"], f"{where}.check") if "check" in raw else None
     llm = _parse_llm(raw["llm"], f"{where}.llm") if "llm" in raw else None
+    retrieval = (
+        _parse_retrieval(raw["retrieval"], f"{where}.retrieval") if "retrieval" in raw else None
+    )
 
     return Expect(
         function_calls=function_calls,
@@ -1107,6 +1112,7 @@ def _parse_expect(raw: Any, where: str) -> Expect:
         budget=budget,
         check=check,
         llm=llm,
+        retrieval=retrieval,
         **flags,
     )
 
@@ -1155,6 +1161,65 @@ def _parse_llm(raw: Any, where: str) -> LlmExpect:
     ):
         raise SpecError(f"{where}: max_calls must be a whole number of at least 1")
     return LlmExpect(model=model, fallback=fallback, last_role=last_role, max_calls=max_calls)
+
+
+RETRIEVAL_SOURCES = ("expanded", "retrieved", "sticky")
+
+
+def _parse_retrieval(raw: Any, where: str) -> RetrievalExpect:
+    """``expect.retrieval`` (HB-3): what entered the prompt, from `retrieval` records."""
+    require_type(raw, dict, where, "retrieval must be a mapping")
+    check_keys(raw, "retrieval", where)
+    if not user_keys(raw):
+        raise SpecError(
+            f"{where}: retrieval checks nothing "
+            "(use includes, excludes, max_items, max_tokens, chunks_in_order)"
+        )
+    includes: list[ItemRef] = []
+    for n, entry in enumerate(_listed(raw, "includes", where)):
+        at = f"{where}.includes[{n}]"
+        if isinstance(entry, str) and entry:
+            includes.append(ItemRef(entry))
+            continue
+        mapping = as_dict(entry)
+        if mapping is None:
+            raise SpecError(f"{at}: a document is an id or title, or {{id, title, source}}")
+        check_keys(mapping, "retrieval_item", at)
+        key = mapping.get("id", mapping.get("title"))
+        if not isinstance(key, str) or not key:
+            raise SpecError(f"{at}: needs 'id' or 'title'")
+        source = mapping.get("source")
+        if source is not None and source not in RETRIEVAL_SOURCES:
+            raise SpecError(f"{at}: source must be one of {', '.join(RETRIEVAL_SOURCES)}")
+        includes.append(ItemRef(key, source))
+    excludes = _listed(raw, "excludes", where)
+    if not all(isinstance(key, str) and key for key in excludes):
+        raise SpecError(f"{where}: excludes must be a list of ids or titles")
+    bounds: dict[str, int | None] = {}
+    for key, least in (("max_items", 0), ("max_tokens", 1)):
+        value = raw.get(key)
+        if key in raw and (isinstance(value, bool) or not isinstance(value, int) or value < least):
+            raise SpecError(f"{where}: {key} must be a whole number of at least {least}")
+        bounds[key] = value
+    in_order = raw.get("chunks_in_order", False)
+    if "chunks_in_order" in raw and in_order is not True:
+        raise SpecError(f"{where}: chunks_in_order can only be true (leave it out otherwise)")
+    return RetrievalExpect(
+        includes=tuple(includes),
+        excludes=tuple(str(key) for key in excludes),
+        max_items=bounds["max_items"],
+        max_tokens=bounds["max_tokens"],
+        chunks_in_order=bool(in_order),
+    )
+
+
+def _listed(raw: dict[str, Any], key: str, where: str) -> list[Any]:
+    if key not in raw:
+        return []
+    items = as_list(raw[key])
+    if not items:
+        raise SpecError(f"{where}: {key} must be a list with at least one entry")
+    return items
 
 
 def _parse_check(raw: Any, where: str) -> str:

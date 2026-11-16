@@ -76,9 +76,11 @@ class Classified(NamedTuple):
                 self.mine.tools,
                 self.mine.turns,
                 self.mine.llms,
+                self.mine.retrievals,
                 self.other.tools,
                 self.other.turns,
                 self.other.llms,
+                self.other.retrievals,
             ]
         )
 
@@ -95,6 +97,8 @@ def classify(window: Window, correlate: Mapping[str, Any]) -> Classified:
         parts[attribute(turn.context, correlate)].turns.append(turn)
     for call in window.llms:
         parts[attribute(call.context, correlate)].llms.append(call)
+    for record in window.retrievals:
+        parts[attribute(record.context, correlate)].retrievals.append(record)
     return Classified(
         parts[Attribution.MINE], parts[Attribution.OTHER], parts[Attribution.UNATTRIBUTED]
     )

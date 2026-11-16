@@ -67,8 +67,9 @@ Each test's key is unique in a spec. Two tests with the same key are a spec erro
 | `budget` | mapping | What may be spent. See [`budget`](#budget). |
 | `check` | mapping | `{python: "module:function"}`: a check of your own, which returns the failures it found. See [a check of your own](/guides/assertions#a-check-of-your-own-check). |
 | `llm` | mapping | The test's calls to the model, from its `llm` records: `model`, `fallback`, `last_role`, `max_calls`. See [calls to the model](/guides/assertions#calls-to-the-model-llm). |
+| `retrieval` | mapping | What entered the prompt, from the test's `retrieval` records: `includes`, `excludes`, `max_items`, `max_tokens`, `chunks_in_order`. See [what entered the prompt](/guides/assertions#what-entered-the-prompt-retrieval). |
 
-At least one of `function_calls`, `forbid`, `response`, `budget`, `check` and `llm` is required.
+At least one of `function_calls`, `forbid`, `response`, `budget`, `check`, `llm` and `retrieval` is required.
 
 ## `budget`
 
