@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import math
 import os
 import socket
+import sys
 import threading
 import time
 import zlib
@@ -56,6 +58,29 @@ _HOP_BY_HOP = frozenset(
         "upgrade",
     }
 )
+
+logger = logging.getLogger(__name__)
+
+# httpx logs each request's URL, and httpcore each reply's headers. A URL may carry a
+# key (Google's API takes one in the query), so what they log from the proxy's own
+# threads is dropped.
+_HTTP_LOGGERS = (
+    "httpx",
+    "httpcore.connection",
+    "httpcore.http11",
+    "httpcore.http2",
+    "httpcore.proxy",
+    "httpcore.socks",
+)
+_in_proxy = threading.local()
+
+
+class _QuietInProxy(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not getattr(_in_proxy, "active", False)
+
+
+_QUIET = _QuietInProxy()
 
 # The encodings the proxy can read, so it asks the upstream for no other.
 _READABLE_ENCODINGS = ("gzip", "deflate", "identity")
@@ -370,6 +395,11 @@ class _Server(ThreadingHTTPServer):
             self.connections.discard(request)
         super().shutdown_request(request)
 
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        # The default prints a traceback to stderr; only the kind of failure is kept.
+        failure = sys.exc_info()[1]
+        logger.debug("highbar's LLM proxy: a connection failed (%s)", type(failure).__name__)
+
     def drop_connections(self) -> None:
         """Close every client connection, a kept-alive idle one included."""
         with self.connections_lock:
@@ -382,6 +412,14 @@ class _Server(ThreadingHTTPServer):
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     timeout = 900  # an idle kept-alive connection, or a client that stopped sending
+
+    def handle(self) -> None:
+        _in_proxy.active = True  # this thread is the proxy's: httpx's logs are dropped
+        super().handle()
+
+    def log_message(self, format: str, *args: Any) -> None:
+        # The default writes each request line to stderr, and a query may hold a key.
+        pass
 
     @property
     def proxy(self) -> LlmProxy:
@@ -434,7 +472,8 @@ class _Handler(BaseHTTPRequestHandler):
             for key, value in self.headers.items()
             if key.lower() not in _HOP_BY_HOP
             and key.lower() not in connection_headers
-            and key.lower() not in ("host", "content-length")
+            # httpx sends the body at once: an Expect would wait for a 100 it ignores.
+            and key.lower() not in ("host", "content-length", "expect")
         ]
         if endpoint is not None:
             headers = [(k, v) for k, v in headers if k.lower() != "accept-encoding"]
@@ -445,6 +484,12 @@ class _Handler(BaseHTTPRequestHandler):
             body = _with_stream_usage(body)
         test = self.headers.get(TEST_HEADER)
         call = _Call(proxy, upstream, endpoint, test, _request_model(body) if endpoint else None)
+        if endpoint is None:
+            call.passed = (
+                f"the proxy does not read {self.command} {path} of the '{name}' upstream"
+                if upstream.protocol is not None
+                else f"the '{name}' upstream has no protocol the proxy reads"
+            )
 
         request = proxy.client.build_request(self.command, target, headers=headers, content=body)
         try:
@@ -458,6 +503,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._relay(response, call)
         finally:
             response.close()
+            # However the relay ended, the call was made: it is in the trace, unread.
+            call.record(None, "the reply did not reach the client whole", error=None)
 
     def _relay(self, response: httpx.Response, call: _Call) -> None:
         reading = (
@@ -555,11 +602,13 @@ class _Call:
         self.request_model = request_model
         self.started = time.monotonic()
         self.recorded = False
+        self.passed = "the call was not read"  # why, for a call passed through unread
 
     def finish(self, reading: _Reading | None, *, error: str | None) -> None:
         if self.recorded:
             return
         if reading is None:
+            self.record(None, self.passed, error=error)
             return
         usage, unread = reading.finish()
         self.record(usage, unread, error=error)
@@ -643,14 +692,12 @@ class LlmProxy:
     def start(self) -> None:
         if self._server is not None:
             return
-        client = httpx.Client(
-            timeout=httpx.Timeout(self.timeout, connect=30.0),
-            follow_redirects=False,
-            trust_env=False,
-        )
+        client = httpx.Client(timeout=httpx.Timeout(self.timeout, connect=30.0))
         # httpx adds these when the request has none; the proxy sends what the agent sent.
         for header in ("Accept", "Accept-Encoding", "User-Agent"):
             del client.headers[header]
+        for name in _HTTP_LOGGERS:
+            logging.getLogger(name).addFilter(_QUIET)  # once: the same filter is not added twice
         self._client = client
         self._server = _Server(self)
         self._thread = threading.Thread(

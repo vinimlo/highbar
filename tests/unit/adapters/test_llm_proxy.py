@@ -6,7 +6,10 @@ and keeps what it received, so a test can check that the request went through un
 
 from __future__ import annotations
 
+import gzip
+import http.client
 import json
+import logging
 import socket
 import threading
 from collections.abc import Iterator
@@ -36,6 +39,7 @@ class Answer:
     status: int = 200
     headers: dict[str, str] = field(default_factory=dict[str, str])
     events: list[bytes] | None = None  # sent chunked, one write each
+    cut: bool = False  # the connection closes before the stream's end
 
 
 @dataclass
@@ -78,6 +82,9 @@ class FakeUpstream:
                 for event in answer.events:
                     self.wfile.write(f"{len(event):x}\r\n".encode() + event + b"\r\n")
                     self.wfile.flush()
+                if answer.cut:
+                    self.close_connection = True
+                    return
                 self.wfile.write(b"0\r\n\r\n")
 
             do_GET = do_POST = _handle
@@ -492,3 +499,149 @@ def test_hb30_an_anthropic_stream_cut_before_message_delta_is_unread(
     assert call.read is False
     assert call.unread is not None and "stream ended without usage" in call.unread
     assert call.output_tokens is None
+
+
+def test_hb30_a_path_the_proxy_does_not_read_is_passed_through_and_recorded_unread(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    body = _json({"data": [{"embedding": [0.1]}], "usage": {"prompt_tokens": 8}})
+    upstream.answers["/v1/embeddings"] = Answer(body)
+    sent = _json({"model": "text-embedding-3-small", "input": SECRET_PROMPT})
+
+    reply = httpx.post(f"{proxy.base_url('openai')}/embeddings", content=sent, timeout=10)
+
+    assert reply.content == body
+    assert upstream.received[0].body == sent
+    (call,) = _calls(trace)
+    assert call.source == "proxy" and call.read is False
+    assert call.unread is not None and "/embeddings" in call.unread
+    # Its usage is there, and still not taken: a format the proxy does not know.
+    assert (call.input_tokens, call.output_tokens) == (None, None)
+
+
+def test_hb30_an_upstream_of_unknown_protocol_is_passed_through_unread(
+    upstream: FakeUpstream, trace: Path
+) -> None:
+    upstream.answers["/v1beta/models/gemini:generateContent"] = Answer(_json(CHAT_REPLY))
+    with LlmProxy(trace, {"gemini": Upstream(f"{upstream.url}/v1beta")}) as proxy:
+        reply = _post(f"{proxy.base_url('gemini')}/models/gemini:generateContent", CHAT_REQUEST)
+
+    assert reply.json() == CHAT_REPLY
+    (call,) = _calls(trace)
+    assert call.read is False and call.input_tokens is None
+
+
+def test_hb30_an_upstream_error_is_recorded_unread_with_its_status(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    error = _json({"error": {"message": "rate limited"}})
+    upstream.answers["/v1/chat/completions"] = Answer(error, status=429)
+
+    reply = _post(f"{proxy.base_url('openai')}/chat/completions", CHAT_REQUEST)
+
+    assert reply.status_code == 429 and reply.content == error
+    (call,) = _calls(trace)
+    assert call.read is False and call.error == "HTTP 429"
+
+
+def test_hb30_an_unreachable_upstream_is_a_502_and_an_unread_call(trace: Path) -> None:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        closed = sock.getsockname()[1]  # nothing listens here once the socket closes
+    with LlmProxy(trace, {"openai": Upstream(f"http://127.0.0.1:{closed}/v1", "openai")}) as proxy:
+        reply = _post(f"{proxy.base_url('openai')}/chat/completions", CHAT_REQUEST)
+
+    assert reply.status_code == 502
+    assert "could not be reached" in reply.json()["error"]["message"]
+    (call,) = _calls(trace)
+    assert call.read is False and call.error is not None
+
+
+def test_hb30_a_gzipped_reply_reaches_the_client_as_sent_and_is_read(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    compressed = gzip.compress(_json(CHAT_REPLY))
+    upstream.answers["/v1/chat/completions"] = Answer(
+        compressed, headers={"Content-Encoding": "gzip", "Content-Type": "application/json"}
+    )
+
+    with httpx.Client(timeout=10) as client:
+        request = client.build_request(
+            "POST",
+            f"{proxy.base_url('openai')}/chat/completions",
+            content=_json(CHAT_REQUEST),
+            headers={"Accept-Encoding": "br, gzip"},
+        )
+        reply = client.send(request, stream=True)
+        raw = b"".join(reply.iter_raw())
+        reply.close()
+
+    assert raw == compressed
+    # Brotli would be a reply the proxy cannot read: it asks only for what it can.
+    assert upstream.received[0].headers["Accept-Encoding"] == "gzip"
+    (call,) = _calls(trace)
+    assert call.read is True and (call.input_tokens, call.output_tokens) == (1000, 200)
+
+
+def test_hb30_no_key_or_body_reaches_the_trace_or_the_logs(
+    upstream: FakeUpstream,
+    proxy: LlmProxy,
+    trace: Path,
+    caplog: pytest.LogCaptureFixture,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    secret_reply = "the vault opens at dawn"
+    reply = {**CHAT_REPLY, "choices": [{"message": {"content": secret_reply}}]}
+    upstream.answers["/v1/chat/completions"] = Answer(_json(reply))
+    upstream.answers["/v1/messages"] = Answer(_json({"usage": {}, "content": secret_reply}))
+
+    port = int(proxy.url.rsplit(":", 1)[1])
+
+    def send(path: str, body: dict[str, Any], **headers: str) -> None:
+        # http.client logs nothing: httpx, here, would log the test's own URLs.
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        try:
+            connection.request("POST", path, body=_json(body), headers=headers)
+            connection.getresponse().read()
+        finally:
+            connection.close()
+
+    # The key in a header, in another header and in the query (as Google's API takes it).
+    auth = {"Authorization": f"Bearer {KEY}"}
+    send(f"/openai/chat/completions?key={KEY}", CHAT_REQUEST, **auth)
+    send("/anthropic/v1/messages", ANTHROPIC_REQUEST, **{"x-api-key": KEY})
+    send(f"/openai/embeddings?key={KEY}", CHAT_REQUEST, **auth)
+    send(f"/nowhere?key={KEY}", CHAT_REQUEST, **auth)
+    # A request line the proxy cannot parse is answered 400, and not echoed to a log.
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+        raw.sendall(f"GARBAGE {KEY} {SECRET_PROMPT} HTTP/1.1\r\n\r\n".encode())
+        assert raw.recv(100).startswith(b"HTTP/1.1 400")
+
+    written = trace.read_text(encoding="utf-8")
+    out, err = capfd.readouterr()
+    for place, text in {
+        "trace": written,
+        "logs": caplog.text,
+        "stdout": out,
+        "stderr": err,
+    }.items():
+        for secret in (KEY, SECRET_PROMPT, secret_reply, "Authorization", "x-api-key"):
+            assert secret not in text, f"{secret!r} in the {place}"
+    assert len(_calls(trace)) == 3
+
+
+def test_hb30_a_stream_the_upstream_cuts_is_unread_even_after_its_usage(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    # The usage chunk came, and the stream never ended: the call did not end as read.
+    upstream.answers["/v1/chat/completions"] = Answer(
+        headers=SSE_HEADERS, events=[CHAT_STREAM], cut=True
+    )
+
+    with pytest.raises(httpx.RemoteProtocolError):
+        _post(f"{proxy.base_url('openai')}/chat/completions", {**CHAT_REQUEST, "stream": True})
+
+    (call,) = _calls(trace)
+    assert call.read is False
+    assert call.unread is not None and "cut off" in call.unread
