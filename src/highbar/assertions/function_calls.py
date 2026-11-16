@@ -15,9 +15,10 @@ from typing import Any
 from highbar.assertions._match import subset_match, value_match
 from highbar.domain.models import AssertionResult, Expect, FunctionCallExpect, Trace
 
-# Whether a call whose return was not recorded is taken to fit `returns`. Never on its
-# own: the runner asks a second time with it on, and a test that only passes that way
-# is unverified, not passed (review of #74).
+# Whether a call whose return (or arguments, HB-48, or times, F2 of #98) was not recorded
+# is taken to fit `returns` (or `params`, or its place in `ordered`). Never on its own:
+# the runner asks a second time with it on, and a test that only passes that way is
+# unverified, not passed (review of #74).
 _assume_unrecorded: ContextVar[bool] = ContextVar("assume_unrecorded", default=False)
 
 
@@ -25,11 +26,19 @@ def satisfies(expected: FunctionCallExpect, call: Trace) -> bool:
     """The call has an accepted name, the expected payload and the expected outcome."""
     return (
         call.fn in expected.accepted_names
-        and subset_match(expected.params, call.args)
+        and _params_match(expected.params, call)
         and subset_match(expected.result, call.result)
         and _returns_match(expected.returns, call)
         and _error_matches(expected.error, call.error)
     )
+
+
+def _params_match(expected: dict[str, Any] | None, call: Trace) -> bool:
+    if expected is None:
+        return True
+    if not call.has_args:
+        return _assume_unrecorded.get()
+    return subset_match(expected, call.args)
 
 
 def _returns_match(expected: Any, call: Trace) -> bool:
@@ -46,6 +55,23 @@ def unrecorded_returns(traces: list[Trace], expect: Expect) -> list[str]:
         n for e in expect.function_calls or [] if e.returns is not None for n in e.accepted_names
     }
     return sorted({t.fn for t in traces if t.fn in names and not t.has_result})
+
+
+def unrecorded_args(traces: list[Trace], expect: Expect) -> list[str]:
+    """The tools a `params` entry names whose arguments some call did not record (HB-48)."""
+    names = {
+        n for e in expect.function_calls or [] if e.params is not None for n in e.accepted_names
+    }
+    return sorted({t.fn for t in traces if t.fn in names and not t.has_args})
+
+
+def untimed_calls(traces: list[Trace], expect: Expect) -> list[str]:
+    """The tools an `ordered` expectation names whose times some call did not record:
+    an OpenTelemetry span without its timestamps (review of #98, F2)."""
+    if not expect.ordered or not expect.function_calls:
+        return []
+    names = {n for e in expect.function_calls for n in e.accepted_names}
+    return sorted({t.fn for t in traces if t.fn in names and not t.timed})
 
 
 class FunctionCallsAssertion:
@@ -143,30 +169,47 @@ def _in_order(expected: list[FunctionCallExpect], traces: list[Trace]) -> list[i
         fits = [
             c
             for c, t in enumerate(traces)
-            if c not in used and t.started_at >= previous_end and satisfies(e, t)
+            if c not in used and _starts_after(t, previous_end) and satisfies(e, t)
         ]
         if not fits:
             return None
-        chosen = min(fits, key=lambda c: (traces[c].ended_at, c))
+        chosen = min(fits, key=lambda c: (_end(traces[c], previous_end), c))
         used.add(chosen)
-        previous_end = traces[chosen].ended_at
+        previous_end = _end(traces[chosen], previous_end)
         assignment.append(chosen)
     return assignment
+
+
+def _starts_after(call: Trace, moment: float) -> bool:
+    """A call whose times were not recorded has no place in an order: it fits none,
+    unless the runner's second look takes it to fit anywhere (F2 of #98)."""
+    if call.started_at is None or call.ended_at is None:
+        return _assume_unrecorded.get()
+    return call.started_at >= moment
+
+
+def _end(call: Trace, previous_end: float) -> float:
+    """When a call ended; one with unknown times, taken to fit, uses no time."""
+    if call.started_at is None or call.ended_at is None:
+        return previous_end
+    return call.ended_at
 
 
 def _out_of_order(
     expected: list[FunctionCallExpect], traces: list[Trace], assignment: list[int | None]
 ) -> tuple[str, str]:
     wanted = [_label(e) for e in expected]
-    matched = sorted(
-        (c for c in assignment if c is not None), key=lambda c: (traces[c].started_at, c)
-    )
+    matched = sorted((c for c in assignment if c is not None), key=lambda c: (_start(traces[c]), c))
     got = [traces[c].fn for c in matched]
     condition = f"calls matched but out of order: expected {', '.join(wanted)}"
     message = f"{condition}; got {', '.join(got)}"
     if got == wanted:
         message += " (they overlap: each call must start after the one before it ends)"
     return message, condition
+
+
+def _start(call: Trace) -> float:
+    return call.started_at if call.started_at is not None else float("inf")
 
 
 def _per_expectation(

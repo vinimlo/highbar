@@ -38,6 +38,10 @@ def combine(statuses: Iterable[Status]) -> Status:
     return Status.PASSED
 
 
+# What agent.traces.format names: highbar's own contract, or OTLP JSON lines (HB-48).
+TRACE_FORMATS = ("highbar", "otlp")
+
+
 @dataclass(frozen=True)
 class Trace:
     """One tool call, from a `tool` record of the trace contract.
@@ -50,16 +54,27 @@ class Trace:
     fn: str
     args: dict[str, Any]
     result: Any
-    started_at: float
-    ended_at: float
+    # None when the record did not say: an OpenTelemetry span without its timestamps.
+    # `ordered` cannot be checked on such a call (review of #98, F2).
+    started_at: float | None
+    ended_at: float | None
     error: str | None = None
     context: dict[str, Any] = field(default_factory=dict[str, Any])
     # False when the record had no `result` key: what the tool returned was not seen,
     # which is not the same as having returned null (review of #74, HB-37).
     has_result: bool = True
+    # False when the arguments were not recorded: an OpenTelemetry tool span exports
+    # them only with content capture on (HB-48). `params` cannot be checked on it.
+    has_args: bool = True
 
     @property
-    def duration_ms(self) -> float:
+    def timed(self) -> bool:
+        return self.started_at is not None and self.ended_at is not None
+
+    @property
+    def duration_ms(self) -> float | None:
+        if self.started_at is None or self.ended_at is None:
+            return None
         return (self.ended_at - self.started_at) * 1000
 
 
@@ -268,6 +283,11 @@ class AgentConfig:
     # execution's turn record, for an agent that answers later through a queue (HB-14).
     reply: str = "body"
     traces: str | None = None
+    # How the trace file is written: highbar's own contract, or OTLP JSON lines (HB-48).
+    trace_format: str = "highbar"
+    # agent.traces.tools (OTLP only): the tools the agent has, each emitting a tool span.
+    # What a name in the spec is checked against; None when the spec does not say.
+    trace_tools: tuple[str, ...] | None = None
     session: SessionConfig | None = None
     run: RunConfig | None = None
     correlate: dict[str, Any] = field(default_factory=lambda: {"test": "{{test.id}}"})
@@ -596,7 +616,7 @@ class ToolOutcome:
     name: str
     args: dict[str, Any]
     error: str | None
-    duration_ms: float
+    duration_ms: float | None  # None when the call's times were not recorded
     late: bool = False  # recorded after the test's window closed
 
 
