@@ -26,7 +26,7 @@ Unknown fields are ignored.
 |---|---|---|
 | `fn` | string | The tool's name. Required. |
 | `args` | object | The arguments, by name. |
-| `result` | any JSON | What the tool returned. highbar never reads it to decide whether the call failed. |
+| `result` | any JSON | What the tool returned. highbar never reads it to decide whether the call failed. Left out, the return was not seen: a `returns` check on the call is an `error`, while `"result": null` is a return of null. |
 | `error` | string or null | Why the call failed. `null`, `false` or `""` mean it did not; a value that is not text is kept as JSON. |
 | `started_at`, `ended_at` | number | Seconds since the epoch. `ordered` compares them. They default to `ts`. |
 
