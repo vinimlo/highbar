@@ -6,6 +6,7 @@ spec, so an error says where it is: ``suites[0].tests[2].expect: unknown key ...
 
 from __future__ import annotations
 
+import difflib
 import math
 import os
 import re
@@ -27,6 +28,7 @@ from highbar.assertions._match import (
     validate_expected,
 )
 from highbar.domain.models import (
+    TRACE_FORMATS,
     AgentConfig,
     Budget,
     CommandHook,
@@ -508,13 +510,20 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
             "attaches to is not its to set, and may serve other traffic"
         )
     traces = None
+    trace_format = "highbar"
+    trace_tools: tuple[str, ...] | None = None
     if "traces" in raw:
         if managed:
             raise SpecError(
                 f"{where}: 'traces' is for attach mode; with 'start', highbar creates the "
                 "trace file and passes it to the agent in HIGHBAR_TRACES_URL"
             )
-        traces = _required_text(raw, "traces")
+        traces, trace_format, trace_tools = _parse_traces(raw)
+    if trace_format == "otlp" and "correlate" in raw:
+        raise SpecError(
+            "agent.correlate: with traces.format: otlp, a span belongs to the test whose "
+            "trace id it carries (highbar sends it in traceparent); remove agent.correlate"
+        )
     for key, text in (("start", start), ("traces", traces)):
         # Run values are the first that exist before the agent starts (review of #61): the
         # agent would get the braces as written.
@@ -547,6 +556,8 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
         llm_proxy=llm_proxy,
         llm_proxy_upstreams=llm_upstreams,
         traces=traces,
+        trace_format=trace_format,
+        trace_tools=trace_tools,
         session=session,
         run=_parse_run(raw["run"], read_result) if "run" in raw else None,
         correlate=(
@@ -684,6 +695,62 @@ def _secret_regions(url: str) -> list[tuple[int, int]] | None:
     if at_sign:
         regions.append((host_at, host_at + len(userinfo) + 1))
     return regions
+
+
+def _parse_traces(raw: dict[str, Any]) -> tuple[str, str, tuple[str, ...] | None]:
+    """``agent.traces``: a path, or ``{path, format, tools}`` (HB-48). The format is
+    highbar's own contract unless it says ``otlp``; ``tools`` lists an OTLP agent's tools."""
+    if isinstance(raw["traces"], str):
+        return _required_text(raw, "traces"), "highbar", None
+    where = "agent.traces"
+    traces = as_dict(raw["traces"])
+    if traces is None:
+        raise SpecError(
+            f"agent: traces must be a path, or a mapping with path and format, "
+            f"got {type(raw['traces']).__name__}"
+        )
+    check_keys(traces, "traces", where)
+    if "path" not in traces:
+        raise SpecError(f"{where}: missing 'path' (the file the agent's traces are written to)")
+    path = traces["path"]
+    require_type(path, str, where, "path must be a string")
+    if not path.strip():
+        raise SpecError(f"{where}: path cannot be empty")
+    raw_format = traces.get("format", "highbar")
+    require_type(raw_format, str, f"{where}.format", "must be a string")
+    trace_format = str(raw_format)
+    if trace_format not in TRACE_FORMATS:
+        close = difflib.get_close_matches(trace_format, TRACE_FORMATS, n=1, cutoff=0.5)
+        hint = f" — did you mean '{close[0]}'?" if close else ""
+        raise SpecError(
+            f"{where}.format: unknown format '{trace_format}'{hint} "
+            f"(formats: {', '.join(TRACE_FORMATS)})"
+        )
+    tools = _parse_trace_tools(traces["tools"]) if "tools" in traces else None
+    if tools is not None and trace_format != "otlp":
+        raise SpecError(
+            f"{where}.tools: only with format: otlp; an agent that writes highbar's own "
+            "contract declares its tools itself (hb.declare, or a `tools` record)"
+        )
+    return path, trace_format, tools
+
+
+def _parse_trace_tools(raw: Any) -> tuple[str, ...]:
+    """``agent.traces.tools`` (review of #98): an OTLP file declares no tools, so the spec
+    says which the agent has. A guardrail on a name not listed cannot be verified."""
+    where = "agent.traces.tools"
+    names = as_list(raw)
+    if names is None:
+        raise SpecError(f"{where}: must be a list of tool names, got {type(raw).__name__}")
+    tools: list[str] = []
+    for name in names:
+        if not isinstance(name, str) or not name.strip():
+            got = f", got {type(name).__name__}" if not isinstance(name, str) else ""
+            raise SpecError(f"{where}: each tool must be a non-empty string{got}")
+        if name in tools:
+            raise SpecError(f"{where}: '{name}' is listed twice")
+        tools.append(name)
+    return tuple(tools)
 
 
 def _required_text(raw: dict[str, Any], key: str) -> str:
