@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 import httpx
 
+from highbar._deadline import within
 from highbar._narrow import as_dict
 from highbar.assertions.response import truncate
 from highbar.domain.models import RequestConfig
@@ -126,14 +127,23 @@ class HTTPClient:
         # httpx's timeout bounds each read, not the whole reply: a reply that keeps
         # trickling bytes would never end. The deadline bounds it.
         deadline = time.monotonic() + seconds
-        try:
+
+        def exchange() -> tuple[httpx.Response, bytes]:
             with (
                 httpx.Client(timeout=seconds, transport=self._transport) as client,
                 client.stream(
                     self._request.method, self._endpoint, headers=headers, **content
                 ) as reply,
             ):
-                raw = _read(reply, deadline, seconds, timeout)
+                return reply, _read(reply, deadline, seconds, timeout)
+
+        def late() -> AgentResponseError:
+            return AgentResponseError(f"no response in {seconds:g}s (agent.timeout)", timeout)
+
+        try:
+            # The status line and headers come before the first chunk of the body, where
+            # the deadline is checked: the whole exchange is waited for until then (HB-39).
+            reply, raw = within(exchange, seconds, late, name="highbar-agent-request")
         except httpx.TimeoutException:
             raise AgentResponseError(
                 f"no response in {seconds:g}s (agent.timeout)", timeout
