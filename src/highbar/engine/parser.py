@@ -536,6 +536,7 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
         timeout=_milliseconds(raw, "timeout", 60000, minimum=1),
         request=_parse_request(raw.get("request"), has_session, has_run),
         response=_parse_response_path(raw["response"]) if "response" in raw else None,
+        reply=_parse_reply(raw),
         traces=traces,
         session=session,
         run=_parse_run(raw["run"], read_result) if "run" in raw else None,
@@ -747,6 +748,21 @@ def _parse_response_path(raw: Any) -> str:
             f"or choices.0.message.content, got {raw!r}"
         )
     return raw
+
+
+def _parse_reply(raw: dict[str, Any]) -> str:
+    reply = raw.get("reply", "body")
+    if reply not in ("body", "turn"):
+        raise SpecError(
+            f"agent: reply must be 'body' or 'turn' (the turn record's response, for an "
+            f"agent that answers later), got {reply!r}"
+        )
+    if reply == "turn" and "response" in raw:
+        raise SpecError(
+            "agent: agent.response is a path in the HTTP body, which agent.reply: turn "
+            "does not read: the reply is the turn record's response. Remove one of them"
+        )
+    return reply
 
 
 def _parse_session(raw: Any, has_run: bool) -> SessionConfig:

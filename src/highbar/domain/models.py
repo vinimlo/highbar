@@ -250,6 +250,9 @@ class AgentConfig:
     timeout: int = 60000
     request: RequestConfig = field(default_factory=RequestConfig)
     response: str | None = None
+    # Where the reply text comes from: the HTTP body, or the `response` of the test
+    # execution's turn record, for an agent that answers later through a queue (HB-14).
+    reply: str = "body"
     traces: str | None = None
     session: SessionConfig | None = None
     run: RunConfig | None = None

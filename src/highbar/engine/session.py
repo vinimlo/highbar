@@ -48,6 +48,7 @@ from typing import Any, NoReturn, TextIO, cast
 
 import httpx
 
+from highbar._deadline import within
 from highbar._narrow import as_dict
 from highbar.assertions.response import truncate
 from highbar.domain.models import (
@@ -530,7 +531,7 @@ class SessionHooks:
 
         # The status line and headers come before the first chunk of the body, where the
         # deadline is checked: the whole exchange is waited for until then (HB-39).
-        reply, raw = _within(exchange, seconds, late)
+        reply, raw = within(exchange, seconds, lambda: SessionError(late), name="highbar-http-hook")
         text = raw.decode(reply.charset_encoding or "utf-8", errors="replace")
         status = reply.status_code
         if 300 <= status < 400:
@@ -544,31 +545,6 @@ class SessionHooks:
                 f"{what}: {hook.method} {url} returned HTTP {status}: {truncate(text, 200)}"
             )
         return text
-
-
-def _within[T](task: Callable[[], T], seconds: float, late: str) -> T:
-    """``task`` in a thread of its own, waited for ``seconds`` at most (HB-39).
-
-    httpx's timeout holds for each read, so a server that sends its status line and
-    headers a byte at a time never trips it. Past the deadline the thread is left to end
-    on its own, as a Python hook abandoned at its timeout is, and ``late`` is the failure.
-    """
-    outcome: dict[str, Any] = {}
-
-    def run() -> None:
-        try:
-            outcome["result"] = task()
-        except BaseException as e:  # handed to the caller, in the caller's thread
-            outcome["error"] = e
-
-    thread = threading.Thread(target=run, name="highbar-http-hook", daemon=True)
-    thread.start()
-    thread.join(seconds)
-    if thread.is_alive():
-        raise SessionError(late)
-    if "error" in outcome:
-        raise outcome["error"]
-    return outcome["result"]
 
 
 # How many of a failed hook's last lines its message shows.

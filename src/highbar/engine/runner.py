@@ -137,6 +137,10 @@ UNDECLARED_WARNING = (
 )
 
 
+# How often agent.reply: turn reads the trace file while it waits, in seconds.
+REPLY_POLL = 0.1
+
+
 @dataclass
 class _TurnLog:
     """What happened to one message of an execution, for the result of the run."""
@@ -540,12 +544,14 @@ class TestRunner:
         secrets: Mapping[str, str] | None = None,
         default_runs: int = 1,
         max_cost: float | None = None,
+        reply_within: float | None = None,
         hook_timeout: float | None = None,
         spent: Mapping[str, float] | None = None,
         spent_untagged: Mapping[str, float] | None = None,
         max_errors: int | None = None,
         streak: ErrorStreak | None = None,
         jobs: int = 1,
+        more_after: bool = False,
     ) -> None:
         self._adapter = adapter
         self._client = client
@@ -568,10 +574,17 @@ class TestRunner:
         # The run's ceiling (--max-cost), what earlier specs of the run already spent, the
         # part of that with no test context, and why this one stopped because of it.
         self._max_cost = max_cost
+        # agent.reply: turn (HB-14): how long to wait for the reply in the turn record,
+        # in seconds (agent.timeout). None: the reply is the HTTP body.
+        self._reply_within = reply_within
+        self._endpoint = ""  # agent.endpoint, set by run()
         # agent.timeout in seconds, for the line said while a signal waits (HB-44).
         self._hook_timeout = hook_timeout
         self._spent: Mapping[str, float] = spent or {}
         self._spent_untagged: Mapping[str, float] = spent_untagged or {}
+        # More specs of the run come after this one: a stop leaves them out (HB-33).
+        self._more_after = more_after
+        self._planned = 0
         self._stopped: str | None = None
         self._stop_reason: str | None = None  # BUDGET_EXCEEDED or REPEATED_ERRORS
         # --max-errors (None or 0: off), and the errors in a row so far, which the specs
@@ -678,12 +691,14 @@ class TestRunner:
     def run(self, spec: Spec) -> RunSummary:
         """Run all suites in the spec."""
         self._default_min_pass = spec.default_min_pass
+        self._endpoint = spec.agent.endpoint
         self._default_budget = spec.default_budget
         self._stopped, self._stop_reason = None, None
         self._strays = []
         self._warned = set()
         self._inventory, self._seen, self._undeclared = None, set(), {}
         self._executions, self._findings, self._test_index = [], [], 0
+        self._planned = sum(len(suite.tests) for suite in spec.suites)
         self._gates, self._reported, self._warnings = {}, {}, []
         self._ceiling, self._interrupting, self._crash = None, False, None
         observes = spec.default_budget is not None or any(
@@ -721,7 +736,7 @@ class TestRunner:
                 self._report_late(self._findings)
                 # That read can add to what the run spent: it may have ended over its ceiling.
                 if self._stopped is None:
-                    self._check_ceiling(self._reported[self._test_index - 1].name)
+                    self._check_ceiling(self._reported[self._test_index - 1].name, last=True)
             self._warn_undeclared()
             self._warn_unmetered()
         finally:
@@ -760,7 +775,7 @@ class TestRunner:
                 self._test_index += 1
                 # A stop for repeated errors came first, in the test: it is the reason.
                 if self._stopped is None:
-                    self._check_ceiling(name)
+                    self._check_ceiling(name, last=self._test_index == self._planned)
                 if self._stopped is not None:
                     return
 
@@ -1170,6 +1185,24 @@ class TestRunner:
             ),
             None,
         )
+
+    def _await_reply(self, correlate: Mapping[str, Any]) -> str | None:
+        """The response of this execution's turn record, read until agent.timeout.
+
+        Only a turn that carries every correlation key counts: an untagged one may be
+        another test's answer (HB-14). The cursor does not move; the window after
+        settle_time reads these records again, with the rest.
+        """
+        assert self._reply_within is not None
+        deadline = time.monotonic() + self._reply_within
+        while True:
+            window, _ = self._read()
+            for turn in classify(window, correlate).mine.turns:
+                if turn.response is not None:
+                    return turn.response
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(min(REPLY_POLL, max(0.0, deadline - time.monotonic())))
 
     def _read(self) -> tuple[Window, str | None]:
         """The records written since the cursor, and why a line among them cannot be read.
@@ -1779,11 +1812,13 @@ class TestRunner:
     def _usages(self) -> list[Usage | None]:
         return [turn.usage for execution in self._executions for turn in execution.turns]
 
-    def _check_ceiling(self, last_test: str) -> None:
+    def _check_ceiling(self, last_test: str, *, last: bool) -> None:
         """At the end of a test: over --max-cost, the run stops here.
 
         A currency's sum is held against the ceiling on its own, as a budget's is: a run
-        that spends in two currencies must still have one.
+        that spends in two currencies must still have one. ``last`` is whether that was
+        the spec's last test: with no spec after it either, nothing was left out, and
+        the message does not ask to run the rest (HB-33).
         """
         if self._max_cost is None:
             return
@@ -1793,11 +1828,19 @@ class TestRunner:
         over = over_limit(self._costs(), self._max_cost)
         if over:
             self._stop_reason = BUDGET_EXCEEDED
-            self._stopped = (
+            spent = (
                 f"--max-cost {amount(self._max_cost)}: the run spent {_amounts(over)}"
-                f"{self._untagged_share(over)} by the end of '{last_test}', so it stopped "
-                "there; raise the ceiling to run the rest"
+                f"{self._untagged_share(over)}"
             )
+            if last and not self._more_after:
+                self._stopped = (
+                    f"{spent}, over its ceiling, by the end of its last test, '{last_test}'"
+                )
+            else:
+                self._stopped = (
+                    f"{spent} by the end of '{last_test}', so it stopped there; raise the "
+                    "ceiling to run the rest"
+                )
 
     def _stop_after_flight(self, ceiling: _Ceiling) -> None:
         """--max-cost with --jobs, once the tests in flight ended: what they spent past the
@@ -2276,6 +2319,26 @@ class TestRunner:
         except Exception as e:
             # The message never reached the agent, so its behavior was not checked.
             return unverified(f"HTTP error: {e}")
+        late_reply: str | None = None
+        if self._reply_within is not None:
+            # The body said nothing: the reply is the turn record's, when it comes.
+            reply = self._await_reply(execution.correlate)
+            if reply is None:
+                # The same each time a worker is down, as an empty body is (HB-34).
+                execution.cause = InfraCause("no_reply", self._endpoint, seconds=self._reply_within)
+                late_reply = (
+                    f"agent.reply: turn: no turn record of this test with a response in "
+                    f"{self._reply_within:g}s (agent.timeout), so its reply was not checked"
+                )
+            elif not reply.strip():
+                # Checked as "", it would pass every not_contains and every guardrail on
+                # text, as an empty HTTP body would (review of #91).
+                execution.cause = InfraCause("empty_reply", self._endpoint)
+                late_reply = (
+                    "agent.reply: turn: the turn record's response is empty, so there is "
+                    "no text to check"
+                )
+            response = reply or ""
         log.response, log.response_ms = response, (time.time() - sent_at) * 1000
 
         with self._unlocked():
@@ -2303,6 +2366,10 @@ class TestRunner:
             observes=observes,
             shared=shared,
         )
+        if late_reply is not None:
+            # Its records still counted, as in any window; the reply was never seen.
+            execution.passed = False
+            result = replace(result, status=Status.ERROR, errors=[late_reply])
         if expect.check is not None and result.status is not Status.ERROR:
             result = self._run_check(expect.check, result, execution, log, values, response)
         gone = self._look_at_agent(current=execution)

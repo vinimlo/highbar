@@ -80,6 +80,7 @@ def run_spec(
     max_errors: int | None = None,
     streak: ErrorStreak | None = None,
     jobs: int = 1,
+    more_after: bool = False,
 ) -> RunSummary:
     """Run one spec against its agent.
 
@@ -107,6 +108,7 @@ def run_spec(
         request=agent.request,
         response_path=agent.response,
         timeout_ms=agent.timeout,
+        body_is_reply=agent.reply == "body",
     )
 
     if agent.start is None:
@@ -130,6 +132,7 @@ def run_spec(
             max_errors=max_errors,
             streak=streak,
             jobs=jobs,
+            more_after=more_after,
         )
         return _run(runner, spec, on_end)
 
@@ -167,6 +170,7 @@ def run_spec(
         max_errors=max_errors,
         streak=streak,
         jobs=jobs,
+        more_after=more_after,
     )
 
     try:
@@ -199,6 +203,7 @@ def _runner(
     max_errors: int | None,
     streak: ErrorStreak | None,
     jobs: int,
+    more_after: bool,
 ) -> TestRunner:
     return TestRunner(
         adapter=adapter,  # type: ignore[arg-type]
@@ -215,12 +220,14 @@ def _runner(
         secrets=spec.agent.secrets,
         default_runs=default_runs,
         max_cost=max_cost,
+        reply_within=spec.agent.timeout / 1000 if spec.agent.reply == "turn" else None,
         hook_timeout=spec.agent.timeout / 1000,
         spent=spent,
         spent_untagged=spent_untagged,
         max_errors=max_errors,
         streak=streak,
         jobs=jobs,
+        more_after=more_after,
     )
 
 
