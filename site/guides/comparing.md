@@ -16,6 +16,6 @@ Each report is one round. `compare` pairs the tests by id across every report an
 
 Otherwise it shows the numbers and why there is no verdict. Four rounds of 5 tell more than one round of 20, because only they measure how much a round varies.
 
-A test whose definition changed between reports (its trigger, turns or expectation) is listed and not compared. Executions that ended in `error` are shown apart and left out of the counts: they verified nothing either way. Cost, tokens and time per execution are shown on both sides, with no test.
+A test whose definition changed between reports (its trigger, turns or expectation) is listed and not compared. Executions that ended in `error` count as not passed, as they do for `min_pass`, and are named apart: left out, a side whose agent stops answering would look no worse. A report given twice, in a folder and by name, or copied, is refused, since one run would count as two rounds. Cost, tokens and time per execution are shown on both sides, with no test.
 
 `--fail-on-regression` makes `worse` exit with 1, for a CI gate on a change. A raw p that does not survive Holm or the round check never fires it. `--report json=FILE` writes the comparison for another tool.

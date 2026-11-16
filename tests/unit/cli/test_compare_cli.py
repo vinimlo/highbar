@@ -16,6 +16,8 @@ runner = CliRunner()
 def _write(path: Path, *tests: tuple[str, int, int]) -> Path:
     body: dict[str, Any] = {
         "schema_version": 1,
+        # Each run has its own start, as real reports do: a copy is the same round.
+        "started_at": str(path),
         "specs": [
             {
                 "key": "specs/sink.highbar.yaml",
@@ -129,3 +131,28 @@ def test_tests_that_did_not_move_take_one_line(tmp_path: Path) -> None:
     # The one-round advice is said once, not once per test.
     assert result.output.count("4 rounds of 5 rather than 1 of 20") == 1
     assert "p 0.0476" in result.output
+
+
+def test_review_the_same_report_twice_is_refused(tmp_path: Path) -> None:
+    # Review of #69: a report given twice, or a folder and a file in it, counted as two rounds.
+    base = _rounds(tmp_path / "off", 1, ("warranty", 10, 0))
+    head = _write(tmp_path / "on.json", ("warranty", 1, 9))
+    for args in (
+        ["--base", str(base / "round0.json"), "--base", str(base / "round0.json")],
+        ["--base", str(base), "--base", str(base / "round0.json")],
+    ):
+        result = runner.invoke(app, ["compare", *args, "--head", str(head), "--head", str(head)])
+        assert result.exit_code == 2, result.output
+        assert "the same report" in result.output
+
+
+def test_review_a_copy_of_a_report_is_the_same_round(tmp_path: Path) -> None:
+    a = _write(tmp_path / "a.json", ("warranty", 10, 0))
+    copy = tmp_path / "copy.json"
+    copy.write_bytes(a.read_bytes())
+    head = _rounds(tmp_path / "on", 2, ("warranty", 1, 9))
+    result = runner.invoke(
+        app, ["compare", "--base", str(a), "--base", str(copy), "--head", str(head)]
+    )
+    assert result.exit_code == 2, result.output
+    assert "the same report" in result.output

@@ -84,13 +84,22 @@ def test_a_real_improvement_is_better() -> None:
     assert _row(compare(base, head)).verdict == "better"
 
 
-def test_errors_are_not_in_the_denominator() -> None:
-    base = [read_round(_report(("warranty", 5, 0, 5))) for _ in range(2)]
-    head = [read_round(_report(("warranty", 5, 0))) for _ in range(2)]
+def test_review_errors_count_as_not_passed() -> None:
+    # Review of #69: head 5 passed / 5 error a round against base 5/10 read "better".
+    base = [read_round(_report(("warranty", 5, 5))) for _ in range(2)]
+    head = [read_round(_report(("warranty", 5, 0, 5))) for _ in range(2)]
     row = _row(compare(base, head))
-    assert (row.base.passed, row.base.judged, row.base.errors) == (10, 10, 10)
-    assert row.p == pytest.approx(1.0)
+    assert (row.head.passed, row.head.judged, row.head.errors) == (10, 20, 10)
     assert row.verdict is None
+
+
+def test_review_more_errors_on_head_is_worse() -> None:
+    # Review of #69: 1 passed / 9 error against 10/10 was "no verdict", p 1.
+    base = [read_round(_report(("warranty", 10, 0))) for _ in range(4)]
+    head = [read_round(_report(("warranty", 1, 0, 9))) for _ in range(4)]
+    row = _row(compare(base, head))
+    assert row.verdict == "worse"
+    assert "36 error" in row.reason
 
 
 def test_a_changed_definition_is_not_compared() -> None:

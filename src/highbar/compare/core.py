@@ -54,8 +54,9 @@ class Side:
 
     @property
     def judged(self) -> int:
-        """Passed and failed: an `error` execution verified nothing, so it is not here."""
-        return sum(r.passed + r.failed for r in self.rounds)
+        """Every execution. An `error` counts as not passed, as `min_pass` counts it:
+        left out, a side whose executions stop answering would look no worse."""
+        return sum(r.passed + r.failed + r.errors for r in self.rounds)
 
     @property
     def errors(self) -> int:
@@ -63,7 +64,7 @@ class Side:
 
     @property
     def executions(self) -> int:
-        return self.judged + self.errors
+        return self.judged
 
     @property
     def interval(self) -> tuple[float, float]:
@@ -71,7 +72,7 @@ class Side:
 
     @property
     def disagree_p(self) -> float:
-        return rounds_disagree_p([(r.passed, r.passed + r.failed) for r in self.rounds])
+        return rounds_disagree_p([(r.passed, r.passed + r.failed + r.errors) for r in self.rounds])
 
     @property
     def mean_ms(self) -> float | None:
@@ -185,6 +186,9 @@ def _judge(row: Row, p_holm: float) -> Row:
         better = head.passed / head.judged > base.passed / base.judged
         verdict = "better" if better else "worse"
         reason = f"Holm p = {p_holm:.3g}"
+        errors = base.errors + head.errors
+        if errors:
+            reason += f"; {errors} error executions counted as not passed"
     return Row(row.spec, row.test, base, head, row.p, p_holm, verdict, reason)
 
 

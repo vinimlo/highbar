@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -15,8 +16,16 @@ from highbar.compare.core import ALPHA, ONE_ROUND, CompareError, Round, Row, Sid
 COMPARE_SCHEMA_VERSION = 1
 
 
-def load_side(paths: Sequence[str]) -> list[dict[tuple[str, str], Round]]:
-    """One round per JSON report: a file is one, a folder is every `*.json` in it."""
+def load_side(
+    paths: Sequence[str], seen: dict[str, Path] | None = None
+) -> list[dict[tuple[str, str], Round]]:
+    """One round per JSON report: a file is one, a folder is every `*.json` in it.
+
+    A report met twice (named twice, in a folder and by name, or copied) is
+    refused: counted twice, one run would pass for two rounds. `seen` carries
+    the reports already read, so the other side can be checked against them.
+    """
+    seen = {} if seen is None else seen
     files: list[Path] = []
     for raw in paths:
         path = Path(raw)
@@ -30,9 +39,15 @@ def load_side(paths: Sequence[str]) -> list[dict[tuple[str, str], Round]]:
     rounds: list[dict[tuple[str, str], Round]] = []
     for file in files:
         try:
-            body = json.loads(file.read_text(encoding="utf-8"))
+            raw = file.read_bytes()
+            body = json.loads(raw.decode("utf-8"))
         except (OSError, ValueError) as exc:
             raise CompareError(f"{file}: cannot read it as a JSON report ({exc})") from exc
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest in seen:
+            same = f"{file} and {seen[digest]} are the same report"
+            raise CompareError(f"{same}: each round must be a run of its own")
+        seen[digest] = file
         try:
             rounds.append(read_round(body))
         except CompareError as exc:
@@ -61,6 +76,8 @@ def render(rows: Sequence[Row], console: Console) -> None:
             f" · p {row.p:.3g}{p_holm}",
             soft_wrap=True,
         )
+        if row.verdict is not None and (row.base.errors or row.head.errors):
+            console.print(f"      → {escape(row.reason)}", soft_wrap=True)
         if row.verdict is None and row.p < ALPHA:
             reason = row.reason
             if reason == ONE_ROUND:
@@ -101,7 +118,7 @@ def _rate(side: Side) -> str:
     text = f"{side.passed}/{side.judged} in {rounds} round{'s' if rounds != 1 else ''}"
     text += f" ({low:.0%}–{high:.0%})"
     if side.errors:
-        text += f", {side.errors} error not counted"
+        text += f", {side.errors} of them error"
     return text
 
 

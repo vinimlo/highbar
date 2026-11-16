@@ -481,7 +481,8 @@ def compare(
         console.print("[red]--report takes json=FILE for compare.[/red]")
         raise typer.Exit(EXIT_UNRUNNABLE)
     try:
-        rows = compare_rounds(load_side(base), load_side(head))
+        seen: dict[str, Path] = {}
+        rows = compare_rounds(load_side(base, seen), load_side(head, seen))
     except CompareError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
         raise typer.Exit(EXIT_UNRUNNABLE) from exc
