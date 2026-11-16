@@ -76,3 +76,23 @@ expect:
 ```
 
 With no `min_pass`, all ten runs must pass. See [repetition](/guides/repetition).
+
+## A guardrail an idle agent passes
+
+A guardrail made only of what must not happen is green on an agent that does nothing: `function_calls: []` with `not_matches` holds on a silent one. `highbar vacuum` finds those tests without running any agent. It judges each test, with the checks a run uses, against four trivial agents:
+
+- **silent:** no reply, no call;
+- **echo:** the message sent back;
+- **every tool:** each tool the spec names, called with no arguments;
+- **every option:** one reply that names every text a reply in the spec must contain.
+
+```bash
+highbar vacuum specs/
+```
+
+A test one of them passes is vacuous, and the line names which. The command exits with 1 when it finds one, so a CI step can hold the specs to it. To make a vacuous test hold, pair the guardrail with what the agent must do instead:
+- the call it must make, with its arguments;
+- what the reply must say;
+- or, against "every option", what the reply must not say.
+
+A test with `check`, `llm` or `retrieval` is not judged, since a trivial agent cannot meet those. A negative control (`expect_status`) is left out.

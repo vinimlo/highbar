@@ -43,6 +43,10 @@ Writes the quickstart into the current directory: `agent.py` and `specs/quicksta
 
 Generates the paraphrases that tests with `variations` ask for, and stores them in `.highbar/variations.json`. Only missing entries are generated; `--force` regenerates them all. See [variations](/guides/variations).
 
+## `highbar vacuum [SPEC_PATH]`
+
+Finds the tests that an agent doing nothing useful would pass: silent, echo, one that calls every tool the spec names, and one whose reply names every text the spec looks for. No agent runs. Exits 1 when a test is vacuous, 0 when none is, and 2 for an invalid spec. See [a guardrail an idle agent passes](/guides/guardrails#a-guardrail-an-idle-agent-passes).
+
 ## `highbar compare --base PATH --head PATH`
 
 Compares two groups of runs test by test. Each `PATH` is a `--report json=` file or a folder of them, and `--base` and `--head` can repeat; each file is one round. A test gets `better` or `worse` only with a Holm-adjusted p under 0.05, at least 2 rounds a side and rounds that agree; otherwise the output says why there is no verdict. See [comparing two configurations](/guides/comparing).

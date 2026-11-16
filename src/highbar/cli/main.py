@@ -510,6 +510,55 @@ def validate(
     raise typer.Exit(EXIT_UNRUNNABLE if specs is None else EXIT_OK)
 
 
+@app.command()
+def vacuum(
+    spec_path: str = typer.Argument(
+        default="",
+        help="Spec file or directory. If omitted, all specs in specs/",
+    ),
+) -> None:
+    """Find tests that an agent doing nothing useful would pass (no agent runs)."""
+    from highbar.engine.vacuum import probe_spec
+
+    paths = _discover_specs(spec_path)
+    if not paths:
+        console.print("[red]No spec files found.[/red]")
+        raise typer.Exit(EXIT_UNRUNNABLE)
+    specs = _parse_all(paths)
+    if specs is None:
+        raise typer.Exit(EXIT_UNRUNNABLE)
+
+    judged = vacuous = 0
+    for path, spec in specs:
+        console.print(f"\n  [bold]{escape(path)}[/bold]")
+        for finding in probe_spec(spec):
+            name = escape(f"{finding.suite} › {finding.test}")
+            if finding.not_judged:
+                console.print(
+                    f"    [dim]· {name}  not judged: {finding.not_judged} is beyond "
+                    "a trivial agent[/dim]",
+                    soft_wrap=True,
+                )
+                continue
+            judged += 1
+            if finding.passes_on:
+                vacuous += 1
+                console.print(
+                    f"    [red]✗[/red] {name}  passes on: {', '.join(finding.passes_on)}",
+                    soft_wrap=True,
+                )
+            else:
+                console.print(f"    [green]✓[/green] {name}", soft_wrap=True)
+    console.print(f"\n  {vacuous} vacuous of {judged}", soft_wrap=True)
+    if vacuous:
+        console.print(
+            "  A vacuous test is green on an agent that does nothing useful: add the "
+            "call it must make, the arguments, or what the reply must not say.",
+            soft_wrap=True,
+        )
+    raise typer.Exit(EXIT_FAILED if vacuous else EXIT_OK)
+
+
 def _sharing_secrets(specs: list[tuple[str, Spec]]) -> list[tuple[str, Spec]]:
     """Each spec with the ${VAR} values of all: an agent can echo another spec's token."""
     secrets = {value: name for _, spec in specs for value, name in spec.agent.secrets.items()}
