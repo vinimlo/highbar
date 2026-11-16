@@ -91,6 +91,9 @@ def test_json_report_has_the_rows(tmp_path: Path) -> None:
     assert rows[0]["test"] == "warranty"
     assert rows[0]["verdict"] == "worse"
     assert rows[0]["base"]["passed"] == 20
+    # Review note (c): "executions" holds every one, errors included; no "judged" beside "error".
+    assert rows[0]["base"]["executions"] == 20
+    assert "judged" not in rows[0]["base"]
     assert rows[0]["base"]["rounds"] == [{"passed": 10, "failed": 0, "error": 0}] * 2
     assert rows[0]["head"]["mean_cost"] == {"USD": 0.001}
 
@@ -156,3 +159,29 @@ def test_review_a_copy_of_a_report_is_the_same_round(tmp_path: Path) -> None:
     )
     assert result.exit_code == 2, result.output
     assert "the same report" in result.output
+
+
+def test_review_a_reformatted_copy_is_the_same_round(tmp_path: Path) -> None:
+    # Review of #69 at 7976aea, note (a): a copy written again with indent=2 counted twice.
+    a = _write(tmp_path / "a.json", ("warranty", 10, 0))
+    copy = tmp_path / "copy.json"
+    copy.write_text(json.dumps(json.loads(a.read_text()), indent=2))
+    head = _rounds(tmp_path / "on", 2, ("warranty", 1, 9))
+    result = runner.invoke(
+        app, ["compare", "--base", str(a), "--base", str(copy), "--head", str(head)]
+    )
+    assert result.exit_code == 2, result.output
+    assert "the same report" in result.output
+
+
+def test_review_why_an_erroring_base_is_not_beaten_is_shown(tmp_path: Path) -> None:
+    base = tmp_path / "down"
+    for i in range(4):
+        _write(base / f"r{i}.json", ("warranty", 0, 0))
+        body = json.loads((base / f"r{i}.json").read_text())
+        body["specs"][0]["tests"][0]["counts"] = {"passed": 0, "failed": 0, "error": 10}
+        (base / f"r{i}.json").write_text(json.dumps(body))
+    head = _rounds(tmp_path / "up", 4, ("warranty", 10, 0))
+    result = runner.invoke(app, ["compare", "--base", str(base), "--head", str(head)])
+    assert result.exit_code == 0, result.output
+    assert "rests on the 40 error executions on base" in result.output

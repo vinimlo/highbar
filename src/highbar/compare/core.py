@@ -7,7 +7,7 @@ pooling 1 round of 20 hides the variation that 4 rounds of 5 measure.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from highbar._narrow import as_dict, as_list
@@ -53,22 +53,22 @@ class Side:
         return sum(r.passed for r in self.rounds)
 
     @property
-    def judged(self) -> int:
-        """Every execution. An `error` counts as not passed, as `min_pass` counts it:
-        left out, a side whose executions stop answering would look no worse."""
-        return sum(r.passed + r.failed + r.errors for r in self.rounds)
-
-    @property
     def errors(self) -> int:
         return sum(r.errors for r in self.rounds)
 
     @property
     def executions(self) -> int:
-        return self.judged
+        """Every execution. An `error` counts as not passed, as `min_pass` counts it:
+        left out, a side whose executions stop answering would look no worse."""
+        return sum(r.passed + r.failed + r.errors for r in self.rounds)
+
+    @property
+    def rate(self) -> float:
+        return self.passed / self.executions if self.executions else 0.0
 
     @property
     def interval(self) -> tuple[float, float]:
-        return wilson(self.passed, self.judged)
+        return wilson(self.passed, self.executions)
 
     @property
     def disagree_p(self) -> float:
@@ -109,7 +109,8 @@ class Row:
     p_holm: float | None = None
     verdict: Verdict | None = None
     reason: str = ""
-    notes: list[str] = field(default_factory=list[str])
+    base_errors_decide: bool = False
+    """The difference holds only with base's `error` executions counted as failures."""
 
 
 def read_round(body: Any) -> dict[tuple[str, str], Round]:
@@ -159,7 +160,7 @@ def compare(
             changed = "definition changed between reports: not compared"
             rows.append(Row(spec, test, b, h, reason=changed))
             continue
-        rows.append(Row(spec, test, b, h, p=fisher_exact(b.passed, b.judged, h.passed, h.judged)))
+        rows.append(_compared(spec, test, b, h))
     compared = [r for r in rows if r.p is not None]
     if not compared:
         raise CompareError("no test in common with the same definition on both sides")
@@ -168,28 +169,52 @@ def compare(
     return [_judge(r, by_key[(r.spec, r.test)]) if r.p is not None else r for r in rows]
 
 
+def _compared(spec: str, test: str, base: Side, head: Side) -> Row:
+    """The test's p. An `error` counts against the side it happened on, but it never makes
+    the head look better: for a better head, the p is also taken with base's errors as
+    passes, and the larger one stands (a base that errored everywhere is not beaten)."""
+    p = fisher_exact(base.passed, base.executions, head.passed, head.executions)
+    decide = False
+    if base.errors and head.rate > base.rate:
+        generous = base.passed + base.errors
+        if generous / base.executions >= head.rate:
+            p_generous = 1.0
+        else:
+            p_generous = fisher_exact(generous, base.executions, head.passed, head.executions)
+        decide = p < ALPHA <= p_generous
+        p = max(p, p_generous)
+    return Row(spec, test, base, head, p=p, base_errors_decide=decide)
+
+
 def _judge(row: Row, p_holm: float) -> Row:
     assert row.base is not None and row.head is not None and row.p is not None
     base, head = row.base, row.head
     reason = ""
     verdict: Verdict | None = None
     split = [name for name, side in (("base", base), ("head", head)) if side.disagree_p < ALPHA]
-    if base.judged == 0 or head.judged == 0:
+    if base.executions == 0 or head.executions == 0:
         reason = "no execution verified on a side: no conclusion"
     elif min(len(base.rounds), len(head.rounds)) < 2:
         reason = ONE_ROUND
     elif split:
         reason = f"rounds disagree on {' and '.join(split)}: block effect, no conclusion"
+    elif row.base_errors_decide:
+        reason = (
+            f"the difference rests on the {base.errors} error executions on base: "
+            "an error never makes the head look better, so no conclusion"
+        )
     elif p_holm >= ALPHA:
         reason = f"no difference beyond chance (p = {row.p:.3g}, Holm p = {p_holm:.3g})"
     else:
-        better = head.passed / head.judged > base.passed / base.judged
+        better = head.rate > base.rate
         verdict = "better" if better else "worse"
         reason = f"Holm p = {p_holm:.3g}"
         errors = base.errors + head.errors
         if errors:
             reason += f"; {errors} error executions counted as not passed"
-    return Row(row.spec, row.test, base, head, row.p, p_holm, verdict, reason)
+    return Row(
+        row.spec, row.test, base, head, row.p, p_holm, verdict, reason, row.base_errors_decide
+    )
 
 
 def _int(value: object) -> int:

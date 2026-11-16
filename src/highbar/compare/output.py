@@ -39,11 +39,13 @@ def load_side(
     rounds: list[dict[tuple[str, str], Round]] = []
     for file in files:
         try:
-            raw = file.read_bytes()
-            body = json.loads(raw.decode("utf-8"))
+            body = json.loads(file.read_bytes().decode("utf-8"))
         except (OSError, ValueError) as exc:
             raise CompareError(f"{file}: cannot read it as a JSON report ({exc})") from exc
-        digest = hashlib.sha256(raw).hexdigest()
+        # By what it says, not its bytes: a copy written again with other spacing is
+        # the same run. Two runs differ at least in started_at and duration_ms.
+        canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(canonical.encode()).hexdigest()
         if digest in seen:
             same = f"{file} and {seen[digest]} are the same report"
             raise CompareError(f"{same}: each round must be a run of its own")
@@ -78,7 +80,7 @@ def render(rows: Sequence[Row], console: Console) -> None:
         )
         if row.verdict is not None and (row.base.errors or row.head.errors):
             console.print(f"      → {escape(row.reason)}", soft_wrap=True)
-        if row.verdict is None and row.p < ALPHA:
+        if row.verdict is None and (row.p < ALPHA or row.base_errors_decide):
             reason = row.reason
             if reason == ONE_ROUND:
                 one_round = True
@@ -115,7 +117,7 @@ def write_json(path: str, rows: Sequence[Row], base: Sequence[str], head: Sequen
 def _rate(side: Side) -> str:
     low, high = side.interval
     rounds = len(side.rounds)
-    text = f"{side.passed}/{side.judged} in {rounds} round{'s' if rounds != 1 else ''}"
+    text = f"{side.passed}/{side.executions} in {rounds} round{'s' if rounds != 1 else ''}"
     text += f" ({low:.0%}–{high:.0%})"
     if side.errors:
         text += f", {side.errors} of them error"
@@ -164,7 +166,7 @@ def _side_json(side: Side | None) -> dict[str, Any] | None:
             {"passed": r.passed, "failed": r.failed, "error": r.errors} for r in side.rounds
         ],
         "passed": side.passed,
-        "judged": side.judged,
+        "executions": side.executions,
         "error": side.errors,
         "interval": [low, high],
         "rounds_disagree_p": side.disagree_p,
