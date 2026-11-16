@@ -691,3 +691,39 @@ def test_hb30_a_stream_the_upstream_cuts_is_unread_even_after_its_usage(
     (call,) = _calls(trace)
     assert call.read is False
     assert call.unread is not None and "cut off" in call.unread
+
+
+def test_hb30_a_record_says_whether_the_call_was_a_model_call(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    upstream.answers["/v1/chat/completions"] = Answer(_json(CHAT_REPLY))
+    upstream.answers["/v1/models"] = Answer(_json({"data": []}))
+
+    _post(f"{proxy.base_url('openai')}/chat/completions", CHAT_REQUEST)
+    httpx.get(f"{proxy.base_url('openai')}/models", timeout=10)
+
+    model, other = _calls(trace)
+    assert (model.call, other.call) == ("model", "other")
+
+
+def test_hb30_an_unreachable_model_endpoint_is_still_a_model_call(trace: Path) -> None:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        closed = sock.getsockname()[1]
+    with LlmProxy(trace, {"openai": Upstream(f"http://127.0.0.1:{closed}/v1", "openai")}) as proxy:
+        _post(f"{proxy.base_url('openai')}/chat/completions", CHAT_REQUEST)
+
+    (call,) = _calls(trace)
+    assert call.call == "model" and call.read is False
+
+
+def test_hb30_the_unread_reason_names_no_id_from_the_path(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    upstream.answers["/v1/files/file-abc123/content"] = Answer(b"x")
+
+    httpx.get(f"{proxy.base_url('openai')}/files/file-abc123/content", timeout=10)
+
+    (call,) = _calls(trace)
+    assert call.unread is not None and "GET /files" in call.unread
+    assert "file-abc123" not in trace.read_text(encoding="utf-8")

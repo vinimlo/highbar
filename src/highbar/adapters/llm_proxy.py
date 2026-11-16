@@ -343,6 +343,12 @@ class _Reading:
         return self._usage, None
 
 
+def _first_segment(path: str) -> str:
+    """``/files/file-abc/content`` as ``/files``: an id further on stays out of the trace."""
+    first = path.lstrip("/").split("/", 1)[0]
+    return f"/{first}"
+
+
 def _request_model(body: bytes) -> str | None:
     try:
         request = as_dict(json.loads(body))
@@ -552,7 +558,8 @@ class _Handler(BaseHTTPRequestHandler):
         call.injected = injected
         if endpoint is None:
             call.passed = (
-                f"the proxy does not read {self.command} {path} of the '{name}' upstream"
+                f"the proxy does not read {self.command} {_first_segment(path)} of the "
+                f"'{name}' upstream"
                 if upstream.protocol is not None
                 else f"the '{name}' upstream has no protocol the proxy reads"
             )
@@ -719,6 +726,8 @@ class _Call:
             ]
             if missing and unread is None:
                 unread = f"the reply's usage had no readable {' or '.join(missing)}"
+        # A call to a model endpoint, read or not, is one the budgets must count.
+        record["call"] = "model" if self.endpoint is not None else "other"
         record["read"] = unread is None
         if unread is not None:
             record["unread"] = unread
