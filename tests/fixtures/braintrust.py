@@ -166,7 +166,7 @@ def _test(
     )
 
 
-def tests() -> tuple[TestOutcome, ...]:
+def sample_outcomes() -> tuple[TestOutcome, ...]:
     """passed, failed, error, a conversation, and a negative control."""
     usage = Usage(model="m", input_tokens=100, output_tokens=10, cost=0.002, currency="USD")
     shipped = TurnOutcome("Where is order #1?", "It shipped.", 900.0, {}, usage=usage)
@@ -211,7 +211,7 @@ def write_report(
     spec = Spec(
         agent=AgentConfig(endpoint="http://x/chat"), suites=[Suite(name="S", tests=[Case()])]
     )
-    chosen = tests() if outcomes is None else outcomes
+    chosen = sample_outcomes() if outcomes is None else outcomes
     summary = RunSummary(
         total=len(chosen), passed=0, failed=0, errored=0, duration_ms=1.0, tests=chosen
     )

@@ -25,7 +25,7 @@ from tests.fixtures.braintrust import (
     STARTED,
     FakeBraintrust,
     fake_braintrust,
-    tests,
+    sample_outcomes,
     write_report,
 )
 
@@ -182,7 +182,7 @@ class TestContent:
     ) -> None:
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("BRAINTRUST_API_KEY", KEY)
-        control = tests()[-1]
+        control = sample_outcomes()[-1]
         execution = replace(control.phrasings[0].executions[0], status=Status.PASSED, errors=())
         phrasing = replace(control.phrasings[0], executions=(execution,))
         path = tmp_path / "xpass.json"
