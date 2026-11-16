@@ -36,6 +36,7 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
             "session",
             "run",
             "correlate",
+            "llm_proxy",
         }
     ),
     "request": frozenset({"method", "headers", "body"}),

@@ -441,3 +441,25 @@ class TestSessionInTriggers:
             r"cannot have variations",
         ):
             parse_spec(_spec(tmp_path, self.WITH_SESSION, suites))
+
+
+class TestLlmProxy:
+    """HB-30, P1: agent.llm_proxy is opt-in, and only for an agent highbar starts."""
+
+    def test_hb30_off_unless_written(self, tmp_path: Path) -> None:
+        assert parse_spec(_spec(tmp_path, MANAGED)).agent.llm_proxy is False
+
+    def test_hb30_on_for_a_managed_agent(self, tmp_path: Path) -> None:
+        spec = parse_spec(_spec(tmp_path, MANAGED + "llm_proxy: true\n"))
+
+        assert spec.agent.llm_proxy is True
+
+    def test_hb30_attach_mode_is_refused_and_says_why(self, tmp_path: Path) -> None:
+        agent = ATTACH + 'traces: "/tmp/t.jsonl"\nllm_proxy: true\n'
+
+        with pytest.raises(SpecError, match=r"llm_proxy.*'start'.*environment"):
+            parse_spec(_spec(tmp_path, agent))
+
+    def test_hb30_a_value_that_is_not_a_boolean_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(SpecError, match="llm_proxy must be true or false"):
+            parse_spec(_spec(tmp_path, MANAGED + 'llm_proxy: "yes"\n'))

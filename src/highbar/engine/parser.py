@@ -500,6 +500,15 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
             f"{where}: startup_timeout only applies with 'start' "
             "(in attach mode highbar does not start the agent)"
         )
+    llm_proxy = raw.get("llm_proxy", False)
+    if not isinstance(llm_proxy, bool):
+        raise SpecError(f"{where}: llm_proxy must be true or false, got {llm_proxy!r}")
+    if llm_proxy and not managed:
+        raise SpecError(
+            f"{where}: llm_proxy needs 'start': highbar points the agent's model client at "
+            "the proxy through the environment it starts the agent with, and an agent it "
+            "attaches to is not its to set, and may serve other traffic"
+        )
     traces = None
     if "traces" in raw:
         if managed:
@@ -537,6 +546,7 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
         request=_parse_request(raw.get("request"), has_session, has_run),
         response=_parse_response_path(raw["response"]) if "response" in raw else None,
         reply=_parse_reply(raw),
+        llm_proxy=llm_proxy,
         traces=traces,
         session=session,
         run=_parse_run(raw["run"], read_result) if "run" in raw else None,

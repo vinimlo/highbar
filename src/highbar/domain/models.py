@@ -273,6 +273,9 @@ class AgentConfig:
     correlate: dict[str, Any] = field(default_factory=lambda: {"test": "{{test.id}}"})
     # Each value expanded from ${NAME}, and the name: what output must never show.
     secrets: dict[str, str] = field(default_factory=dict[str, str])
+    # HB-30: the agent's model calls go through highbar's LLM proxy, whose count of them
+    # is the usage budgets and --max-cost hold. Managed mode only.
+    llm_proxy: bool = False
 
     @property
     def managed(self) -> bool:
