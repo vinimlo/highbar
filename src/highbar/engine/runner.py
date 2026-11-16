@@ -310,8 +310,11 @@ class _Gate:
     A late call fails its own run, and the test is judged again against min_pass:
     a run that fails late counts like a run that fails in time, no more.
 
-    A test the run stopped in the middle of (``interrupted``, HB-34) is an error, and so
-    is the phrasing it stopped in: half a test is not a verdict, whatever its runs say.
+    A test the run stopped in the middle of (``interrupted``, HB-34) is no pass: half a
+    test is not a verdict, whatever its runs say. It is an error unless a failure is
+    already known, which wins as in ``combine`` (his answer, "Falhou", 15/11 13:11, in
+    #25's thread 4526841100): a phrasing that ended failed, or one the stop cut whose
+    failures alone already keep it under ``min_pass``.
     """
 
     min_pass: int
@@ -324,14 +327,21 @@ class _Gate:
 
     @property
     def status(self) -> Status:
+        phrasings = [self.phrasing(number) for number in range(len(self.runs))]
         if self.interrupted:
-            return Status.ERROR
-        return combine(self.phrasing(number) for number in range(len(self.runs)))
+            # What the stop left out is unverified: never a pass, and never over a failure.
+            phrasings.append(Status.ERROR)
+        return combine(phrasings)
 
     def phrasing(self, number: int) -> Status:
-        """The status of one phrasing: an error when the run stopped before its last run."""
+        """The status of one phrasing. One the run stopped before its last run is failed
+        only when its failures alone already keep it under min_pass, the runs it never
+        made counted as ones that could have passed; otherwise it is an error."""
         statuses = self.runs[number]
         if self.interrupted and len(statuses) < self.each:
+            missing = [Status.ERROR] * (self.each - len(statuses))
+            if phrasing_status([*statuses, *missing], self.min_pass) is Status.FAILED:
+                return Status.FAILED
             return Status.ERROR
         return phrasing_status(statuses, self.min_pass)
 
