@@ -6,6 +6,10 @@
 
 - `agent.reply: turn`, for an agent that answers later through a queue (a webhook that says `202`): the reply is the `response` of the test's `turn` record, and highbar waits for it up to `agent.timeout`. A reply that does not come, comes only untagged, or is empty or only spaces, is an `error`, and for `--max-errors` it is one more execution with no reply, as an empty body is: a worker that is down stops the run instead of waiting `agent.timeout` for every execution left.
 
+### Changed
+
+- When `--max-cost` is passed only at the last test of the last spec, or by what was read after it, the message that stops the run no longer asks to raise the ceiling to run the rest: nothing was left out. It says what the run spent, over its ceiling, by the end of its last test. The reason, `budget_exceeded`, and the exit code, 3, are the same.
+
 ### Fixed
 
 - A message to the agent stops at `agent.timeout` when the agent sends its status line and headers slowly, as HTTP hooks do since 0.2.0. httpx's timeout holds for each read, so an agent that sent a byte every 0.1 s kept a message of 1 s waiting for 12 s. A message cut this way is a timeout, as any other, and counts for `--max-errors`.
@@ -60,7 +64,6 @@ The second release. It breaks a few specs that 0.1.0 loaded or passed: read "Upg
 - A `{{session.<path>}}` whose value is `null`, in the request, `correlate` or a session hook, is an `error` that says the setup returned no value for it, instead of going out as `null`.
 - A value from `${VAR}` is masked by where it goes. It stays masked in `agent.request`, in `agent.session` (every hook, a command line included) and in a URL's password, query and fragment. The URL is read as the spec wrote it and as it is sent: a variable before an `@` or after a `?` or `#` in the spec's text is masked whatever its value holds, and so is one whose value lands in those parts once the values are in; a value with an `@`, or a URL that is not `scheme://host` or has a space, a control character or a backslash, has every variable of the URL masked. It is now shown in `agent.traces`, `agent.start`, `agent.correlate` and a URL's host, port and path, so a trace file that does not exist is named in full, a relative path too, and one variable can hold the traces path for the compose file, the spec and the Makefile. A value masked in one place is still masked everywhere it appears. A token passed on `start` or in a URL's path is now shown: pass it in the environment or in a header.
 - A failure repeated across a phrasing's runs is one line, with how many runs it hit, also when what the agent did changed between them, its reply or the calls it made: the line is the first run it failed in, `(3 of 5 runs; as in run 2)`. Before, each reply made its own line, so `runs: 5` with two matchers that failed gave ten. The JSON report keeps each run's own message.
-- When `--max-cost` is passed only at the last test of the last spec, or by what was read after it, the message that stops the run no longer asks to raise the ceiling to run the rest: nothing was left out. It says what the run spent, over its ceiling, by the end of its last test. The reason, `budget_exceeded`, and the exit code, 3, are the same.
 
 ### Fixed
 
