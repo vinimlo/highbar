@@ -303,3 +303,11 @@ def test_review_81_a_null_operand_on_an_error_does_not_load(tmp_path: Path, erro
     # A null operand reads as "None": not_contains null holds on any error without it.
     with pytest.raises(SpecError, match="is not text"):
         parse_spec(_spec_with_error(tmp_path, error))
+
+
+def test_review_82_a_null_operand_is_named_as_the_yaml_author_wrote_it(tmp_path: Path) -> None:
+    # Review of #82: the author wrote null or nothing, so "None" names Python, not YAML.
+    with pytest.raises(SpecError) as raised:
+        parse_spec(_spec_with_error(tmp_path, "{not_contains: }"))
+    assert "an empty value (null)" in str(raised.value)
+    assert "None" not in str(raised.value)
