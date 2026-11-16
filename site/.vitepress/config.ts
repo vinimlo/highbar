@@ -61,6 +61,7 @@ export default defineConfig({
         items: [
           { text: 'Quickstart agent', link: '/examples/quickstart' },
           { text: 'OpenAI-compatible agent', link: '/examples/openai-agent' },
+          { text: 'Prompt loop', link: '/examples/prompt-loop' },
         ],
       },
       {
