@@ -7,6 +7,7 @@ outside Python, which cannot be put back from here, is not replaced at all.
 
 from __future__ import annotations
 
+import os
 import signal
 from typing import Any
 
@@ -57,3 +58,21 @@ def test_hb10_a_handler_set_outside_python_is_not_replaced(
 
     assert signal.SIGHUP not in replaced
     assert signal.SIGINT in replaced
+
+
+def test_hb44_the_first_held_signal_says_why_highbar_waits(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """A Ctrl-C that waits in silence reads as a hang, and a kill -9 leaves the flag on."""
+    with pytest.raises(KeyboardInterrupt), holding_signals(notice="Waiting for the teardown"):
+        os.kill(os.getpid(), signal.SIGINT)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    assert capfd.readouterr().err.count("Waiting for the teardown") == 1
+
+
+def test_hb44_without_a_signal_nothing_is_said(capfd: pytest.CaptureFixture[str]) -> None:
+    with holding_signals(notice="Waiting for the teardown"):
+        pass
+
+    assert "Waiting" not in capfd.readouterr().err

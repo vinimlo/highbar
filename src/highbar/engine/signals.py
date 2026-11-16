@@ -8,10 +8,11 @@ delivered after it, to the handler it would have reached.
 
 from __future__ import annotations
 
+import os
 import signal
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from types import FrameType
 from typing import Any
 
@@ -19,11 +20,13 @@ HELD = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
 
 @contextmanager
-def holding_signals() -> Iterator[None]:
+def holding_signals(notice: str | None = None) -> Iterator[None]:
     """Hold Ctrl-C, SIGTERM and SIGHUP while the block runs, then deliver the first.
 
-    Only the main thread can set handlers: elsewhere the block runs as it is. A handler
-    set outside Python cannot be put back from here, so that signal is not held.
+    ``notice`` goes to stderr once, on the first signal held: a wait that says nothing
+    reads as a hang (HB-44). Only the main thread can set handlers: elsewhere the block
+    runs as it is. A handler set outside Python cannot be put back from here, so that
+    signal is not held.
     """
     if threading.current_thread() is not threading.main_thread():
         yield
@@ -31,6 +34,8 @@ def holding_signals() -> Iterator[None]:
     held: list[int] = []
 
     def hold(signum: int, frame: FrameType | None) -> None:
+        if notice and not held:
+            _say(notice)
         held.append(signum)
 
     # Each handler is noted before it is replaced, inside the try: a signal that lands
@@ -49,3 +54,10 @@ def holding_signals() -> Iterator[None]:
             signal.signal(sig, handler)
         if held:
             signal.raise_signal(held[0])
+
+
+def _say(line: str) -> None:
+    """Straight to the file descriptor: the handler can land in the middle of a write to
+    sys.stderr, and a buffered write from inside it would raise "reentrant call"."""
+    with suppress(OSError):
+        os.write(2, f"\n  {line}\n".encode(errors="replace"))

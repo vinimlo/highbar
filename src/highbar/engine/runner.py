@@ -428,6 +428,7 @@ class TestRunner:
         secrets: Mapping[str, str] | None = None,
         default_runs: int = 1,
         max_cost: float | None = None,
+        hook_timeout: float | None = None,
         spent: Mapping[str, float] | None = None,
         spent_untagged: Mapping[str, float] | None = None,
     ) -> None:
@@ -452,6 +453,8 @@ class TestRunner:
         # The run's ceiling (--max-cost), what earlier specs of the run already spent, the
         # part of that with no test context, and why this one stopped because of it.
         self._max_cost = max_cost
+        # agent.timeout in seconds, for the line said while a signal waits (HB-44).
+        self._hook_timeout = hook_timeout
         self._spent: Mapping[str, float] = spent or {}
         self._spent_untagged: Mapping[str, float] = spent_untagged or {}
         self._stopped: str | None = None
@@ -721,7 +724,16 @@ class TestRunner:
         """
         if self._session is None:
             return
-        with signals.holding_signals():
+        within = (
+            f"at most {self._hook_timeout:g}s, agent.timeout"
+            if self._hook_timeout is not None
+            else "within agent.timeout"
+        )
+        notice = (
+            "Waiting for agent.run.teardown to put back what agent.run.setup changed "
+            f"({within}), then stopping."
+        )
+        with signals.holding_signals(notice):
             try:
                 self._session.after_run()
             except Exception as e:
