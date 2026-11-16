@@ -15,9 +15,9 @@ from typing import Any
 from highbar.assertions._match import subset_match, value_match
 from highbar.domain.models import AssertionResult, Expect, FunctionCallExpect, Trace
 
-# Whether a call whose return was not recorded is taken to fit `returns`. Never on its
-# own: the runner asks a second time with it on, and a test that only passes that way
-# is unverified, not passed (review of #74).
+# Whether a call whose return (or arguments, HB-48) was not recorded is taken to fit
+# `returns` (or `params`). Never on its own: the runner asks a second time with it on,
+# and a test that only passes that way is unverified, not passed (review of #74).
 _assume_unrecorded: ContextVar[bool] = ContextVar("assume_unrecorded", default=False)
 
 
@@ -25,11 +25,19 @@ def satisfies(expected: FunctionCallExpect, call: Trace) -> bool:
     """The call has an accepted name, the expected payload and the expected outcome."""
     return (
         call.fn in expected.accepted_names
-        and subset_match(expected.params, call.args)
+        and _params_match(expected.params, call)
         and subset_match(expected.result, call.result)
         and _returns_match(expected.returns, call)
         and _error_matches(expected.error, call.error)
     )
+
+
+def _params_match(expected: dict[str, Any] | None, call: Trace) -> bool:
+    if expected is None:
+        return True
+    if not call.has_args:
+        return _assume_unrecorded.get()
+    return subset_match(expected, call.args)
 
 
 def _returns_match(expected: Any, call: Trace) -> bool:
@@ -46,6 +54,14 @@ def unrecorded_returns(traces: list[Trace], expect: Expect) -> list[str]:
         n for e in expect.function_calls or [] if e.returns is not None for n in e.accepted_names
     }
     return sorted({t.fn for t in traces if t.fn in names and not t.has_result})
+
+
+def unrecorded_args(traces: list[Trace], expect: Expect) -> list[str]:
+    """The tools a `params` entry names whose arguments some call did not record (HB-48)."""
+    names = {
+        n for e in expect.function_calls or [] if e.params is not None for n in e.accepted_names
+    }
+    return sorted({t.fn for t in traces if t.fn in names and not t.has_args})
 
 
 class FunctionCallsAssertion:

@@ -15,7 +15,11 @@ from highbar.adapters import file_collector, subprocess_adapter
 from highbar.adapters.file_collector import TraceFormatError
 from highbar.adapters.http_client import AgentResponseError, HTTPClient, InfraCause
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
-from highbar.assertions.function_calls import FunctionCallsAssertion, unrecorded_returns
+from highbar.assertions.function_calls import (
+    FunctionCallsAssertion,
+    unrecorded_args,
+    unrecorded_returns,
+)
 from highbar.assertions.llm import check_llm
 from highbar.assertions.records import RecordNotObserved
 from highbar.assertions.response import truncate
@@ -553,8 +557,11 @@ class TestRunner:
         streak: ErrorStreak | None = None,
         jobs: int = 1,
         more_after: bool = False,
+        trace_format: str = "highbar",
     ) -> None:
         self._adapter = adapter
+        # The trace file holds OpenTelemetry spans (HB-48): its messages speak of them.
+        self._otlp = trace_format == "otlp"
         self._client = client
         self._collector = collector
         self._assertions = assertions
@@ -1672,8 +1679,46 @@ class TestRunner:
         message = UNREADABLE_USAGE_ERROR.format(error=error)
         self._findings.append(_Finding(execution, Status.ERROR, message))
 
+    def _unrecorded(self, args: list[str], returns: list[str]) -> list[str]:
+        """What could not be checked on calls whose arguments or return were not recorded."""
+        capture = (
+            "turn on content capture in the agent's instrumentation "
+            "(OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true, or its SDK's equivalent)"
+        )
+        messages: list[str] = []
+        if args:
+            messages.append(
+                f"the arguments of {_quoted(args)} were not recorded, so `params` was not "
+                f"checked: {capture}"
+            )
+        if returns:
+            how = (
+                capture
+                if self._otlp
+                else "give hb.record(...) the result=, or write a `result` in the tool's line"
+            )
+            messages.append(
+                f"the return of {_quoted(returns)} was not recorded, so `returns` was not "
+                f"checked: {how}"
+            )
+        return messages
+
+    def _not_observed_otlp(self, others: int, correlate: dict[str, Any]) -> str:
+        """Why no span is this test's (HB-48): its trace id is in no span read."""
+        theirs = f"; the {others} read while it ran belong to other traces" if others else ""
+        return (
+            f"not observed: no span in {self._collector.path} carries this test's trace id "
+            f"({correlate.get('test')}, sent in traceparent){theirs}. The agent's "
+            "OpenTelemetry instrumentation must continue the incoming W3C traceparent, and "
+            "export its execute_tool or invoke_agent spans (or OpenInference TOOL or AGENT) "
+            "before highbar reads: use a SimpleSpanProcessor, or lower the batch delay "
+            "(OTEL_BSP_SCHEDULE_DELAY) and the Collector's"
+        )
+
     def _not_observed(self, classified: Classified, correlate: dict[str, Any]) -> str:
         records = [*classified.other.tools, *classified.other.turns]
+        if self._otlp:
+            return self._not_observed_otlp(len(records), correlate)
         keys = sorted({key for record in records for key in record.context})
         return (
             f"not observed: no trace record in {self._collector.path} matches this test "
@@ -1691,6 +1736,8 @@ class TestRunner:
         what the agent did for its message (D4).
         """
         records = [*window.tools, *window.turns]
+        if self._otlp:
+            return self._not_observed_otlp(len(records), correlate)
         keys = sorted({key for record in records for key in record.context})
         if keys:
             return (
@@ -2563,12 +2610,12 @@ class TestRunner:
         # A test that passes once those returns are taken to fit was not checked,
         # which is not the same as failed (review of #74).
         unseen_returns = unrecorded_returns(traces, expect) if errors else []
-        if unseen_returns and not self._check(traces, response, expect, assume_unrecorded=True):
-            return unverified(
-                f"the return of {_quoted(unseen_returns)} was not recorded, so "
-                "`returns` was not checked: give hb.record(...) the result=, or "
-                "write a `result` in the tool's line"
-            )
+        # The same for arguments an OpenTelemetry span did not export (HB-48).
+        unseen_args = unrecorded_args(traces, expect) if errors else []
+        if (unseen_returns or unseen_args) and not self._check(
+            traces, response, expect, assume_unrecorded=True
+        ):
+            return unverified("; ".join(self._unrecorded(unseen_args, unseen_returns)))
 
         budget = self._budget_check(expect.budget, log.usage)
         if (unseen := self._unobservable(expect)) is not None:
