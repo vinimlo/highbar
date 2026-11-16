@@ -26,7 +26,7 @@ Unknown fields are ignored.
 |---|---|---|
 | `fn` | string | The tool's name. Required. |
 | `args` | object | The arguments, by name. |
-| `result` | any JSON | What the tool returned. highbar never reads it to decide whether the call failed. |
+| `result` | any JSON | What the tool returned. highbar never reads it to decide whether the call failed. Left out, the return was not seen: a `returns` check on the call is an `error`, while `"result": null` is a return of null. |
 | `error` | string or null | Why the call failed. `null`, `false` or `""` mean it did not; a value that is not text is kept as JSON. |
 | `started_at`, `ended_at` | number | Seconds since the epoch. `ordered` compares them. They default to `ts`. |
 
@@ -88,6 +88,44 @@ When no record of a window has a test context, an agent highbar started gets its
 A `cost` from the writer always stands. Without one, highbar works it out from `src/highbar/engine/prices.json`, a table of list prices in USD per token, in the format of [OpenRouter's model list](https://openrouter.ai/api/v1/models). The price of cached tokens applies to `cached_input_tokens`. It needs `model`, `input_tokens` and `output_tokens`; it uses the table's currency, whatever `currency` says; and it finds the model by its exact name, ignoring case and with `.` the same as `-`, so a dated snapshot like `gpt-4o-2024-05-13` is not its alias. A model without a price leaves the cost missing, with a warning. `provider` is required when two providers in the table use the name. An agent on prices of its own, or on a model outside the table, writes `cost` and `currency`.
 
 Write `turn` before the reply goes out. A `turn` with `usage` recorded after its test's window closed still counts for that test, like a late tool call: it goes in the sums, and the test's budget is checked again, so a run within it can now fail. Raise `agent.settle_time` if that happens.
+
+## `llm`: one call to the model
+
+One per call, a failed one or a fallback included. Every field is optional; older versions of highbar ignore the record, and the contract stays at v1. `hb.llm(...)` writes it from Python.
+
+| Field | Type | |
+|---|---|---|
+| `model` | string | The model the call went to. |
+| `provider` | string | Its provider. |
+| `attempt` | integer | 1 for the first try, more for a retry. |
+| `fallback_from` | string | The model this call stands in for, when it is a fallback. |
+| `roles` | list of strings | The role of each message sent, in order: `["system", "user", "system"]`. Anything else in `roles` makes the line unreadable. |
+| `input_tokens`, `output_tokens`, `cache_tokens` | integers | What the call used. Not added to `usage` or to any budget: the `turn`'s `usage` stays the one count, so nothing counts twice. |
+| `latency_ms` | number | How long the call took. |
+| `error` | string | Why the call failed. Absent, `null`, `false` or `""`: it did not. |
+
+It goes to a test by its `context`, like a `tool` record, and it is proof that the agent handled the message. One recorded after its test's window closed still counts for that test, which is checked again. [`expect.llm`](/guides/assertions#calls-to-the-model-llm) checks these records.
+
+```json
+{"v": 1, "type": "llm", "ts": 1792983750.101, "model": "deepseek-flash", "provider": "openrouter", "attempt": 2, "fallback_from": "gpt-4o-mini", "roles": ["system", "user", "system"], "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
+```
+
+## `retrieval`: what entered the prompt
+
+One per message: the documents the agent put in the prompt, and how. Every field is optional, but each document needs an `id` or a `title`, and its `chunks` must be whole numbers: anything else makes the line unreadable. `hb.retrieval(...)` writes it from Python.
+
+| Field | Type | |
+|---|---|---|
+| `items` | list | The documents: `{id, title, source, chunks, tokens}`. `source` is `retrieved`, `expanded` (brought in whole) or `sticky` (kept from an earlier turn); `chunks` are the indexes of its parts that went in, in the order they went in. |
+| `query`, `search_query`, `strategy`, `skipped_reason` | strings | What was searched, how, and why nothing was, when nothing was. |
+| `expired` | list | Documents that left the prompt: `{id, reason}`. |
+| `tokens` | integer | The tokens the documents took. Without it, the documents' own `tokens` add up, when every one has them. |
+
+It goes to a test by its `context`, like a `tool` record. It is proof that the agent handled the message, and it is not a tool call: `function_calls: []` and `exclusive` do not see it. One recorded after its test's window closed still counts for that test, which is checked again. [`expect.retrieval`](/guides/assertions#what-entered-the-prompt-retrieval) checks these records.
+
+```json
+{"v": 1, "type": "retrieval", "ts": 1792983750.090, "query": "and the deadline?", "items": [{"id": "tr-7", "title": "Warranty", "source": "expanded", "chunks": [0, 1, 2], "tokens": 900}], "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
+```
 
 ## `hello`: the writer started
 
@@ -167,9 +205,10 @@ def hello(tools: list[str]) -> None:
     _write({"type": "hello", "sdk": "reference-emitter/1", "pid": os.getpid(), "tools": tools})
 
 
-def tool(fn, args, *, result=None, error=None, started_at, test=None) -> None:
-    """One tool call. `error` says why it failed, also when it returned the failure."""
-    record = {"fn": fn, "args": args, "result": result, "error": error}
+def tool(fn, args, *, result=..., error=None, started_at, test=None) -> None:
+    """One tool call. `error` says why it failed. No `result=`: the return was not seen."""
+    record = {"fn": fn, "args": args, "error": error}
+    record |= {} if result is ... else {"result": result}  # unseen is not "returned null"
     _write({"type": "tool", **record, "started_at": started_at, "ended_at": time.time()}, test)
 
 

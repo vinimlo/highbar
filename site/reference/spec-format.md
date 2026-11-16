@@ -25,10 +25,10 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `response` | dotted path | first of `response`, `message`, `content`, `text`, `reply` | Where the reply text is in the JSON body. |
 | `reply` | `body` or `turn` | `body` | Where the reply comes from: the HTTP body, or the `response` of the test's `turn` record, for an agent that answers later through a queue. See [an agent that answers later](/guides/connecting-your-agent#an-agent-that-answers-later). |
 | `session` | mapping | none | `setup` and `teardown` hooks, each a command, `{python: "module:function"}` or `{http: {url, method, headers, body}}`. |
-| `run` | mapping | none | `setup` and `teardown` hooks that run once per spec: the `setup` before the agent starts, the `teardown` on every way out after it. The same three kinds as `session`, with no placeholders. See [before and after the run](/guides/attach-mode#before-and-after-the-run). |
+| `run` | mapping | none | `setup` and `teardown` hooks that run once per spec: the `setup` before the agent starts, the `teardown` on every way out after it. The same three kinds as `session`, with no test's placeholder; what the `setup` returns is <code v-pre>{{run.&lt;path&gt;}}</code>. See [before and after the run](/guides/attach-mode#before-and-after-the-run). |
 | `correlate` | mapping | <code v-pre>{test: "{{test.id}}"}</code> | The context keys that link a trace record to a test. |
 
-`${NAME}` anywhere under `agent` is replaced by the environment variable when the spec is loaded; a missing variable is an error. A value in `request`, `session`, `run` or a URL's password, query or fragment is masked in the output; the `traces` path, `start` and a URL's host and path are shown ([which values are masked](/guides/attach-mode)). Placeholders (<code v-pre>{{message}}</code>, <code v-pre>{{test.id}}</code>, <code v-pre>{{test.name}}</code>, <code v-pre>{{test.args.&lt;path&gt;}}</code>, <code v-pre>{{session.&lt;path&gt;}}</code>) are allowed in `request`, `correlate`, session commands and the URL, headers and body of a session's HTTP hook; `run` hooks take none. See [attach mode and sessions](/guides/attach-mode).
+`${NAME}` anywhere under `agent` is replaced by the environment variable when the spec is loaded; a missing variable is an error. A value in `request`, `session`, `run` or a URL's password, query or fragment is masked in the output; the `traces` path, `start` and a URL's host and path are shown ([which values are masked](/guides/attach-mode)). Placeholders (<code v-pre>{{message}}</code>, <code v-pre>{{test.id}}</code>, <code v-pre>{{test.name}}</code>, <code v-pre>{{test.args.&lt;path&gt;}}</code>, <code v-pre>{{session.&lt;path&gt;}}</code>, <code v-pre>{{run.&lt;path&gt;}}</code>) are allowed in `request`, `correlate`, session commands and the URL, headers and body of a session's HTTP hook; the `run` teardown takes only <code v-pre>{{run.&lt;path&gt;}}</code>, and the `run` setup none. See [attach mode and sessions](/guides/attach-mode).
 
 ## `suites[]`
 
@@ -44,10 +44,10 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 |---|---|---|
 | `trigger` | text | The message. Either `trigger` or `turns`. It can name a value of the session, <code v-pre>{{session.&lt;path&gt;}}</code>, when the agent has a `session`, in a test without `variations`. |
 | `expect` | mapping | What must hold. Required with `trigger`. With `turns`, it holds only a [`budget`](#budget), for the whole conversation. |
-| `turns` | list | A conversation: each turn has `trigger`, `expect` and an optional `name`. |
+| `turns` | list | A conversation: each turn has `trigger`, `expect` and an optional `name`. The last turn can have `variations`: paraphrases of its trigger, the turns before it as written. See [variations on the last turn](/guides/multi-turn#variations-on-the-last-turn). |
 | `name` | text | Shown in the output instead of the trigger. |
 | `id` | text | The test's key in a [report](/reference/report), for when the name or the trigger may change. Default: `<suite>/<name>`, where the name falls back to the trigger. |
-| `variations` | integer | How many paraphrases of the trigger to run as well. |
+| `variations` | integer | How many paraphrases of the trigger to run as well. On a multi-turn test it goes on the last turn instead. |
 | `runs` | integer ≥ 1 | How many times to run each phrasing. |
 | `min_pass` | integer ≥ 1, or fraction in (0, 1] | How many runs must pass. Default: `defaults.min_pass`, else all. A fraction is rounded up. |
 | `session` | mapping | `{args: {...}}`: a JSON object for this test's session hooks and <code v-pre>{{test.args.&lt;path&gt;}}</code>. See [a state of its own](/guides/attach-mode#a-state-of-its-own). |
@@ -67,8 +67,10 @@ Each test's key is unique in a spec. Two tests with the same key are a spec erro
 | `response` | matchers | Conditions on the reply text. |
 | `budget` | mapping | What may be spent. See [`budget`](#budget). |
 | `check` | mapping | `{python: "module:function"}`: a check of your own, which returns the failures it found. See [a check of your own](/guides/assertions#a-check-of-your-own-check). |
+| `llm` | mapping | The test's calls to the model, from its `llm` records: `model`, `fallback`, `last_role`, `max_calls`. See [calls to the model](/guides/assertions#calls-to-the-model-llm). |
+| `retrieval` | mapping | What entered the prompt, from the test's `retrieval` records: `includes`, `excludes`, `max_items`, `max_tokens`, `chunks_in_order`. See [what entered the prompt](/guides/assertions#what-entered-the-prompt-retrieval). |
 
-At least one of `function_calls`, `forbid`, `response`, `budget` and `check` is required.
+At least one of `function_calls`, `forbid`, `response`, `budget`, `check`, `llm` and `retrieval` is required.
 
 ## `budget`
 
@@ -124,6 +126,7 @@ A budget needs the turn's record, so it counts as a check on what the agent reco
 | `name` | text, or list of texts | Required. A list accepts any of the names. |
 | `params` | mapping | Must be contained in the call's arguments. Values may be matchers. |
 | `result` | mapping | Must be contained in what the tool returned. |
+| `returns` | any expected value | The whole return value: a matcher, a list, a text or a number, for a tool that returns something other than an object. `null` is refused; write `{equals: null}`. |
 | `error` | boolean, or matchers | `false` (default): the call must not have failed. `true`: it must have. A matcher: its error text must meet it. |
 
 ## Matchers
@@ -132,7 +135,7 @@ Used in `response`, in values of `params` and `result`, and in `error`:
 
 | Matcher | |
 |---|---|
-| `equals` | Exactly this value. |
+| `equals` | Exactly this value. A boolean is never a number, here, in `in`, `contains` and a plain value. |
 | `contains` / `icontains` | Contains the text (`i`: ignoring case); for a list, has the item. |
 | `not_contains` / `not_icontains` | Does not. |
 | `matches` / `not_matches` | A regular expression is found (Python `re.search`), or is not. **Case-sensitive.** Checked when the spec is loaded. |
@@ -143,4 +146,4 @@ Used in `response`, in values of `params` and `result`, and in `error`:
 | `contains_all` | Contains each listed item, as `contains` does (a list with at least one). Only in `params` and `result`. |
 | `any` / `all` | A list where some item, or every item, matches the operand, which is any expected value. `all` fails on an empty list. Only in `params` and `result`. |
 
-Negative matchers fail on a value with no text form, such as an object or `null`. An empty text operand is refused; `equals` takes one. An empty object as a value checks that the key is there and holds an object. A bound fails on a value that is not a number (a numeric string and a boolean included), and a length on a value that is not a list. Templates (<code v-pre>{{previous.*}}</code>) are only allowed in triggers.
+Negative matchers fail on a value with no text form, such as an object, `null` or a boolean, and every text matcher fails on a boolean or with one as its operand. An empty text operand is refused; `equals` takes one. An empty object as a value checks that the key is there and holds an object. A bound fails on a value that is not a number (a numeric string and a boolean included), and a length on a value that is not a list. Templates (<code v-pre>{{previous.*}}</code>) are only allowed in triggers.

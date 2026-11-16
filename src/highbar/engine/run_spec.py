@@ -201,6 +201,7 @@ def _runner(
         default_runs=default_runs,
         max_cost=max_cost,
         reply_within=spec.agent.timeout / 1000 if spec.agent.reply == "turn" else None,
+        hook_timeout=spec.agent.timeout / 1000,
         spent=spent,
         spent_untagged=spent_untagged,
     )

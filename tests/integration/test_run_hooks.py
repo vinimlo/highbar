@@ -124,3 +124,39 @@ def test_hb10_a_setup_that_fails_exits_2_before_the_agent_starts(project: _Proje
     data = project.data()
     assert data["stopped"]["reason"] == "run_setup_failed"
     assert data["exit_code"] == 2
+
+
+FLAGS = """\
+import json, pathlib, sys
+with pathlib.Path("events.log").open("a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\\n")
+if sys.argv[1] == "on":
+    print("turning beta on")
+    print(json.dumps({"previous": "off", "variant": "beta"}))
+elif sys.argv[1] == "session":
+    print(json.dumps({"conversation_id": "c-" + sys.argv[2]}))
+"""
+
+
+@pytest.mark.timeout(30)
+def test_hb10_what_the_setup_returns_reaches_the_session_and_the_teardown(
+    project: _Project,
+) -> None:
+    """The flag's previous state, which only the setup knows, is what the teardown restores."""
+    (project.root / "flags.py").write_text(FLAGS, encoding="utf-8")
+    port = _free_port()
+    flags = f"{sys.executable} flags.py"
+    text = (
+        _Project.agent(port)
+        + f'  run:\n    setup: "{flags} on"\n    teardown: "{flags} set {{{{run.previous}}}}"\n'
+        + f'  session:\n    setup: "{flags} session {{{{run.variant}}}}"\n'
+        + '  request:\n    body: {message: "{{message}}", '
+        + 'conversation_id: "{{session.conversation_id}}"}\n'
+        + _Project.suites(PASSES)
+    )
+    (project.root / "agent.highbar.yaml").write_text(text, encoding="utf-8")
+
+    result = project.run("agent.highbar.yaml")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _events(project) == ["on", "session beta", "set off"]

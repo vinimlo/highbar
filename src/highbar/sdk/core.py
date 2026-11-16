@@ -11,7 +11,7 @@ import atexit
 import os
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
@@ -67,6 +67,16 @@ class TurnHandle:
         self.message = message
         self.response: str | None = None
         self.usage: Mapping[str, Any] | None = None
+
+
+class _NoResult:
+    """``hb.record()`` given no ``result=``: the return was not seen."""
+
+    def __repr__(self) -> str:
+        return "NO_RESULT"
+
+
+NO_RESULT: Any = _NoResult()
 
 
 class Highbar:
@@ -139,7 +149,7 @@ class Highbar:
         fn: str,
         args: Mapping[str, Any] | None = None,
         *,
-        result: Any = None,
+        result: Any = NO_RESULT,
         error: str | None = None,
         started_at: float | None = None,
         ended_at: float | None = None,
@@ -149,7 +159,9 @@ class Highbar:
 
         Extra keyword arguments go to the record's ``context``. A failure the tool
         returned as a payload, without raising, belongs in ``error``: highbar never
-        reads ``result`` to decide whether a call failed.
+        reads ``result`` to decide whether a call failed. Without ``result=`` the
+        record has no ``result``, so a check of what the tool returned is not taken
+        as "it returned null"; ``result=None`` says it did.
         """
         now = time.time()
         self._write_tool(
@@ -161,6 +173,80 @@ class Highbar:
             now if ended_at is None else ended_at,
             context.merged(context_fields),
         )
+
+    def llm(
+        self,
+        *,
+        model: str | None = None,
+        provider: str | None = None,
+        attempt: int | None = None,
+        fallback_from: str | None = None,
+        roles: Sequence[str] | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cache_tokens: int | None = None,
+        latency_ms: float | None = None,
+        error: str | None = None,
+        **context_fields: Any,
+    ) -> None:
+        """Record one call to the model, a failed one or a fallback included (HB-11).
+
+        ``roles`` are the roles of the messages sent, in order: ``expect.llm.last_role``
+        reads the last one. Extra keyword arguments go to the record's ``context``.
+        """
+        fields = {
+            "model": model,
+            "provider": provider,
+            "attempt": attempt,
+            "fallback_from": fallback_from,
+            "roles": list(roles) if roles is not None else None,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_tokens": cache_tokens,
+            "latency_ms": latency_ms,
+            "error": error,
+        }
+        record: dict[str, Any] = {"type": "llm", "ts": time.time()}
+        record.update({key: value for key, value in fields.items() if value is not None})
+        record_context = context.merged(context_fields)
+        if record_context:
+            record["context"] = record_context
+        self._write(record)
+
+    def retrieval(
+        self,
+        *,
+        items: Sequence[Mapping[str, Any]] = (),
+        query: str | None = None,
+        search_query: str | None = None,
+        strategy: str | None = None,
+        skipped_reason: str | None = None,
+        expired: Sequence[Mapping[str, Any]] | None = None,
+        tokens: int | None = None,
+        **context_fields: Any,
+    ) -> None:
+        """Record what entered the prompt for this message (HB-3): each document as
+        ``{"id", "title", "source", "chunks", "tokens"}``. Extra keyword arguments go to
+        the record's ``context``.
+        """
+        fields = {
+            "query": query,
+            "search_query": search_query,
+            "strategy": strategy,
+            "skipped_reason": skipped_reason,
+            "expired": [_plain(entry) for entry in expired] if expired is not None else None,
+            "tokens": tokens,
+        }
+        record: dict[str, Any] = {
+            "type": "retrieval",
+            "ts": time.time(),
+            "items": [_plain(item) for item in items],
+        }
+        record.update({key: value for key, value in fields.items() if value is not None})
+        record_context = context.merged(context_fields)
+        if record_context:
+            record["context"] = record_context
+        self._write(record)
 
     @contextmanager
     def turn(self, *, message: str | None = None, **context_fields: Any) -> Iterator[TurnHandle]:
@@ -213,10 +299,11 @@ class Highbar:
             "ts": time.time(),
             "fn": fn,
             "args": args,
-            "result": result,
             "started_at": started_at,
             "ended_at": ended_at,
         }
+        if result is not NO_RESULT:
+            record["result"] = result
         if error is not None:
             record["error"] = error
         if record_context:

@@ -20,6 +20,7 @@ expect:
 - **`name`** is a tool name, or a list of names when any of them will do: `name: [search, search_products]`.
 - **`params`** must be contained in the call's arguments: keys you leave out are not checked, and nested objects are compared the same way.
 - **`result`** works like `params`, on what the tool returned.
+- **`returns`** is the whole return value, for a tool that returns a list or a text, which `result`'s key names cannot reach: `returns: {len_lte: 3}`, `returns: {icontains: "done"}`, `returns: [a, b]`. It takes any expected value, a matcher included; an object is matched as `result` is. For a `null` return, write `returns: {equals: null}`.
 - **Other calls are allowed** unless the test says `exclusive: true`.
 
 A value in `params` or `result` is compared as is, or with a matcher:
@@ -37,7 +38,7 @@ expect:
 
 | Matcher | Holds when the value |
 |---|---|
-| `equals` | is exactly the operand. Use it to compare a whole object, or an object that looks like a matcher. |
+| `equals` | is exactly the operand. Use it to compare a whole object, or an object that looks like a matcher. A boolean is never a number: `0` is not `false`, and `1` is not `true`. |
 | `contains`, `icontains` | contains the text (`icontains` ignores case). For a list: has the item. |
 | `not_contains`, `not_icontains` | does not contain it. |
 | `matches`, `not_matches` | matches the regular expression somewhere (Python's `re.search`), or does not. **Case-sensitive:** `matches: "eleven years"` fails on "Eleven years" at the start of a sentence. |
@@ -138,6 +139,49 @@ expect:
 ```
 
 Each condition that fails gets its own line in the output, ending with what the agent said, cut at 300 characters.
+
+## Calls to the model: `llm`
+
+An agent that falls back from one model to another, or that must end every prompt with its own system message, says so in an [`llm` record](/reference/trace-contract#llm-one-call-to-the-model) per call. `expect.llm` checks them:
+
+```yaml test
+trigger: "what is the deadline?"
+expect:
+  llm:
+    model: deepseek-flash
+    fallback: true
+    last_role: system
+    max_calls: 3
+```
+
+- `model`: the model of the call that answered, the last one without an `error`. A name, or a text matcher like `{matches: "^gpt-4o"}`. A call that answered without a `model` fails the check.
+- `fallback`: whether some call stood in for another model (`fallback_from`), was a retry (`attempt` over 1), or came after a call that failed, whatever its fields say.
+- `last_role`: the role of the last message sent, in every call. A failure names the call.
+- `max_calls`: how many calls, failed ones included.
+
+A test with no `llm` record of its own is an `error`, never a pass: `fallback: false` would otherwise pass on an agent that records nothing. When another check already failed the test, it stays `failed`, and the missing records are named too.
+
+## What entered the prompt: `retrieval`
+
+A reply that is right can still be right by luck: with two near-identical manuals in the prompt, an agent can quote the right deadline in one round and the wrong one in the next. An agent that records what it put in the prompt, in a [`retrieval` record](/reference/trace-contract#retrieval-what-entered-the-prompt), lets the test check that directly:
+
+```yaml test
+trigger: "and the deadline?"
+expect:
+  retrieval:
+    includes: [tr-7, {id: tr-2, source: sticky}]
+    excludes: [Draft]
+    max_items: 3
+    max_tokens: 2000
+    chunks_in_order: true
+```
+
+- `includes`: documents, by id or title, that went into a prompt of this test. With `source`, they must have come that way: `expanded`, `retrieved` or `sticky`.
+- `excludes`: documents that must not have gone in.
+- `max_items`, `max_tokens`: for each prompt, one record each. Without a `tokens` of its own, a record's documents' `tokens` add up; when they cannot, the check fails and says so.
+- `chunks_in_order`: each document's chunks went in ascending.
+
+A test with no `retrieval` record of its own is an `error`, never a pass, as with [`llm`](#calls-to-the-model-llm).
 
 ## A check of your own: `check`
 

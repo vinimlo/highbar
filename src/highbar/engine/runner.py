@@ -13,13 +13,19 @@ from highbar.adapters import file_collector, subprocess_adapter
 from highbar.adapters.file_collector import TraceFormatError
 from highbar.adapters.http_client import AgentResponseError, HTTPClient
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
+from highbar.assertions.function_calls import FunctionCallsAssertion, unrecorded_returns
+from highbar.assertions.llm import check_llm
+from highbar.assertions.records import RecordNotObserved
 from highbar.assertions.response import truncate
+from highbar.assertions.retrieval import check_retrieval
 from highbar.domain.models import (
     Budget,
     Counts,
     ExecutionOutcome,
     Expect,
+    LlmCall,
     PhrasingOutcome,
+    Retrieval,
     RunSummary,
     Spec,
     Status,
@@ -40,7 +46,7 @@ from highbar.domain.models import (
     stable_key,
 )
 from highbar.domain.protocols import Assertion, Reporter, TraceCollector, VariationGenerator
-from highbar.engine import observation
+from highbar.engine import observation, signals
 from highbar.engine import session as sessions
 from highbar.engine.observation import (
     AgentNotObservedError,
@@ -166,6 +172,9 @@ class _Execution:
     expect: Expect | None = None  # of its last turn
     response: str = ""
     tools: list[Trace] = field(default_factory=list[Trace])
+    # Its records of the types beyond tool calls (HB-11, HB-3), as late ones add to them.
+    llms: list[LlmCall] = field(default_factory=list[LlmCall])
+    retrievals: list[Retrieval] = field(default_factory=list[Retrieval])
     passed: bool = False
     # No record of its own in a managed run: it rests on the agent highbar started being
     # the one that answered, which it may not be once that agent is gone (HB-43).
@@ -239,6 +248,10 @@ def _same_correlation(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     return bool(a) and a.keys() == b.keys() and all(same_value(a[k], b[k]) for k in a)
 
 
+def _quoted(names: list[str]) -> str:
+    return " and ".join(f"'{name}'" for name in names)
+
+
 def _names(tools: list[Trace]) -> str:
     return ", ".join(dict.fromkeys(t.fn for t in tools))
 
@@ -290,7 +303,7 @@ def _merged_errors(results: list[TestResult], conditions: Mapping[str, str]) -> 
     for failed in groups.values():
         (run, first), count = failed[0], f"{len(failed)} of {len(results)} runs"
         same = all(error == first for _, error in failed)
-        lines.append(f"{first} ({count})" if same else f"{first} ({count}; reply from run {run})")
+        lines.append(f"{first} ({count})" if same else f"{first} ({count}; as in run {run})")
     return lines
 
 
@@ -376,6 +389,26 @@ def _suites(tests: tuple[TestOutcome, ...]) -> tuple[SuiteOutcome, ...]:
     return tuple(SuiteOutcome(name, add_up(turns)) for name, turns in usages.items())
 
 
+def _record_checks(
+    expect: Expect, llms: list[LlmCall], retrievals: list[Retrieval]
+) -> tuple[list[str], list[str]]:
+    """The checks of the record types beyond tool calls: their failures, and what could
+    not be checked for want of a record (HB-11, HB-3; decision E1)."""
+    failures: list[str] = []
+    unseen: list[str] = []
+    if expect.llm is not None:
+        try:
+            failures += check_llm(llms, expect.llm)
+        except RecordNotObserved as e:
+            unseen.append(str(e))
+    if expect.retrieval is not None:
+        try:
+            failures += check_retrieval(retrievals, expect.retrieval)
+        except RecordNotObserved as e:
+            unseen.append(str(e))
+    return failures, unseen
+
+
 def _test_name(test: Test, variations_run: int | None = None) -> str:
     """Display name. ``variations_run`` is how many paraphrases were actually executed.
 
@@ -383,8 +416,9 @@ def _test_name(test: Test, variations_run: int | None = None) -> str:
     produced 3 of the 5 requested, saying "5 variations" overstates what was tested.
     """
     if test.turns:
-        return test.name or f"multi-turn ({len(test.turns)} turns)"
-    label = test.name or test.trigger or ""
+        label = test.name or f"multi-turn ({len(test.turns)} turns)"
+    else:
+        label = test.name or test.trigger or ""
     if test.variations:
         if variations_run is None or variations_run == test.variations:
             return f"{label} ({test.variations} variations)"
@@ -433,6 +467,7 @@ class TestRunner:
         default_runs: int = 1,
         max_cost: float | None = None,
         reply_within: float | None = None,
+        hook_timeout: float | None = None,
         spent: Mapping[str, float] | None = None,
         spent_untagged: Mapping[str, float] | None = None,
     ) -> None:
@@ -460,6 +495,8 @@ class TestRunner:
         # agent.reply: turn (HB-14): how long to wait for the reply in the turn record,
         # in seconds (agent.timeout). None: the reply is the HTTP body.
         self._reply_within = reply_within
+        # agent.timeout in seconds, for the line said while a signal waits (HB-44).
+        self._hook_timeout = hook_timeout
         self._spent: Mapping[str, float] = spent or {}
         self._spent_untagged: Mapping[str, float] = spent_untagged or {}
         self._stopped: str | None = None
@@ -488,6 +525,8 @@ class TestRunner:
         # The session.args of the test that runs now (HB-9), for each of its executions.
         self._args: Mapping[str, Any] = {}
         self._history: Sequence[Mapping[str, str]] = ()
+        # What agent.run.setup returned (HB-10): {{run.*}} in every request and session.
+        self._run_values: Mapping[str, Any] = {}
         # What each failure message says apart from the agent's reply (HB-27): a
         # phrasing's runs that fail the same condition with other replies are one line.
         self._conditions: dict[str, str] = {}
@@ -512,8 +551,9 @@ class TestRunner:
 
         # agent.run (HB-10): its setup before the agent starts, and its teardown on every
         # way out once the setup finished, an agent that does not start included.
+        self._run_values = {}
         if self._session is not None:
-            self._session.before_run()
+            self._run_values = self._session.before_run()
         try:
             self._adapter.start()
         except BaseException:
@@ -721,14 +761,29 @@ class TestRunner:
 
     def _after_run(self) -> None:
         """agent.run's teardown. Its failure is a warning: the results stand, but what the
-        setup changed may still be as the run left it."""
+        setup changed may still be as the run left it.
+
+        A signal that lands while it runs waits for its end (within agent.timeout), then
+        goes where it would have gone: a Ctrl-C there would leave the setup's change in
+        place. The warning is told first.
+        """
         if self._session is None:
             return
-        try:
-            self._session.after_run()
-        except Exception as e:
-            reason = str(e) if isinstance(e, SessionError) else f"{type(e).__name__}: {e}"
-            self._warn(f"{reason}; check by hand what it was to undo")
+        within = (
+            f"at most {self._hook_timeout:g}s, agent.timeout"
+            if self._hook_timeout is not None
+            else "within agent.timeout"
+        )
+        notice = (
+            "Waiting for agent.run.teardown to put back what agent.run.setup changed "
+            f"({within}), then stopping."
+        )
+        with signals.holding_signals(notice):
+            try:
+                self._session.after_run()
+            except Exception as e:
+                reason = str(e) if isinstance(e, SessionError) else f"{type(e).__name__}: {e}"
+                self._warn(f"{reason}; check by hand what it was to undo")
 
     def _warn(self, message: str) -> None:
         self._warnings.append(message)
@@ -869,6 +924,7 @@ class TestRunner:
             if attribute(turn.context, last.correlate) is Attribution.UNATTRIBUTED
         ]
         self._judge_late_usage([t for t in window.turns if t not in stray], current=None)
+        self._judge_late_records(window.llms, window.retrievals, current=None)
         self._suspect_usage(last, self._read_usage(stray), last.correlate)
         if unreadable is not None and last.passed:
             # No test comes after the last one: the line may be its late call or usage.
@@ -915,6 +971,37 @@ class TestRunner:
                         execution,
                         Status.FAILED,
                         f"{_names(calls)} was recorded after the test's window closed "
+                        f"(settle_time {self._settle_time * 1000:.0f} ms): "
+                        f"{'; '.join(errors)}. Raise agent.settle_time to read it in time",
+                    )
+                )
+
+    def _judge_late_records(
+        self, llms: list[LlmCall], retrievals: list[Retrieval], current: _Execution | None
+    ) -> None:
+        """Records beyond tool calls, tagged with an earlier execution, count for it (E1)."""
+        late: dict[int, tuple[_Execution, int]] = {}
+        for call in llms:
+            owner = self._owner(call.context, current)
+            if owner is not None:
+                owner.llms = [*owner.llms, call]
+                late[id(owner)] = (owner, late.get(id(owner), (owner, 0))[1] + 1)
+        for record in retrievals:
+            owner = self._owner(record.context, current)
+            if owner is not None:
+                owner.retrievals = [*owner.retrievals, record]
+                late[id(owner)] = (owner, late.get(id(owner), (owner, 0))[1] + 1)
+        for execution, count in late.values():
+            if not (execution.passed and execution.expect is not None):
+                continue
+            errors, _ = _record_checks(execution.expect, execution.llms, execution.retrievals)
+            if errors:
+                execution.passed = False
+                self._findings.append(
+                    _Finding(
+                        execution,
+                        Status.FAILED,
+                        f"{count} record(s) arrived after the test's window closed "
                         f"(settle_time {self._settle_time * 1000:.0f} ms): "
                         f"{'; '.join(errors)}. Raise agent.settle_time to read it in time",
                     )
@@ -1112,10 +1199,20 @@ class TestRunner:
         execution.passed = False
         return replace(result, status=Status.FAILED, errors=[*result.errors, *failures])
 
-    def _check(self, tools: list[Trace], response: str, expect: Expect) -> list[str]:
+    def _check(
+        self, tools: list[Trace], response: str, expect: Expect, *, assume_unrecorded: bool = False
+    ) -> list[str]:
+        assertions = self._assertions
+        if assume_unrecorded:
+            assertions = [
+                FunctionCallsAssertion(assume_unrecorded=True)
+                if isinstance(a, FunctionCallsAssertion)
+                else a
+                for a in assertions
+            ]
         failed = [
             r
-            for assertion in self._assertions
+            for assertion in assertions
             for r in assertion.evaluate(tools, response, expect)
             if not r.passed
         ]
@@ -1350,40 +1447,43 @@ class TestRunner:
         runs, min_pass = resolve_runs(test, self._default_runs, self._default_min_pass)
         budget = self._budget_of(test)
 
-        kinds: list[tuple[str, str | None]] = [("conversation", None)]
         if test.turns:
-            phrasings = [("", test.turns)]
+            turns = list(test.turns)
         else:
             if test.trigger is None or test.expect is None:
                 raise ValueError("Single-turn test must have both 'trigger' and 'expect'")
             # The test's budget is its execution's, checked once, on the sum of its turns.
-            expect = replace(test.expect, budget=None)
-            triggers = [test.trigger]
-            if test.variations:
-                paraphrases = self._paraphrases(test.trigger, test.variations)
-                if isinstance(paraphrases, str):
-                    return TestResult(
-                        status=Status.ERROR,
-                        errors=[paraphrases],
-                        duration_ms=(time.time() - start) * 1000,
-                    )
-                triggers.extend(paraphrases)
-            kinds = [
-                ("trigger" if index == 0 else "variation", phrasing)
-                for index, phrasing in enumerate(triggers)
-            ]
-            phrasings = [
-                # The failing phrasing is the whole finding: without it the report says
-                # the intent broke but not which sentence broke it. Index 0 is the
-                # sentence the spec author wrote, not a generated one.
-                (
-                    f'[{"trigger" if index == 0 else "variation"}: "{phrasing}"] '
-                    if test.variations
-                    else "",
-                    [Turn(trigger=phrasing, expect=expect)],
+            turns = [Turn(trigger=test.trigger, expect=replace(test.expect, budget=None))]
+        # A paraphrase replaces the last turn's trigger, a single-turn test's only one; the
+        # turns before it are sent as written (HB-16).
+        last = turns[-1]
+        sentences = [last.trigger]
+        if test.variations:
+            earlier = [turn.trigger for turn in turns[:-1]]
+            paraphrases = self._paraphrases(last.trigger, test.variations, earlier)
+            if isinstance(paraphrases, str):
+                return TestResult(
+                    status=Status.ERROR,
+                    errors=[paraphrases],
+                    duration_ms=(time.time() - start) * 1000,
                 )
-                for index, phrasing in enumerate(triggers)
-            ]
+            sentences.extend(paraphrases)
+        first: tuple[str, str | None] = (
+            ("conversation", None) if test.turns else ("trigger", last.trigger)
+        )
+        kinds = [first, *(("variation", sentence) for sentence in sentences[1:])]
+        phrasings = [
+            # The failing phrasing is the whole finding: without it the report says
+            # the intent broke but not which sentence broke it. Index 0 is the
+            # sentence the spec author wrote, not a generated one.
+            (
+                f'[{"trigger" if index == 0 else "variation"}: "{sentence}"] '
+                if test.variations
+                else "",
+                [*turns[:-1], replace(last, trigger=sentence)],
+            )
+            for index, sentence in enumerate(sentences)
+        ]
 
         statuses: list[Status] = []
         errors: list[str] = []
@@ -1426,8 +1526,12 @@ class TestRunner:
             counts=gate.counts,
         )
 
-    def _paraphrases(self, trigger: str, count: int) -> list[str] | str:
-        """The generated paraphrases, or why there are none."""
+    def _paraphrases(self, trigger: str, count: int, earlier: list[str]) -> list[str] | str:
+        """The generated paraphrases, or why there are none.
+
+        ``earlier`` is the conversation before the turn paraphrased, its user messages:
+        "and the deadline?" means nothing alone.
+        """
         if self._variations is None:
             msg = (
                 f"Test asks for {count} variations but no variation generator is "
@@ -1438,7 +1542,12 @@ class TestRunner:
         # A missing cache, a missing key or a failed LLM call leaves this test unverified,
         # not a reason to abort the run and lose the results of every other test.
         try:
-            paraphrases = self._variations.generate(trigger, count)
+            if earlier:
+                paraphrases = self._variations.generate(trigger, count, context=earlier)
+            else:
+                # A single-turn test asks as before: a generator of its own may not take
+                # a context.
+                paraphrases = self._variations.generate(trigger, count)
         except Exception as e:
             self._last_variation_count = 0
             return f"Could not get variations: {e}"
@@ -1472,6 +1581,7 @@ class TestRunner:
             spec_path=self._spec_path,
             args=self._args,
             history=self._history,
+            run=self._run_values,
         )
         execution = _Execution(
             self._test_index,
@@ -1524,6 +1634,7 @@ class TestRunner:
             session=session,
             args=context.args,
             history=context.history,
+            run=context.run,
         )
         all_traces: list[Trace] = []
         all_errors: list[str] = []
@@ -1702,6 +1813,7 @@ class TestRunner:
             # Nothing in the window is tagged: it is all there is to go by. An attached
             # agent may be serving others, and their tokens are not this test's.
             traces = window.tools
+            llms, retrievals = window.llms, window.retrievals
             log.tools = list(traces)
             log.records = stray if self._managed else []
             log.turns = list(window.turns)
@@ -1716,18 +1828,24 @@ class TestRunner:
         else:
             self._judge_late(classified.other.tools, current=execution)
             self._judge_late_usage(classified.other.turns, current=execution)
+            self._judge_late_records(
+                classified.other.llms, classified.other.retrievals, current=execution
+            )
             self._suspect(previous, untagged)
             log.untagged = self._read_usage(classified.unattributed.turns)
             self._suspect_usage(previous, log.untagged, execution.correlate)
-            if observes and not (classified.mine.tools or classified.mine.turns):
+            mine = classified.mine
+            seen = mine.tools or mine.turns or mine.llms or mine.retrievals
+            if observes and not seen:
                 return unverified(self._not_observed(classified, execution.correlate))
             traces = classified.mine.tools
+            llms, retrievals = classified.mine.llms, classified.mine.retrievals
             log.tools = list(traces)
             log.records = self._read_usage(classified.mine.turns)
             log.turns = list(classified.mine.turns)
-            if self._managed and not (classified.mine.tools or classified.mine.turns):
+            if self._managed and not seen:
                 execution.on_faith = True
-            if expect.check is not None and not (classified.mine.tools or classified.mine.turns):
+            if expect.check is not None and not seen:
                 log.unobserved = self._not_observed(classified, execution.correlate)
             errors = self._check(traces, response, expect)
             if untagged:
@@ -1741,6 +1859,17 @@ class TestRunner:
                         "makes off the request needs contextvars.copy_context() to keep the "
                         "tag; hb.record() can also be given it"
                     )
+
+        # A call whose return was not recorded: `returns` could not be checked on it.
+        # A test that passes once those returns are taken to fit was not checked,
+        # which is not the same as failed (review of #74).
+        unseen_returns = unrecorded_returns(traces, expect) if errors else []
+        if unseen_returns and not self._check(traces, response, expect, assume_unrecorded=True):
+            return unverified(
+                f"the return of {_quoted(unseen_returns)} was not recorded, so "
+                "`returns` was not checked: give hb.record(...) the result=, or "
+                "write a `result` in the tool's line"
+            )
 
         budget = self._budget_check(expect.budget, log.usage)
         if (unseen := self._unobservable(expect)) is not None:
@@ -1761,7 +1890,17 @@ class TestRunner:
                 return unverified("; ".join(budget.unverified))
             errors = [*errors, *budget.unverified]
 
+        failures, unseen = _record_checks(expect, llms, retrievals)
+        errors = [*errors, *failures]
+        if unseen:
+            # No record of a type it checks: nothing was checked there, which only a
+            # failure outranks (decision E2).
+            if not errors:
+                return unverified("; ".join(unseen))
+            errors = [*errors, *unseen]
+
         execution.expect, execution.response = expect, response
+        execution.llms, execution.retrievals = list(llms), list(retrievals)
         execution.tools, execution.passed = list(traces), not errors
         duration = (time.time() - start) * 1000
         return TestResult(

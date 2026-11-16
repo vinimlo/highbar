@@ -33,13 +33,13 @@ Records each call as a `tool` record: the arguments bound to their names (defaul
 
 Decorating a function also declares it: the SDK writes a `tools` record with every tool it records, which highbar checks a spec's tool names against. When the trace file is emptied or replaced while the agent runs, the SDK writes its `hello` and the tools again.
 
-## `hb.record(fn, args=None, *, result=None, error=None, started_at=None, ended_at=None, **context)`
+## `hb.record(fn, args=None, *, result=..., error=None, started_at=None, ended_at=None, **context)`
 
 ```python
 hb.record("search_products", {"query": "dress"}, result=rows, conversation_id=cid)
 ```
 
-Records a call made where no function can be decorated, such as a dispatch funnel. Keyword arguments beyond the named ones go into the record's `context`, on top of the current message's context. A failure the tool returned as data belongs in `error`: highbar never reads `result` to decide whether a call failed. Times default to now.
+Records a call made where no function can be decorated, such as a dispatch funnel. Keyword arguments beyond the named ones go into the record's `context`, on top of the current message's context. A failure the tool returned as data belongs in `error`: highbar never reads `result` to decide whether a call failed. Without `result=` the record has no `result`, and a `returns` check on that call is not taken as "it returned null": the test is an `error` unless something else already failed it. `result=None` says the tool returned null. Times default to now.
 
 ## `hb.declare(*names)`
 

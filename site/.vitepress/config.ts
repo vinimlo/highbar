@@ -41,6 +41,7 @@ export default defineConfig({
           { text: 'Guardrails', link: '/guides/guardrails' },
           { text: 'Variations', link: '/guides/variations' },
           { text: 'Repetition and CI gates', link: '/guides/repetition' },
+          { text: 'Comparing two configurations', link: '/guides/comparing' },
           { text: 'Troubleshooting', link: '/guides/troubleshooting' },
         ],
       },

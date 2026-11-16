@@ -54,6 +54,9 @@ class Trace:
     ended_at: float
     error: str | None = None
     context: dict[str, Any] = field(default_factory=dict[str, Any])
+    # False when the record had no `result` key: what the tool returned was not seen,
+    # which is not the same as having returned null (review of #74, HB-37).
+    has_result: bool = True
 
     @property
     def duration_ms(self) -> float:
@@ -99,6 +102,55 @@ class TurnRecord:
 
 
 @dataclass(frozen=True)
+class LlmCall:
+    """An `llm` record: one call to the model, a failed one or a fallback included (HB-11).
+
+    Its tokens are shown, not summed: the `turn`'s usage is what budgets read, so
+    nothing counts twice (decision E3, on the card).
+    """
+
+    ts: float
+    context: dict[str, Any] = field(default_factory=dict[str, Any])
+    model: str | None = None
+    provider: str | None = None
+    attempt: int | None = None
+    fallback_from: str | None = None
+    roles: tuple[str, ...] | None = None  # the roles of the messages sent, in order
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_tokens: int | None = None
+    latency_ms: float | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class RetrievedItem:
+    """One document in a prompt: a training, a manual. ``source``: retrieved, expanded or
+    sticky (kept from an earlier turn). ``chunks``: the indexes of its parts that went in."""
+
+    id: str | None = None
+    title: str | None = None
+    source: str | None = None
+    chunks: tuple[int, ...] = ()
+    tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class Retrieval:
+    """A `retrieval` record: what entered the prompt for one message (HB-3)."""
+
+    ts: float
+    context: dict[str, Any] = field(default_factory=dict[str, Any])
+    query: str | None = None
+    search_query: str | None = None
+    strategy: str | None = None
+    skipped_reason: str | None = None
+    items: tuple[RetrievedItem, ...] = ()
+    expired: tuple[dict[str, Any], ...] = ()
+    tokens: int | None = None
+
+
+@dataclass(frozen=True)
 class Hello:
     """A `hello` record: an emitter started writing to the trace file."""
 
@@ -114,6 +166,8 @@ class Window:
     tools: list[Trace] = field(default_factory=list[Trace])
     turns: list[TurnRecord] = field(default_factory=list[TurnRecord])
     hellos: list[Hello] = field(default_factory=list[Hello])
+    llms: list[LlmCall] = field(default_factory=list[LlmCall])
+    retrievals: list[Retrieval] = field(default_factory=list[Retrieval])
     # The tools the agent declared it records, one tuple per declaration (spec D4).
     declarations: list[tuple[str, ...]] = field(default_factory=list[tuple[str, ...]])
     # Where the next read starts: every record is read once, none falls between reads.
@@ -175,6 +229,9 @@ class RunConfig:
 
     setup: Hook | None = None
     teardown: Hook | None = None
+    # The spec reads what the setup returns as {{run.*}} (v1): only then must the setup
+    # return a JSON object. A setup whose result nobody reads may print what it likes.
+    read_result: bool = False
 
 
 @dataclass(frozen=True)
@@ -223,6 +280,10 @@ class FunctionCallExpect:
     name: str | list[str]
     params: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
+    # The whole return value, as an expected value (a matcher, a list, a text): for a
+    # tool that returns a list or a text, which `result`'s key names cannot reach
+    # (HB-37). None: not checked; a null return is ``{equals: null}``.
+    returns: Any = None
     # False: the call must not have failed. True: it must have. A matcher: it must
     # have failed with an error that matches (``{contains: "Timeout"}``).
     error: bool | dict[str, Any] = False
@@ -258,6 +319,42 @@ class Budget:
 
 
 @dataclass(frozen=True)
+class LlmExpect:
+    """``expect.llm`` (HB-11): checks of the test's calls to the model (decision E4).
+
+    ``model`` is a text matcher on the call that answered, the last without ``error``.
+    ``last_role`` holds for every call. ``fallback`` is whether any call came from another
+    model or was a retry. ``max_calls`` counts the failed calls too.
+    """
+
+    model: dict[str, Any] | None = None
+    fallback: bool | None = None
+    last_role: str | None = None
+    max_calls: int | None = None
+
+
+@dataclass(frozen=True)
+class ItemRef:
+    """A document named in ``expect.retrieval.includes``: its id or title, and how it
+    must have come in, when that matters."""
+
+    key: str
+    source: str | None = None
+
+
+@dataclass(frozen=True)
+class RetrievalExpect:
+    """``expect.retrieval`` (HB-3). ``includes``/``excludes`` read every record of the test;
+    ``max_items``/``max_tokens`` hold for each record, one prompt each."""
+
+    includes: tuple[ItemRef, ...] = ()
+    excludes: tuple[str, ...] = ()
+    max_items: int | None = None
+    max_tokens: int | None = None
+    chunks_in_order: bool = False
+
+
+@dataclass(frozen=True)
 class Expect:
     """Expected outcomes for a test or turn."""
 
@@ -268,6 +365,8 @@ class Expect:
     forbid: tuple[str, ...] = ()  # tools that must not be called, failed or not
     budget: Budget | None = None  # per turn in a turn, per execution in a test
     check: str | None = None  # "module:function" of the author's own check (HB-12)
+    llm: LlmExpect | None = None  # the calls to the model (HB-11)
+    retrieval: RetrievalExpect | None = None  # what entered the prompt (HB-3)
 
     @property
     def requires_observation(self) -> bool:
@@ -277,7 +376,13 @@ class Expect:
         nothing unless the message reached an agent that would have recorded one. A
         budget reads the usage of the turn's own record.
         """
-        return self.function_calls is not None or bool(self.forbid) or self.budget is not None
+        return (
+            self.function_calls is not None
+            or bool(self.forbid)
+            or self.budget is not None
+            or self.llm is not None
+            or self.retrieval is not None
+        )
 
 
 @dataclass(frozen=True)
