@@ -16,6 +16,7 @@ import pytest
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
 from highbar.domain.models import (
+    REPEATED_ERRORS,
     AgentConfig,
     Expect,
     ResponseExpect,
@@ -115,3 +116,66 @@ class TestRunner:
         (test,) = _run(_later(None), within=0.3).tests
 
         assert test.status is Status.ERROR, test.errors
+
+
+class TestMaxErrors:
+    """HB-34 with HB-14: a worker that never writes the reply is the same failure each
+    time, as an empty body is, so --max-errors stops the run instead of waiting
+    agent.timeout for every execution left."""
+
+    def test_hb14_no_reply_in_the_turn_counts_for_max_errors(self) -> None:
+        agent = FakeAgent(lambda message, test_id: Window())
+        tests = [Case(trigger=f"t{i}", expect=DAYS, runs=4) for i in range(2)]
+
+        summary = Runner(
+            adapter=MagicMock(),
+            client=agent,  # pyright: ignore[reportArgumentType]
+            collector=agent,
+            assertions=[FunctionCallsAssertion(), ResponseAssertion()],
+            reporter=MagicMock(),
+            settle_time=0,
+            reply_within=0.05,
+            max_errors=3,
+        ).run(
+            Spec(
+                agent=AgentConfig(endpoint="http://127.0.0.1:1/chat", reply="turn"),
+                suites=[Suite("S", tests)],
+            )
+        )
+
+        assert len(agent.sent) == 3
+        assert summary.stop_reason == REPEATED_ERRORS
+        assert summary.stopped is not None
+        assert "no turn record with a response" in summary.stopped, summary.stopped
+        assert "agent.timeout (0.05s)" in summary.stopped, summary.stopped
+
+    def test_hb14_a_reply_in_the_turn_starts_the_count_over(self) -> None:
+        replies = iter([None, None, "7 days", None, None, "7 days", None, None])
+
+        def script(message: str, test_id: str) -> tuple[Window, Window]:
+            response = next(replies)
+            if response is None:
+                return Window(), Window()
+            return Window(), Window(
+                turns=[TurnRecord(ts=1.0, context={"test": test_id}, response=response)]
+            )
+
+        agent = FakeAgent(script)
+        summary = Runner(
+            adapter=MagicMock(),
+            client=agent,  # pyright: ignore[reportArgumentType]
+            collector=agent,
+            assertions=[FunctionCallsAssertion(), ResponseAssertion()],
+            reporter=MagicMock(),
+            settle_time=0,
+            reply_within=0.05,
+            max_errors=3,
+        ).run(
+            Spec(
+                agent=AgentConfig(endpoint="http://127.0.0.1:1/chat", reply="turn"),
+                suites=[Suite("S", [Case(trigger="t", expect=DAYS, runs=8)])],
+            )
+        )
+
+        assert len(agent.sent) == 8
+        assert summary.stop_reason is None

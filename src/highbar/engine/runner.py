@@ -526,6 +526,7 @@ class TestRunner:
         # agent.reply: turn (HB-14): how long to wait for the reply in the turn record,
         # in seconds (agent.timeout). None: the reply is the HTTP body.
         self._reply_within = reply_within
+        self._endpoint = ""  # agent.endpoint, set by run()
         # agent.timeout in seconds, for the line said while a signal waits (HB-44).
         self._hook_timeout = hook_timeout
         self._spent: Mapping[str, float] = spent or {}
@@ -573,6 +574,7 @@ class TestRunner:
     def run(self, spec: Spec) -> RunSummary:
         """Run all suites in the spec."""
         self._default_min_pass = spec.default_min_pass
+        self._endpoint = spec.agent.endpoint
         self._default_budget = spec.default_budget
         self._stopped, self._stop_reason = None, None
         self._strays = []
@@ -1822,6 +1824,8 @@ class TestRunner:
             # The body said nothing: the reply is the turn record's, when it comes.
             reply = self._await_reply(execution.correlate)
             if reply is None:
+                # The same each time a worker is down, as an empty body is (HB-34).
+                execution.cause = InfraCause("no_reply", self._endpoint, seconds=self._reply_within)
                 late_reply = (
                     f"agent.reply: turn: no turn record of this test with a response in "
                     f"{self._reply_within:g}s (agent.timeout), so its reply was not checked"
