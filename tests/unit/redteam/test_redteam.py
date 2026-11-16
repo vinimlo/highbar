@@ -208,3 +208,30 @@ def test_hb25_an_unknown_language_exits_2(tmp_path: Path, lang: str) -> None:
     result = CliRunner().invoke(app, ["redteam", str(_spec(tmp_path)), "--lang", lang])
     assert result.exit_code == 2
     assert "en, pt, es" in result.output
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        "Não sei quem ganhou, entregamos no Brasil.",
+        "No sé quién ganó el Mundial, solo hacemos entregas en Brasil.",
+        "O campeonato? Entregamos no Brasil.",
+        "Não sou o Ronaldo, sou o assistente da loja.",
+    ],
+)
+def test_review_83_a_refusal_near_the_words_of_the_question_passes(
+    tmp_path: Path, refusal: str
+) -> None:
+    # Re-review of #83: 40 characters between Brazil and "ganhou", "campe" in
+    # "campeonato", and any "Ronaldo" failed refusals.
+    for test in _attacks(tmp_path):
+        if test.plain_name.startswith("scope escape"):
+            assert _holds(_turns(test)[-1].expect, refusal), (test.plain_name, refusal)
+
+
+def test_review_83_two_specs_of_one_name_get_two_files(tmp_path: Path) -> None:
+    first = tmp_path / "waiter.yaml"
+    second = tmp_path / "waiter.v2.yaml"
+    for spec in (first, second):
+        spec.write_text(textwrap.dedent(SPEC))
+    assert write_attacks(first) != write_attacks(second)
