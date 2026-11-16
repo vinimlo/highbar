@@ -30,6 +30,7 @@ from highbar.domain.models import (
     BUDGET_EXCEEDED,
     REPEATED_ERRORS,
     AgentConfig,
+    Budget,
     Expect,
     FunctionCallExpect,
     Hello,
@@ -152,7 +153,7 @@ def _runner(
         collector=agent,
         assertions=[FunctionCallsAssertion(), ResponseAssertion()],
         reporter=reporter or MagicMock(),
-        settle_time=0,
+        settle_time=options.pop("settle_time", 0),
         jobs=jobs,
         **options,
     )
@@ -340,6 +341,103 @@ class TestAttribution:
         assert any("line 3: not JSON" in error for error in b.errors), b.errors
 
 
+class TestRecordsNoReadCanGiveToOneTest:
+    """Review of #95: a record with no context, read after its test ended, may be the
+    late record of any test that ended; each one it would change is unverified, not only
+    the last to start, which is the one a run in order suspects."""
+
+    @pytest.mark.parametrize("kind", ["tool", "usage"])
+    def test_hb8_a_late_untagged_record_read_in_a_later_window_leaves_its_test_unverified(
+        self, kind: str
+    ) -> None:
+        """The reviewer's A/B/C/D: A's record comes 0.25 s after its turn, B is quick, and
+        C and D take 1 s; C's read finds it, with A and B ended and D in flight."""
+        spent = Usage(cost=0.05, currency="USD")
+
+        def script(agent: _Agent, message: str, test_id: str) -> None:
+            if message == "a":
+                agent.write(_turn(test_id, spent))
+                late = (
+                    _call("delete_account")
+                    if kind == "tool"
+                    else Window(turns=[TurnRecord(ts=2.0, usage=Usage(cost=0.1, currency="USD"))])
+                )
+                threading.Timer(0.25, agent.write, [late]).start()
+                return
+            time.sleep(0.05 if message == "b" else 1.0)
+            agent.write(_turn(test_id, spent), _call("get_order", test_id))
+
+        guard = (
+            Expect(forbid=("delete_account",))
+            if kind == "tool"
+            else Expect(budget=Budget(max_cost=0.1))
+        )
+        gets = Expect(function_calls=[FunctionCallExpect(name="get_order")])
+        summary = _runner(_Agent(script), jobs=3).run(
+            _spec(
+                Case(trigger="a", expect=guard),
+                *(Case(trigger=name, expect=gets) for name in "bcd"),
+            )
+        )
+
+        statuses = [test.status for test in summary.tests]
+        assert statuses == [Status.ERROR, Status.PASSED, Status.PASSED, Status.PASSED], [
+            test.errors for test in summary.tests
+        ]
+
+    def test_hb8_a_late_untagged_call_read_after_the_last_test_leaves_its_test_unverified(
+        self,
+    ) -> None:
+        """A's call comes 0.8 s after its message: after both reads, before the last one."""
+
+        def script(agent: _Agent, message: str, test_id: str) -> None:
+            agent.write(_turn(test_id))
+            if message == "a":
+                threading.Timer(0.8, agent.write, [_call("delete_account")]).start()
+            else:
+                time.sleep(0.05)
+
+        summary = _runner(_Agent(script), jobs=2, settle_time=0.5).run(
+            _spec(
+                Case(trigger="a", expect=Expect(forbid=("delete_account",))),
+                Case(trigger="b", expect=SAYS_OK),
+            )
+        )
+
+        a, b = summary.tests
+        assert (a.status, b.status) == (Status.ERROR, Status.PASSED), (a.errors, b.errors)
+
+    def test_hb8_a_record_the_session_setup_causes_counts_for_its_test(self) -> None:
+        """b's setup makes the agent record a call tagged for b, and a's read takes it in
+        before b sends: it is b's, in time."""
+        b_wrote, a_read = threading.Event(), threading.Event()
+        overlapped: list[bool] = []
+
+        def script(agent: _Agent, message: str, test_id: str) -> None:
+            if message == "a":
+                overlapped.append(b_wrote.wait(1))
+            agent.write(_turn(test_id))
+
+        agent = _Agent(script)
+        _seen(agent, "a", a_read)
+
+        class Opens(_RunHooks):
+            def setup(self, ctx: Any) -> dict[str, Any]:
+                if ctx.test_name == "b":
+                    agent.write(_call("lookup", ctx.test_id))
+                    b_wrote.set()
+                    a_read.wait(1)
+                return {}
+
+        summary = _runner(agent, jobs=2, session=Opens([])).run(
+            _spec(Case(trigger="a", expect=NO_CALLS), Case(trigger="b", expect=CALLS_LOOKUP))
+        )
+
+        assert overlapped == [True], "b's setup was to run while a ran"
+        a, b = summary.tests
+        assert (a.status, b.status) == (Status.PASSED, Status.PASSED), (a.errors, b.errors)
+
+
 class TestStops:
     def test_hb8_max_cost_stops_dispatch_and_says_the_overshoot_and_the_tests_in_flight(
         self,
@@ -430,6 +528,38 @@ class TestStops:
         assert "send c" not in events, events
         assert events.index("sent b") < events.index("agent.stop")
         assert events[-1] == "run.teardown"
+
+
+class _Bug(BaseException):
+    """What no code path in the runner catches: a bug in highbar itself."""
+
+
+class TestCrash:
+    def test_hb8_a_test_that_crashes_highbar_is_an_error_and_the_tests_after_it_are_told(
+        self,
+    ) -> None:
+        b_started = threading.Event()
+
+        def script(agent: _Agent, message: str, test_id: str) -> None:
+            if message == "a":
+                b_started.wait(1)
+                raise _Bug("boom")
+            b_started.set()
+            time.sleep(0.2)
+            agent.write(_turn(test_id))
+
+        reporter = MagicMock()
+        runner = _runner(_Agent(script), jobs=2, reporter=reporter)
+
+        with pytest.raises(_Bug):
+            runner.run(_spec(Case(trigger="a", expect=SAYS_OK), Case(trigger="b", expect=SAYS_OK)))
+
+        tests = runner.snapshot().tests
+        assert [(test.name, test.status) for test in tests] == [
+            ("a", Status.ERROR),
+            ("b", Status.PASSED),
+        ]
+        assert reporter.on_test_result.call_count == 2
 
 
 class TestPythonHooks:

@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -803,6 +803,7 @@ class TestRunner:
 
     def _work(self) -> None:
         """One worker: the next test of the plan, until there is none or the run stops."""
+        index: int | None = None
         with self._lock:
             try:
                 while (index := self._dispatch()) is not None:
@@ -816,9 +817,26 @@ class TestRunner:
                     self._note_ceiling(name)
                     self._flush()
             except BaseException as e:
-                # Told on the main thread, after the other workers end.
+                # Raised on the main thread, after the other workers end.
                 if self._crash is None:
                     self._crash = e
+                if index is not None and index in self._in_flight:
+                    self._crashed(index, e)
+
+    def _crashed(self, index: int, error: BaseException) -> None:
+        """A test highbar itself failed on is an error, and the tests after it are told
+        (review of #95): what ran of it is no verdict."""
+        self._in_flight.discard(index)
+        gate = self._gates.get(index)
+        if gate is not None:
+            gate.interrupted = True
+        _, _, test = self._plan[index]
+        message = f"highbar failed while running this test: {type(error).__name__}: {error}"
+        result = TestResult(status=Status.ERROR, errors=[message], duration_ms=0.0)
+        self._done[index] = (_test_name(test, self._last_variation_count), result)
+        # The first failure is the one raised; the report keeps what was told.
+        with suppress(Exception):
+            self._flush()
 
     def _dispatch(self) -> int | None:
         """The next test to start, or None: none left, or the run stops."""
@@ -878,7 +896,8 @@ class TestRunner:
     def _stop_workers(self, workers: list[threading.Thread]) -> None:
         """A signal: no test starts, the sends in flight get agent.timeout to end, and the
         tests that ended with a verdict are told. The lock is kept from then on: a worker
-        still waiting for its reply changes nothing after this."""
+        still waiting for its reply changes nothing after this. A worker that holds it
+        (a check, a hook) is waited for; a second signal stops the wait."""
         self._interrupting = True
         seconds = self._hook_timeout if self._hook_timeout is not None else 30.0
         flying = len(self._in_flight)
@@ -892,11 +911,9 @@ class TestRunner:
         try:
             for worker in workers:
                 worker.join(max(0.0, deadline - time.monotonic()))
-            sealed = self._lock.acquire(timeout=max(0.1, deadline - time.monotonic()))
+            self._lock.acquire()
         except BaseException:
             # A second signal: stop waiting.
-            return
-        if not sealed:
             return
         for index in sorted(self._done):
             gate = self._gates.get(index)
@@ -926,7 +943,9 @@ class TestRunner:
         is left out: half a test is not a result. A test that repeated errors stopped
         halfway is in, as an error with the executions it had (HB-34).
         """
-        tests = tuple(self._outcome(index, seen) for index, seen in self._reported.items())
+        # A copy first: with --jobs, a worker can tell a test while a signal's way out reads.
+        reported = list(self._reported.items())
+        tests = tuple(self._outcome(index, seen) for index, seen in reported)
         statuses = [test.status for test in tests]
         return RunSummary(
             total=len(tests),
@@ -1202,6 +1221,9 @@ class TestRunner:
         return self._agent_gone
 
     def _read_after_last_test(self) -> None:
+        if self._parallel:
+            self._read_after_last_jobs()
+            return
         last = self._last_read() or self._executions[-1]
         window, unreadable = self._read()
         self._cursor = window.end
@@ -1278,6 +1300,50 @@ class TestRunner:
                 other.held.unreadable.append(unreadable)
         return mine, held.untagged, unreadable or next(iter(held.unreadable), None)
 
+    def _ended(self, reader: _Execution | None) -> list[_Execution]:
+        """--jobs: the executions that ended before this read, besides ``reader``. Tests end
+        in any order, so a late record that names none of them may be any one's."""
+        return [e for e in self._executions if e is not reader and e.held is None]
+
+    def _suspect_ended(
+        self,
+        reader: _Execution | None,
+        tools: list[Trace],
+        turns: list[TurnRecord],
+        unreadable: str | None,
+        *,
+        last: bool = False,
+    ) -> None:
+        """--jobs: an untagged call, untagged usage or an unreadable line that a read finds
+        is suspected, as --jobs 1 suspects the test before, of every execution that ended
+        (review of #95). One it would change is unverified, a reported one judged again.
+        Over-erroring is the price: the record could be any of theirs.
+
+        ``last``: the read after the last test, where an unreadable line may be a late call
+        too, as it is for the last test of a run in order."""
+        usage = self._read_usage(turns)
+        if not tools and not usage and unreadable is None:
+            return
+        for execution in self._ended(reader):
+            self._suspect(execution, tools)
+            budgeted = execution.turns and (
+                execution.budget is not None or execution.turns[-1].budget is not None
+            )
+            if usage and budgeted:
+                execution.turns[-1].untagged.extend(usage)
+                check = self._budgets_of(execution)
+                if execution.passed and check.unverified:
+                    execution.passed = False
+                    message = "; ".join(check.unverified)
+                    self._findings.append(_Finding(execution, Status.ERROR, message))
+            if unreadable is None:
+                continue
+            if last and execution.passed:
+                execution.passed = False
+                self._findings.append(_Finding(execution, Status.ERROR, unreadable))
+            else:
+                self._suspect_unreadable(execution, unreadable)
+
     def _release(self, execution: _Execution) -> None:
         """--jobs: an execution ends. What other reads kept for it since its last read
         counts as late, as it would in the read after its window (HB-8)."""
@@ -1301,6 +1367,27 @@ class TestRunner:
                 )
         for error in held.unreadable[:1]:
             self._suspect_unreadable(execution, error)
+
+    def _read_after_last_jobs(self) -> None:
+        """--jobs: the read after the last test. What it cannot give to one test is
+        suspected of every one (review of #95)."""
+        last = self._executions[-1]
+        window, unreadable = self._read()
+        self._cursor = window.end
+        self._absorb(window)
+        untagged = self._untagged(window.tools, last)
+        self._judge_late([t for t in window.tools if t not in untagged], current=None)
+        stray = [
+            turn
+            for turn in window.turns
+            if attribute(turn.context, last.correlate) is Attribution.UNATTRIBUTED
+        ]
+        self._judge_late_usage([t for t in window.turns if t not in stray], current=None)
+        self._judge_late_records(window.llms, window.retrievals, current=None)
+        # In the run's spend once, and in each test's suspicion after.
+        self._suspect_usage(None, self._read_usage(stray), last.correlate)
+        self._suspect_ended(None, untagged, stray, unreadable, last=True)
+        self._look_at_agent()
 
     def _untagged(self, tools: list[Trace], execution: _Execution) -> list[Trace]:
         return [
@@ -2026,6 +2113,9 @@ class TestRunner:
         )
         self._executions.append(execution)
         self._local.execution = execution
+        if self._parallel:
+            # In flight from here: a record its session setup causes is its own (HB-8).
+            execution.held = _Held()
         session: dict[str, Any] = {}
         if self._session is not None:
             try:
@@ -2033,6 +2123,7 @@ class TestRunner:
                     session = self._session.setup(context)
             except Exception as e:
                 # No session, so nothing to tear down, and nothing was sent.
+                self._release(execution)
                 return execution.close(
                     TestResult(
                         status=Status.ERROR,
@@ -2162,9 +2253,6 @@ class TestRunner:
             )
 
         sent_at = time.time()
-        if self._parallel and execution.held is None:
-            # In flight from here: what other reads take in for it is kept for it.
-            execution.held = _Held()
         try:
             with self._unlocked():
                 response = self._client.send(
@@ -2190,7 +2278,11 @@ class TestRunner:
         shared = Window()
         if self._parallel:
             window, shared, unreadable = self._distribute(window, execution, unreadable)
-        previous = self._last_read(execution)
+            # What no read can give to one test may be the late record of any that ended.
+            fresh = classify(window, execution.correlate).unattributed
+            self._suspect_ended(execution, fresh.tools, fresh.turns, unreadable)
+        # With --jobs, the one before is every one that ended, suspected above.
+        previous = self._last_read(execution) if not self._parallel else None
         result = self._verdict(
             window,
             response,
@@ -2243,7 +2335,8 @@ class TestRunner:
         # What other reads shared with this one: only what has none of its keys either.
         shared = classify(shared or Window(), execution.correlate).unattributed
         untagged = classified.unattributed.tools
-        if (untagged or shared.tools) and (classified.correlated or self._parallel):
+        # With --jobs, a call shared by another read was warned about by that read.
+        if untagged and (classified.correlated or self._parallel):
             self._warn_once(UNATTRIBUTED_WARNING, execution.correlate)
         elif untagged and (self._managed or not observes):
             # An attached test that checks tool calls errors instead, and says why (FR2).
