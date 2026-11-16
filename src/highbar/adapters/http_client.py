@@ -5,11 +5,17 @@ spec's ``agent`` block (D5). Every failure is an ``AgentResponseError`` whose
 message says what came back, never the request's headers: they carry tokens, and
 this output ends up in CI logs. A failure of the transport or of HTTP also carries its
 ``InfraCause``, which is what --max-errors counts (HB-34).
+
+When highbar reads OpenTelemetry traces (HB-48), each message also carries a W3C
+``traceparent`` whose trace id is the test execution's id: the agent's spans continue
+that trace, and their trace id says which test they belong to.
 """
 
 from __future__ import annotations
 
 import json
+import re
+import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -30,6 +36,20 @@ MAX_REPLY_BYTES = 10_000_000
 REPLY_KEYS = ("response", "message", "content", "text", "reply")
 
 TEST_HEADER = "X-Highbar-Test"
+TRACEPARENT_HEADER = "traceparent"
+_TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+def traceparent(trace_id: str) -> str:
+    """A W3C traceparent for ``trace_id``: version 00, a fresh parent id, sampled (01)."""
+    if not _TRACE_ID.match(trace_id) or trace_id == "0" * 32:
+        raise ValueError(
+            f"the test id {trace_id!r} is not a trace id (32 lower-case hex digits, not all 0)"
+        )
+    parent = "0" * 16
+    while parent == "0" * 16:
+        parent = secrets.token_hex(8)
+    return f"00-{trace_id}-{parent}-01"
 
 
 CauseKind = Literal[
@@ -100,8 +120,10 @@ class HTTPClient:
         timeout_ms: int = 60000,
         transport: httpx.BaseTransport | None = None,
         body_is_reply: bool = True,
+        traceparent: bool = False,
     ) -> None:
         self._endpoint = endpoint
+        self._traceparent = traceparent
         self._request = request or RequestConfig()
         self._response_path = response_path
         self._timeout_ms = timeout_ms
@@ -194,7 +216,11 @@ class HTTPClient:
         return self._reply_text(text, declared_json=_is_json(content_type))
 
     def _headers(self, values: Values) -> dict[str, str]:
-        """The spec's headers, then the session's (which win), then the test id."""
+        """The spec's headers, then the session's (which win), then the test id.
+
+        With ``traceparent``, the test id also goes as the trace id of a W3C
+        traceparent, which no header of the spec or the session can replace.
+        """
         headers: dict[str, str] = {}
 
         def put(name: str, value: Any) -> None:
@@ -209,6 +235,8 @@ class HTTPClient:
             for name, value in session_headers.items():
                 put(str(name), value)
         put(TEST_HEADER, values.test_id)
+        if self._traceparent:
+            put(TRACEPARENT_HEADER, traceparent(values.test_id))
         return headers
 
     def _reply_text(self, raw: str, *, declared_json: bool) -> str:
