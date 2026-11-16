@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A message to the agent stops at `agent.timeout` when the agent sends its status line and headers slowly, as HTTP hooks do since 0.2.0. httpx's timeout holds for each read, so an agent that sent a byte every 0.1 s kept a message of 1 s waiting for 12 s. A message cut this way is a timeout, as any other, and counts for `--max-errors`.
+
 ## 0.2.0
 
 The second release. It breaks a few specs that 0.1.0 loaded or passed: read "Upgrading from 0.1.0" at the end of this section before you move.
@@ -53,7 +59,7 @@ The second release. It breaks a few specs that 0.1.0 loaded or passed: read "Upg
 
 ### Fixed
 
-- A message to the agent, and an HTTP session or `agent.run` hook, stop at `agent.timeout` when the server sends the status line and headers slowly. httpx's timeout holds for each read, so a server that sent a byte every 0.1 s kept a hook of 0.5 s waiting for 12 s, and a message as long as it pleased. A message cut this way is a timeout, as any other, and counts for `--max-errors`. httpx's timeout holds for each read, so a server that sent a byte every 0.1 s kept a hook of 0.5 s waiting for 12 s.
+- An HTTP session or `agent.run` hook stops at `agent.timeout` when its server sends the status line and headers slowly. httpx's timeout holds for each read, so a server that sent a byte every 0.1 s kept a hook of 0.5 s waiting for 12 s.
 - A boolean no longer equals a number in `params` and `result`: `retries: 0` held when the agent sent `retries: false`, and `confirm: true` held on `confirm: 1`, because Python counts `True` as `1`. A plain value, `equals`, `in`, `contains` and `contains_all` compare a boolean only with a boolean, at any depth, as the bounds already did. A number still equals a number (`1` and `1.0`).
 - A boolean has no text form in the text matchers of `params` and `result`: `contains: "Tr"` and `imatches: "^true$"` held on `true`, `not_contains` and `not_matches` held on any boolean without reading text, and `contains: true` held on the text "untrue". Each of them now fails, as on `null`.
 - A guardrail no longer passes when the agent highbar started died and another process answered on its port. The port is checked free before the start, but a process that took it before the agent's own bind answered every message while the agent's trace file stayed empty, and in managed mode an empty window with nothing tagged is the test's. Once highbar sees the agent gone with something else on its port, each execution with no record of its own is an `error`, including the ones already reported. With nothing on its port, the agent crashed: what it answered stands, and a warning says so. An agent gone right after its hello stops the run with exit code 2.
