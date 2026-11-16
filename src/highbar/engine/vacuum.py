@@ -73,8 +73,8 @@ def _agents(tools: tuple[str, ...], every_text: list[str], test: Test) -> dict[s
     # "every option" names each text the spec looks for, this test's among them. It
     # says something only when it also names one this test does not ask for: alone,
     # the test's own text is just the right answer (review of #76).
-    own = set(_texts_looked_for(turn.expect for turn in _turns(test)))
-    if any(text not in own for text in every_text):
+    own = _texts_looked_for(turn.expect for turn in _turns(test))
+    if any(not _same_answer(text, own) for text in every_text):
         everything = " · ".join(every_text)
         agents["every option"] = lambda _message: _Doing(reply=everything)
     return agents
@@ -112,6 +112,14 @@ def _beyond_trivial(test: Test) -> str | None:
         if turn.expect.retrieval is not None:
             return "expect.retrieval"
     return None
+
+
+def _same_answer(text: str, own: list[str]) -> bool:
+    """Whether ``text`` is one of the test's own answers in other words: either holds the
+    other, case aside ("Paris", "paris", "Paris is the capital"). Only a text that is
+    none of them is another option (re-review of #76)."""
+    folded = text.casefold()
+    return any(folded in o.casefold() or o.casefold() in folded for o in own)
 
 
 def _turns(test: Test) -> list[Turn]:

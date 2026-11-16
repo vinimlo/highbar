@@ -217,3 +217,31 @@ def test_review_76_naming_another_tests_answer_too_still_counts(tmp_path: Path) 
     )
     assert found["France"] == ("every option",)
     assert found["Italy"] == ("every option",)
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ('{contains: "Paris"}', '{contains: "Paris is the capital"}'),
+        ('{icontains: "paris"}', '{contains: "Paris"}'),
+    ],
+)
+def test_review_76_the_same_answer_written_two_ways_is_not_an_option(
+    tmp_path: Path, first: str, second: str
+) -> None:
+    # Re-review of #76: an exact-string "own text" check flagged both tests when two
+    # of them asked for the same answer in other words.
+    found = _probe(
+        tmp_path,
+        f"""
+        - name: one
+          trigger: "capital of France?"
+          expect:
+            response: {first}
+        - name: two
+          trigger: "capital of France, please"
+          expect:
+            response: {second}
+        """,
+    )
+    assert found == {"one": (), "two": ()}
