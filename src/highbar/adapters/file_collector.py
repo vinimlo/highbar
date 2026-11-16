@@ -436,6 +436,7 @@ def _tool(record: dict[str, Any], *, context: dict[str, Any]) -> Trace:
         fn=fn,
         args=args,
         result=record.get("result"),
+        has_result="result" in record,
         started_at=_number(record, "started_at", ts),
         ended_at=_number(record, "ended_at", ts),
         error=error,

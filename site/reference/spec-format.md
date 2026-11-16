@@ -23,6 +23,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `traces` | path or glob | none | The trace file of an attached agent, or a glob of files, one per process (`var/traces/*.jsonl`), read together in time order. A path that names a file is that file, even with a `[` in it. See [several processes](/guides/attach-mode#an-agent-with-several-processes). Required when a test checks tool calls in attach mode. |
 | `request` | mapping | <code v-pre>POST {"message": "{{message}}"}</code> | `method`, `headers`, `body`. |
 | `response` | dotted path | first of `response`, `message`, `content`, `text`, `reply` | Where the reply text is in the JSON body. |
+| `reply` | `body` or `turn` | `body` | Where the reply comes from: the HTTP body, or the `response` of the test's `turn` record, for an agent that answers later through a queue. See [an agent that answers later](/guides/connecting-your-agent#an-agent-that-answers-later). |
 | `session` | mapping | none | `setup` and `teardown` hooks, each a command, `{python: "module:function"}` or `{http: {url, method, headers, body}}`. |
 | `run` | mapping | none | `setup` and `teardown` hooks that run once per spec: the `setup` before the agent starts, the `teardown` on every way out after it. The same three kinds as `session`, with no test's placeholder; what the `setup` returns is <code v-pre>{{run.&lt;path&gt;}}</code>. See [before and after the run](/guides/attach-mode#before-and-after-the-run). |
 | `correlate` | mapping | <code v-pre>{test: "{{test.id}}"}</code> | The context keys that link a trace record to a test. |
@@ -125,6 +126,7 @@ A budget needs the turn's record, so it counts as a check on what the agent reco
 | `name` | text, or list of texts | Required. A list accepts any of the names. |
 | `params` | mapping | Must be contained in the call's arguments. Values may be matchers. |
 | `result` | mapping | Must be contained in what the tool returned. |
+| `returns` | any expected value | The whole return value: a matcher, a list, a text or a number, for a tool that returns something other than an object. `null` is refused; write `{equals: null}`. |
 | `error` | boolean, or matchers | `false` (default): the call must not have failed. `true`: it must have. A matcher: its error text must meet it. |
 
 ## Matchers
@@ -133,7 +135,7 @@ Used in `response`, in values of `params` and `result`, and in `error`:
 
 | Matcher | |
 |---|---|
-| `equals` | Exactly this value. |
+| `equals` | Exactly this value. A boolean is never a number, here, in `in`, `contains` and a plain value. |
 | `contains` / `icontains` | Contains the text (`i`: ignoring case); for a list, has the item. |
 | `not_contains` / `not_icontains` | Does not. |
 | `matches` / `not_matches` | A regular expression is found (Python `re.search`), or is not. **Case-sensitive.** Checked when the spec is loaded. |
@@ -144,4 +146,4 @@ Used in `response`, in values of `params` and `result`, and in `error`:
 | `contains_all` | Contains each listed item, as `contains` does (a list with at least one). Only in `params` and `result`. |
 | `any` / `all` | A list where some item, or every item, matches the operand, which is any expected value. `all` fails on an empty list. Only in `params` and `result`. |
 
-Negative matchers fail on a value with no text form, such as an object or `null`. An empty text operand is refused; `equals` takes one. An empty object as a value checks that the key is there and holds an object. A bound fails on a value that is not a number (a numeric string and a boolean included), and a length on a value that is not a list. Templates (<code v-pre>{{previous.*}}</code>) are only allowed in triggers.
+Negative matchers fail on a value with no text form, such as an object, `null` or a boolean, and every text matcher fails on a boolean or with one as its operand. An empty text operand is refused; `equals` takes one. An empty object as a value checks that the key is there and holds an object. A bound fails on a value that is not a number (a numeric string and a boolean included), and a length on a value that is not a list. Templates (<code v-pre>{{previous.*}}</code>) are only allowed in triggers.

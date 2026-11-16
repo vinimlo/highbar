@@ -31,6 +31,7 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
             "timeout",
             "request",
             "response",
+            "reply",
             "traces",
             "session",
             "run",
@@ -79,7 +80,7 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "retrieval_item": frozenset({"id", "title", "source"}),
     "check": frozenset({"python"}),
     "budget": frozenset({"max_input_tokens", "max_cost"}),
-    "function_call": frozenset({"name", "params", "result", "error"}),
+    "function_call": frozenset({"name", "params", "result", "returns", "error"}),
     "response": TEXT_MATCHER_KEYS,
 }
 

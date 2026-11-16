@@ -64,3 +64,29 @@ def test_rounds_disagree_large_counts_use_chi_square() -> None:
     # 0/50 and 50/50 alternating does not.
     assert rounds_disagree_p([(25, 50)] * 10) == pytest.approx(1.0)
     assert rounds_disagree_p([(0, 50), (50, 50)] * 5) < 1e-6
+
+
+def test_welch_rounds_known_value() -> None:
+    # scipy.stats.ttest_ind([1, 2, 3], [4, 5, 6], equal_var=False).pvalue
+    from highbar.compare.stats import welch_p
+
+    assert welch_p([1, 2, 3], [4, 5, 6]) == pytest.approx(0.021311641128756727, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("t", "df"), [(12.7062047, 1), (2.7764451, 4), (2.2281389, 10), (2.0, 3.0)]
+)
+def test_student_t_tail_against_the_table(t: float, df: float) -> None:
+    from highbar.compare.stats import t_two_sided
+
+    expected = {1: 0.05, 4: 0.05, 10: 0.05, 3.0: 0.1393}[df]
+    assert t_two_sided(t, df) == pytest.approx(expected, abs=2e-4)
+
+
+def test_welch_rounds_with_no_spread() -> None:
+    from highbar.compare.stats import welch_p
+
+    assert welch_p([1.0, 1.0, 1.0], [1.0, 1.0, 1.0]) == 1.0
+    # No spread on either side and different means: the rounds alone cannot tell
+    # chance from a difference, so they claim one; the pooled count decides.
+    assert welch_p([1.0, 1.0, 1.0], [0.8, 0.8, 0.8]) == 0.0

@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 import httpx
 
+from highbar._deadline import within
 from highbar._narrow import as_dict
 from highbar.assertions.response import truncate
 from highbar.domain.models import RequestConfig
@@ -31,7 +32,9 @@ REPLY_KEYS = ("response", "message", "content", "text", "reply")
 TEST_HEADER = "X-Highbar-Test"
 
 
-CauseKind = Literal["http_status", "connect", "timeout", "transport", "empty_body"]
+CauseKind = Literal[
+    "http_status", "connect", "timeout", "transport", "empty_body", "no_reply", "empty_reply"
+]
 
 
 @dataclass(frozen=True)
@@ -60,6 +63,15 @@ class InfraCause:
             return f"with no response from {self.endpoint} within agent.timeout{wait}"
         if self.kind == "empty_body":
             return f"with an empty body from {self.endpoint}"
+        if self.kind == "empty_reply":
+            return f"with an empty reply in the turn record, for messages to {self.endpoint}"
+        if self.kind == "no_reply":
+            # agent.reply: turn (HB-14): the message went, its reply never came.
+            wait = f" ({self.seconds:g}s)" if self.seconds is not None else ""
+            return (
+                f"with no turn record with a response, for messages to {self.endpoint}, "
+                f"within agent.timeout{wait}"
+            )
         return f"with a transport error from {self.endpoint}"
 
 
@@ -87,12 +99,14 @@ class HTTPClient:
         response_path: str | None = None,
         timeout_ms: int = 60000,
         transport: httpx.BaseTransport | None = None,
+        body_is_reply: bool = True,
     ) -> None:
         self._endpoint = endpoint
         self._request = request or RequestConfig()
         self._response_path = response_path
         self._timeout_ms = timeout_ms
         self._transport = transport
+        self._body_is_reply = body_is_reply
 
     def send(self, message: str, *, values: Values) -> str:
         """Send ``message`` and return the reply text. Raises ``AgentResponseError``.
@@ -113,14 +127,23 @@ class HTTPClient:
         # httpx's timeout bounds each read, not the whole reply: a reply that keeps
         # trickling bytes would never end. The deadline bounds it.
         deadline = time.monotonic() + seconds
-        try:
+
+        def exchange() -> tuple[httpx.Response, bytes]:
             with (
                 httpx.Client(timeout=seconds, transport=self._transport) as client,
                 client.stream(
                     self._request.method, self._endpoint, headers=headers, **content
                 ) as reply,
             ):
-                raw = _read(reply, deadline, seconds, timeout)
+                return reply, _read(reply, deadline, seconds, timeout)
+
+        def late() -> AgentResponseError:
+            return AgentResponseError(f"no response in {seconds:g}s (agent.timeout)", timeout)
+
+        try:
+            # The status line and headers come before the first chunk of the body, where
+            # the deadline is checked: the whole exchange is waited for until then (HB-39).
+            reply, raw = within(exchange, seconds, late, name="highbar-agent-request")
         except httpx.TimeoutException:
             raise AgentResponseError(
                 f"no response in {seconds:g}s (agent.timeout)", timeout
@@ -157,6 +180,10 @@ class HTTPClient:
             raise AgentResponseError(
                 f"HTTP {status} from {self._endpoint}: {truncate(text)}", failed
             )
+        if not self._body_is_reply:
+            # agent.reply: turn (HB-14). The runner takes the reply from the turn record,
+            # and never checks this "".
+            return ""
         if not raw.strip():
             # Checked as "", it would pass every not_contains and every guardrail on text.
             raise AgentResponseError(

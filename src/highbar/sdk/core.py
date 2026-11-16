@@ -69,6 +69,16 @@ class TurnHandle:
         self.usage: Mapping[str, Any] | None = None
 
 
+class _NoResult:
+    """``hb.record()`` given no ``result=``: the return was not seen."""
+
+    def __repr__(self) -> str:
+        return "NO_RESULT"
+
+
+NO_RESULT: Any = _NoResult()
+
+
 class Highbar:
     """Writes what the agent does to the trace file highbar reads.
 
@@ -139,7 +149,7 @@ class Highbar:
         fn: str,
         args: Mapping[str, Any] | None = None,
         *,
-        result: Any = None,
+        result: Any = NO_RESULT,
         error: str | None = None,
         started_at: float | None = None,
         ended_at: float | None = None,
@@ -149,7 +159,9 @@ class Highbar:
 
         Extra keyword arguments go to the record's ``context``. A failure the tool
         returned as a payload, without raising, belongs in ``error``: highbar never
-        reads ``result`` to decide whether a call failed.
+        reads ``result`` to decide whether a call failed. Without ``result=`` the
+        record has no ``result``, so a check of what the tool returned is not taken
+        as "it returned null"; ``result=None`` says it did.
         """
         now = time.time()
         self._write_tool(
@@ -287,10 +299,11 @@ class Highbar:
             "ts": time.time(),
             "fn": fn,
             "args": args,
-            "result": result,
             "started_at": started_at,
             "ended_at": ended_at,
         }
+        if result is not NO_RESULT:
+            record["result"] = result
         if error is not None:
             record["error"] = error
         if record_context:

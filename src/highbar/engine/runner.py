@@ -13,6 +13,7 @@ from highbar.adapters import file_collector, subprocess_adapter
 from highbar.adapters.file_collector import TraceFormatError
 from highbar.adapters.http_client import AgentResponseError, HTTPClient, InfraCause
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
+from highbar.assertions.function_calls import FunctionCallsAssertion, unrecorded_returns
 from highbar.assertions.llm import check_llm
 from highbar.assertions.records import RecordNotObserved
 from highbar.assertions.response import truncate
@@ -125,6 +126,10 @@ UNDECLARED_WARNING = (
     "declares them after each hello since 0.1.0rc2; another writer adds a `tools` record "
     "(see the trace contract)"
 )
+
+
+# How often agent.reply: turn reads the trace file while it waits, in seconds.
+REPLY_POLL = 0.1
 
 
 @dataclass
@@ -246,6 +251,10 @@ def _amounts(costs: Mapping[str, float]) -> str:
 
 def _same_correlation(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     return bool(a) and a.keys() == b.keys() and all(same_value(a[k], b[k]) for k in a)
+
+
+def _quoted(names: list[str]) -> str:
+    return " and ".join(f"'{name}'" for name in names)
 
 
 def _names(tools: list[Trace]) -> str:
@@ -486,6 +495,7 @@ class TestRunner:
         secrets: Mapping[str, str] | None = None,
         default_runs: int = 1,
         max_cost: float | None = None,
+        reply_within: float | None = None,
         hook_timeout: float | None = None,
         spent: Mapping[str, float] | None = None,
         spent_untagged: Mapping[str, float] | None = None,
@@ -514,6 +524,10 @@ class TestRunner:
         # The run's ceiling (--max-cost), what earlier specs of the run already spent, the
         # part of that with no test context, and why this one stopped because of it.
         self._max_cost = max_cost
+        # agent.reply: turn (HB-14): how long to wait for the reply in the turn record,
+        # in seconds (agent.timeout). None: the reply is the HTTP body.
+        self._reply_within = reply_within
+        self._endpoint = ""  # agent.endpoint, set by run()
         # agent.timeout in seconds, for the line said while a signal waits (HB-44).
         self._hook_timeout = hook_timeout
         self._spent: Mapping[str, float] = spent or {}
@@ -564,6 +578,7 @@ class TestRunner:
     def run(self, spec: Spec) -> RunSummary:
         """Run all suites in the spec."""
         self._default_min_pass = spec.default_min_pass
+        self._endpoint = spec.agent.endpoint
         self._default_budget = spec.default_budget
         self._stopped, self._stop_reason = None, None
         self._strays = []
@@ -870,6 +885,24 @@ class TestRunner:
         may be its late records. One that read none already ended unverified, and stopping
         at it would let the test before it pass on records nobody checked it against."""
         return next((e for e in reversed(self._executions) if e.read and e is not execution), None)
+
+    def _await_reply(self, correlate: Mapping[str, Any]) -> str | None:
+        """The response of this execution's turn record, read until agent.timeout.
+
+        Only a turn that carries every correlation key counts: an untagged one may be
+        another test's answer (HB-14). The cursor does not move; the window after
+        settle_time reads these records again, with the rest.
+        """
+        assert self._reply_within is not None
+        deadline = time.monotonic() + self._reply_within
+        while True:
+            window, _ = self._read()
+            for turn in classify(window, correlate).mine.turns:
+                if turn.response is not None:
+                    return turn.response
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(min(REPLY_POLL, max(0.0, deadline - time.monotonic())))
 
     def _read(self) -> tuple[Window, str | None]:
         """The records written since the cursor, and why a line among them cannot be read.
@@ -1218,10 +1251,20 @@ class TestRunner:
         execution.passed = False
         return replace(result, status=Status.FAILED, errors=[*result.errors, *failures])
 
-    def _check(self, tools: list[Trace], response: str, expect: Expect) -> list[str]:
+    def _check(
+        self, tools: list[Trace], response: str, expect: Expect, *, assume_unrecorded: bool = False
+    ) -> list[str]:
+        assertions = self._assertions
+        if assume_unrecorded:
+            assertions = [
+                FunctionCallsAssertion(assume_unrecorded=True)
+                if isinstance(a, FunctionCallsAssertion)
+                else a
+                for a in assertions
+            ]
         failed = [
             r
-            for assertion in self._assertions
+            for assertion in assertions
             for r in assertion.evaluate(tools, response, expect)
             if not r.passed
         ]
@@ -1791,6 +1834,26 @@ class TestRunner:
         except Exception as e:
             # The message never reached the agent, so its behavior was not checked.
             return unverified(f"HTTP error: {e}")
+        late_reply: str | None = None
+        if self._reply_within is not None:
+            # The body said nothing: the reply is the turn record's, when it comes.
+            reply = self._await_reply(execution.correlate)
+            if reply is None:
+                # The same each time a worker is down, as an empty body is (HB-34).
+                execution.cause = InfraCause("no_reply", self._endpoint, seconds=self._reply_within)
+                late_reply = (
+                    f"agent.reply: turn: no turn record of this test with a response in "
+                    f"{self._reply_within:g}s (agent.timeout), so its reply was not checked"
+                )
+            elif not reply.strip():
+                # Checked as "", it would pass every not_contains and every guardrail on
+                # text, as an empty HTTP body would (review of #91).
+                execution.cause = InfraCause("empty_reply", self._endpoint)
+                late_reply = (
+                    "agent.reply: turn: the turn record's response is empty, so there is "
+                    "no text to check"
+                )
+            response = reply or ""
         log.response, log.response_ms = response, (time.time() - sent_at) * 1000
 
         time.sleep(self._settle_time)
@@ -1802,6 +1865,10 @@ class TestRunner:
         result = self._verdict(
             window, response, expect, execution, log, previous, start, observes=observes
         )
+        if late_reply is not None:
+            # Its records still counted, as in any window; the reply was never seen.
+            execution.passed = False
+            result = replace(result, status=Status.ERROR, errors=[late_reply])
         if expect.check is not None and result.status is not Status.ERROR:
             result = self._run_check(expect.check, result, execution, log, values, response)
         gone = self._look_at_agent(current=execution)
@@ -1898,6 +1965,17 @@ class TestRunner:
                         "makes off the request needs contextvars.copy_context() to keep the "
                         "tag; hb.record() can also be given it"
                     )
+
+        # A call whose return was not recorded: `returns` could not be checked on it.
+        # A test that passes once those returns are taken to fit was not checked,
+        # which is not the same as failed (review of #74).
+        unseen_returns = unrecorded_returns(traces, expect) if errors else []
+        if unseen_returns and not self._check(traces, response, expect, assume_unrecorded=True):
+            return unverified(
+                f"the return of {_quoted(unseen_returns)} was not recorded, so "
+                "`returns` was not checked: give hb.record(...) the result=, or "
+                "write a `result` in the tool's line"
+            )
 
         budget = self._budget_check(expect.budget, log.usage)
         if (unseen := self._unobservable(expect)) is not None:

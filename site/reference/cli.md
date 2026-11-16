@@ -66,14 +66,30 @@ Writes the quickstart into the current directory: `agent.py` and `specs/quicksta
 
 Generates the paraphrases that tests with `variations` ask for, and stores them in `.highbar/variations.json`. Only missing entries are generated; `--force` regenerates them all. See [variations](/guides/variations).
 
+## `highbar vacuum [SPEC_PATH]`
+
+Finds the tests that an agent doing nothing useful would pass: silent, echo, one that calls every tool the spec names (the test's own first, in its order), and one whose reply names every text the test's suite looks for. No agent runs. Exits 1 when a test is vacuous, 0 when none is, and 2 for an invalid spec. See [a guardrail an idle agent passes](/guides/guardrails#a-guardrail-an-idle-agent-passes).
+
 ## `highbar compare --base PATH --head PATH`
 
-Compares two groups of runs test by test. Each `PATH` is a `--report json=` file or a folder of them, and `--base` and `--head` can repeat; each file is one round. A test gets `better` or `worse` only with a Holm-adjusted p under 0.05, at least 2 rounds a side and rounds that agree; otherwise the output says why there is no verdict. See [comparing two configurations](/guides/comparing).
+Compares two groups of runs test by test. Each `PATH` is a `--report json=` file or a folder of them, and `--base` and `--head` can repeat; each file is one round. A test gets `better` or `worse` only with a Holm-adjusted p under 0.05, at least 3 rounds a side, and a p that holds whether or not a round varies (Fisher on the counts and Welch on the rounds); otherwise the output says why there is no verdict. See [comparing two configurations](/guides/comparing).
 
 - `--fail-on-regression`: exit 1 when a test is `worse`. Without it, `compare` exits 0 whatever it found.
 - `--report json=FILE`: the comparison as JSON.
 
 It exits 2 when a report cannot be read, a folder holds no report, or no test is in every report with the same definition.
+
+## `highbar redteam SPEC_PATH`
+
+Writes a spec of attacks on the agent's guardrails next to `SPEC_PATH` (`waiter.highbar.yaml` gives `waiter.redteam.highbar.yaml`), with the same `agent` and `defaults`. Nothing runs: run the file with `highbar run`. See [attacks written for you](/guides/guardrails#attacks-written-for-you).
+
+- `--allow TOOL`: a tool an attack may make the agent call; every other tool the spec names is forbidden. Repeatable.
+- `--secret TEXT`: text no reply may hold, such as a line of the system prompt. It is written into the file and shown when a test fails, and it cannot be empty. Repeatable.
+- `--lang en|pt|es`: only these languages. Repeatable.
+- `--out FILE`: write it there instead.
+- `--force`: write over the file. Without it, an existing file is never touched.
+
+It exits 2 for an invalid spec, an unknown language, an empty `--secret`, or a file already there.
 
 ## Exit codes
 
