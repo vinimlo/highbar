@@ -103,12 +103,32 @@ One per call, a failed one or a fallback included. Every field is optional; olde
 | `input_tokens`, `output_tokens`, `cache_tokens` | integers | What the call used. Not added to `usage` or to any budget: the `turn`'s `usage` stays the one count, so nothing counts twice. |
 | `latency_ms` | number | How long the call took. |
 | `error` | string | Why the call failed. Absent, `null`, `false` or `""`: it did not. |
+| `source` | string | Who wrote the record: `"proxy"` for highbar's LLM proxy. Absent: the agent. |
+| `read` | boolean | Whether the writer read the call's usage whole. `false` says it saw the call and its count is not whole; absent, the writer did not say. Anything but `true`, `false` or `null` makes the line unreadable. |
+| `unread` | string | Why the usage was not read, when `read` is `false`. |
+| `cost`, `currency` | number, string | What the provider said the call cost, such as OpenRouter's `usage.cost` (in `USD`). |
 
 It goes to a test by its `context`, like a `tool` record, and it is proof that the agent handled the message. One recorded after its test's window closed still counts for that test, which is checked again. [`expect.llm`](/guides/assertions#calls-to-the-model-llm) checks these records.
 
 ```json
 {"v": 1, "type": "llm", "ts": 1792983750.101, "model": "deepseek-flash", "provider": "openrouter", "attempt": 2, "fallback_from": "gpt-4o-mini", "roles": ["system", "user", "system"], "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
 ```
+
+### Records from highbar's LLM proxy
+
+highbar's LLM proxy sits between the agent and its model provider, passes every request and reply through unchanged, and writes one `llm` record per call with `"source": "proxy"`. It reads the usage the provider reports: OpenAI-compatible `chat/completions` and `responses` (OpenRouter, DeepSeek and local servers included) and Anthropic `messages`, streamed or not. `input_tokens` is the whole input, cached tokens included, as in a `turn`'s `usage`: for Anthropic it adds `cache_read_input_tokens` and `cache_creation_input_tokens` to `input_tokens`, and `cache_tokens` is `cache_read_input_tokens`. `model` is the one the reply names, or the one the request asked for when the reply names none. The test context is the request's `X-Highbar-Test` header, when it has one.
+
+```json
+{"v": 1, "type": "llm", "ts": 1792983750.301, "source": "proxy", "model": "gpt-4o-mini-2024-07-18", "provider": "openai", "input_tokens": 1000, "output_tokens": 200, "cache_tokens": 800, "read": true, "latency_ms": 812.4, "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
+```
+
+A call whose usage it could not read is recorded all the same, with `"read": false` and the reason in `unread`. That is a stream that ended without usage, a reply without usage (an error status, for one), a path or a provider whose format the proxy does not read (passed through as it is), an upstream it could not reach, and a reply cut off before its end. Its token fields are left out, or hold only what was read: an unread call is a count that is not whole, never zero tokens.
+
+```json
+{"v": 1, "type": "llm", "ts": 1792983751.020, "source": "proxy", "model": "gpt-4o-mini-2024-07-18", "provider": "openai", "read": false, "unread": "the stream ended without usage", "latency_ms": 1301.7}
+```
+
+For an OpenAI chat stream that does not set `stream_options.include_usage`, the proxy sets it to `true`, so the stream's last chunk, with no `choices`, carries the usage; one that sets it to `false` is sent as it is, and recorded unread. The proxy never logs a header, a URL or a body, and never writes a key or a body to the trace.
 
 ## `retrieval`: what entered the prompt
 
