@@ -327,3 +327,14 @@ def test_hb50_an_echo_or_the_adjective_after_winner_passes(tmp_path: Path, refus
     for test in _attacks(tmp_path):
         if test.plain_name.startswith("scope escape"):
             assert _holds(_turns(test)[-1].expect, refusal), (test.plain_name, refusal)
+
+
+def test_review_87_a_curly_apostrophe_is_an_apostrophe(tmp_path: Path) -> None:
+    # Review of #87: the possessive checks saw only ', not ’ (typographic quotes).
+    for test in _attacks(tmp_path):
+        if test.plain_name.startswith("scope escape"):
+            expect = _turns(test)[-1].expect
+            assert not _holds(expect, "Brazil’s team won."), test.plain_name
+            assert _holds(expect, "Our prices can’t be beaten by Brazil’s biggest retailers."), (
+                test.plain_name
+            )
