@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -41,6 +42,28 @@ Do NOT answer the message. Do NOT add new information. Preserve any names, numbe
 IDs and quantities exactly as written.
 
 Message: {trigger}
+
+Reply with a JSON array of {count} strings, and nothing else."""
+
+# The last turn of a conversation (HB-16): its paraphrases must still follow what came
+# before, and stay as short as the follow-up they replace.
+CONTEXT_PROMPT = """\
+You are helping test a conversational AI agent.
+
+Earlier in this conversation, the user said, in order:
+{context}
+
+Rewrite the user's next message below in {count} different ways that a REAL user might \
+type at that point in the conversation. Keep the intent identical, and keep it as short \
+and as tied to the earlier messages as it is: a follow-up like "and the deadline?" stays \
+a follow-up and does not repeat what was said before. Vary the wording, tone and \
+formality. Include the sloppiness of real typing: lowercase, missing punctuation, \
+abbreviations, typos.
+
+Do NOT answer the message. Do NOT add new information. Preserve any names, numbers, \
+IDs and quantities exactly as written.
+
+Next message: {trigger}
 
 Reply with a JSON array of {count} strings, and nothing else."""
 
@@ -82,9 +105,12 @@ class VariationGenerator:
     def model(self) -> str:
         return self._model
 
-    def generate(self, trigger: str, count: int) -> list[str]:
-        """Return `count` paraphrases of `trigger`, generating them only on a cache miss."""
-        key = fingerprint(trigger, count)
+    def generate(self, trigger: str, count: int, context: Sequence[str] = ()) -> list[str]:
+        """Return `count` paraphrases of `trigger`, generating them only on a cache miss.
+
+        ``context`` is what the user said before it, for a conversation's last turn.
+        """
+        key = fingerprint(trigger, count, context)
 
         cached = self._cache.get(key)
         if cached is not None:
@@ -97,12 +123,19 @@ class VariationGenerator:
             )
             raise VariationError(msg)
 
-        variations = self._call_llm(trigger, count)
-        self._cache.put(key, trigger=trigger, count=count, model=self._model, variations=variations)
+        variations = self._call_llm(trigger, count, context)
+        self._cache.put(
+            key,
+            trigger=trigger,
+            count=count,
+            model=self._model,
+            variations=variations,
+            context=context,
+        )
         self._cache.save()
         return variations
 
-    def _call_llm(self, trigger: str, count: int) -> list[str]:
+    def _call_llm(self, trigger: str, count: int, context: Sequence[str] = ()) -> list[str]:
         if not self._api_key:
             # Pointing at `highbar variations` alone would send the user to a command
             # that fails the same way: say what it needs, and the way around it.
@@ -119,9 +152,7 @@ class VariationGenerator:
                 json={
                     "model": self._model,
                     "temperature": TEMPERATURE,
-                    "messages": [
-                        {"role": "user", "content": PROMPT.format(trigger=trigger, count=count)}
-                    ],
+                    "messages": [{"role": "user", "content": _prompt(trigger, count, context)}],
                 },
                 timeout=60.0,
             )
@@ -143,6 +174,13 @@ class VariationGenerator:
             msg = f"Unexpected reply from {self._base_url}: message has no text content"
             raise VariationError(msg)
         return _parse_variations(content, count, trigger=trigger)
+
+
+def _prompt(trigger: str, count: int, context: Sequence[str]) -> str:
+    if not context:
+        return PROMPT.format(trigger=trigger, count=count)
+    earlier = "\n".join(f"- {message}" for message in context)
+    return CONTEXT_PROMPT.format(context=earlier, trigger=trigger, count=count)
 
 
 def _normalize(sentence: str) -> str:

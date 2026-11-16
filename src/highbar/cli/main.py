@@ -392,13 +392,20 @@ def variations(
     for _, spec in specs:
         for suite in spec.suites:
             for test in suite.tests:
-                if not test.variations or not test.trigger:
+                # A conversation's paraphrases replace its last turn, and are made with
+                # what the user said before it (HB-16).
+                if test.turns:
+                    sentence = test.turns[-1].trigger
+                    context = [turn.trigger for turn in test.turns[:-1]]
+                else:
+                    sentence, context = test.trigger or "", []
+                if not test.variations or not sentence:
                     continue
 
                 # Triggers and paraphrases are user text: escaped, or Rich would read
                 # anything in square brackets as a style tag and drop it.
-                trigger = escape(test.trigger)
-                key = fingerprint(test.trigger, test.variations)
+                trigger = escape(sentence)
+                key = fingerprint(sentence, test.variations, context)
                 try:
                     if force:
                         cache.invalidate(key)
@@ -414,7 +421,7 @@ def variations(
                             )
                         continue
 
-                    produced = generator.generate(test.trigger, test.variations)
+                    produced = generator.generate(sentence, test.variations, context=context)
                 except (VariationError, CacheError) as exc:
                     console.print(f"  [red]✗[/red] {trigger}\n    {escape(str(exc))}")
                     raise typer.Exit(1) from exc

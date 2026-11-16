@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -60,9 +61,15 @@ def find_cache_path(start: Path | None = None) -> str:
     return str(origin / DEFAULT_CACHE_PATH)
 
 
-def fingerprint(trigger: str, count: int) -> str:
-    """Stable key for a (trigger, count) pair."""
-    payload = json.dumps({"trigger": trigger, "count": count}, sort_keys=True)
+def fingerprint(trigger: str, count: int, context: Sequence[str] = ()) -> str:
+    """Stable key for a (trigger, count) pair, and the conversation before it (HB-16).
+
+    Without ``context`` the key is the one it always was, so committed caches stay valid.
+    """
+    fields: dict[str, Any] = {"trigger": trigger, "count": count}
+    if context:
+        fields["context"] = list(context)
+    payload = json.dumps(fields, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -125,13 +132,20 @@ class VariationCache:
             raise CacheError(msg)
         return variations
 
-    def put(self, key: str, trigger: str, count: int, model: str, variations: list[str]) -> None:
-        self._entries[key] = {
-            "trigger": trigger,
-            "count": count,
-            "model": model,
-            "variations": variations,
-        }
+    def put(
+        self,
+        key: str,
+        trigger: str,
+        count: int,
+        model: str,
+        variations: list[str],
+        context: Sequence[str] = (),
+    ) -> None:
+        entry: dict[str, Any] = {"trigger": trigger, "count": count}
+        if context:
+            # What the user said before it: whoever reads the file sees which turn it is.
+            entry["context"] = list(context)
+        self._entries[key] = {**entry, "model": model, "variations": variations}
 
     def invalidate(self, key: str) -> None:
         """Drop an entry so the next `generate` regenerates it."""

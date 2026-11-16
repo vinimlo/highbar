@@ -60,7 +60,7 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
     ),
     "test_session": frozenset({"args"}),
     "history_message": frozenset({"role", "content"}),
-    "turn": frozenset({"name", "trigger", "expect"}),
+    "turn": frozenset({"name", "trigger", "expect", "variations"}),
     "expect": frozenset(
         {"function_calls", "response", "ordered", "exclusive", "forbid", "budget", "check"}
     ),
