@@ -167,17 +167,30 @@ def _endpoint(protocol: Protocol | None, method: str, path: str) -> str | None:
     return None
 
 
+STREAM_WITHOUT_USAGE = "the stream ended without usage"
+
+
 class _Reading:
     """A reply's usage, read from its bytes as they go by to the client.
 
-    ``finish`` gives the usage, or why it could not be read.
+    A JSON reply is read whole at the end. A stream (``text/event-stream``) is read event
+    by event: OpenAI's last chunk with ``usage``, the Responses API's ``response.*``
+    events that carry the response, and Anthropic's ``message_start`` (input, cache)
+    and ``message_delta`` (output). ``finish`` gives what was read, and why the count
+    is not whole when it is not.
     """
 
-    def __init__(self, endpoint: str, content_encoding: str) -> None:
+    def __init__(self, endpoint: str, content_type: str, content_encoding: str) -> None:
         self.endpoint = endpoint
+        self.stream = content_type.split(";")[0].strip().lower() == "text/event-stream"
         self.unread: str | None = None
-        self._body = bytearray()
+        self._body = bytearray()  # a JSON reply, or the stream's unfinished line
         self._size = 0
+        self._data: list[str] = []  # the data lines of the event being read
+        self._model: str | None = None
+        self._usage: _Usage | None = None
+        self._start_usage: dict[str, Any] = {}  # Anthropic's message_start
+        self._delta_usage: dict[str, Any] = {}  # Anthropic's message_delta, merged
         encoding = content_encoding.strip().lower()
         self._decoder: Any = None
         if encoding in ("gzip", "x-gzip"):
@@ -195,28 +208,106 @@ class _Reading:
         except zlib.error:
             self.unread = "the reply's compressed body could not be decoded"
             return
-        self._size += len(data)
-        if self._size > MAX_READ_BYTES:
-            self.unread = f"the reply was larger than {MAX_READ_BYTES} bytes"
-            self._body.clear()
-            return
         self._body.extend(data)
+        if self.stream:
+            self._lines()
+            held = len(self._body)
+        else:
+            self._size += len(data)
+            held = self._size
+        if held > MAX_READ_BYTES:
+            self.unread = f"the reply held more than {MAX_READ_BYTES} bytes to read"
+            self._body.clear()
 
-    def finish(self) -> _Usage | str:
+    def _lines(self, *, last: bool = False) -> None:
+        """Read every whole line of the stream; at its end, the unfinished one too."""
+        while True:
+            newline = self._body.find(b"\n")
+            if newline < 0:
+                if not last:
+                    return
+                line, self._body = bytes(self._body), bytearray()
+                self._line(line)
+                self._event()
+                return
+            line = bytes(self._body[:newline])
+            del self._body[: newline + 1]
+            self._line(line)
+
+    def _line(self, raw: bytes) -> None:
+        line = raw.rstrip(b"\r").decode("utf-8", errors="replace")
+        if not line:
+            self._event()
+        elif line.startswith("data:"):
+            value = line[5:]
+            self._data.append(value[1:] if value.startswith(" ") else value)
+
+    def _event(self) -> None:
+        """One event ended: read its data, if it is an object."""
+        data, self._data = "\n".join(self._data), []
+        if not data or data == "[DONE]":
+            return
+        try:
+            event = as_dict(json.loads(data))
+        except ValueError:
+            return
+        if event is None:
+            return
+        if self.endpoint == "messages":
+            self._anthropic_event(event)
+            return
+        response = as_dict(event.get("response"))  # the Responses API's response.* events
+        if response is not None:
+            event = response
+        self._model = _label(event.get("model")) or self._model
+        usage = as_dict(event.get("usage"))
+        if usage is not None:
+            self._usage = _openai_usage(event, usage)
+
+    def _anthropic_event(self, event: dict[str, Any]) -> None:
+        kind = event.get("type")
+        if kind == "message_start":
+            message = as_dict(event.get("message")) or {}
+            self._model = _label(message.get("model")) or self._model
+            self._start_usage = as_dict(message.get("usage")) or {}
+        elif kind == "message_delta":
+            usage = as_dict(event.get("usage")) or {}
+            # Its counts are the totals so far: a later one replaces an earlier one.
+            self._delta_usage.update({k: v for k, v in usage.items() if v is not None})
+
+    def finish(self) -> tuple[_Usage | None, str | None]:
+        """What was read, and why the count is not whole (None when it is)."""
         if self.unread is not None:
-            return self.unread
+            return None, self.unread
+        if self.stream:
+            return self._finish_stream()
         try:
             body = as_dict(json.loads(bytes(self._body)))
         except (ValueError, UnicodeDecodeError):
             body = None
         if body is None:
-            return "the reply was not a JSON object"
+            return None, "the reply was not a JSON object"
         usage = as_dict(body.get("usage"))
         if usage is None:
-            return "the reply had no usage"
+            return _Usage(model=_label(body.get("model"))), "the reply had no usage"
         if self.endpoint == "messages":
-            return _anthropic_usage(body, usage)
-        return _openai_usage(body, usage)
+            return _anthropic_usage(body, usage), None
+        return _openai_usage(body, usage), None
+
+    def _finish_stream(self) -> tuple[_Usage | None, str | None]:
+        self._lines(last=True)
+        if self.endpoint == "messages":
+            if "output_tokens" not in self._delta_usage:
+                # message_start's output_tokens is a placeholder, not the count.
+                return _Usage(model=self._model), STREAM_WITHOUT_USAGE
+            merged = {**self._start_usage, **self._delta_usage}
+            usage = _anthropic_usage({"model": self._model}, merged)
+            return usage, None
+        if self._usage is None:
+            return _Usage(model=self._model), STREAM_WITHOUT_USAGE
+        if self._usage.model is None:
+            self._usage.model = self._model
+        return self._usage, None
 
 
 def _request_model(body: bytes) -> str | None:
@@ -225,6 +316,27 @@ def _request_model(body: bytes) -> str | None:
     except (ValueError, UnicodeDecodeError):
         return None
     return _label(request.get("model")) if request is not None else None
+
+
+def _with_stream_usage(body: bytes) -> bytes:
+    """An OpenAI chat stream asks for its usage, unless it says something already.
+
+    Without ``stream_options.include_usage`` the stream has no usage, and the call would
+    be unread. One that sets it, to true or to false, is sent as it is.
+    """
+    try:
+        request = as_dict(json.loads(body))
+    except (ValueError, UnicodeDecodeError):
+        return body
+    if request is None or request.get("stream") is not True:
+        return body
+    options = request.get("stream_options")
+    if options is None:
+        options = {}
+    elif as_dict(options) is None or "include_usage" in options:
+        return body
+    request["stream_options"] = {**options, "include_usage": True}
+    return json.dumps(request, ensure_ascii=False).encode()
 
 
 def _readable_encodings(value: str | None) -> str:
@@ -329,6 +441,8 @@ class _Handler(BaseHTTPRequestHandler):
             headers.append(
                 ("Accept-Encoding", _readable_encodings(self.headers.get("Accept-Encoding")))
             )
+        if endpoint == "chat":
+            body = _with_stream_usage(body)
         test = self.headers.get(TEST_HEADER)
         call = _Call(proxy, upstream, endpoint, test, _request_model(body) if endpoint else None)
 
@@ -347,7 +461,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _relay(self, response: httpx.Response, call: _Call) -> None:
         reading = (
-            _Reading(call.endpoint, response.headers.get("Content-Encoding") or "")
+            _Reading(
+                call.endpoint,
+                response.headers.get("Content-Type") or "",
+                response.headers.get("Content-Encoding") or "",
+            )
             if call.endpoint is not None
             else None
         )
@@ -443,11 +561,8 @@ class _Call:
             return
         if reading is None:
             return
-        result = reading.finish()
-        if isinstance(result, str):
-            self.record(None, result, error=error)
-        else:
-            self.record(result, None, error=error)
+        usage, unread = reading.finish()
+        self.record(usage, unread, error=error)
 
     def record(self, usage: _Usage | None, unread: str | None, error: str | None) -> None:
         if self.recorded:
@@ -470,7 +585,7 @@ class _Call:
             missing = [
                 key for key in ("input_tokens", "output_tokens") if getattr(usage, key) is None
             ]
-            if missing:
+            if missing and unread is None:
                 unread = f"the reply's usage had no readable {' or '.join(missing)}"
         record["read"] = unread is None
         if unread is not None:

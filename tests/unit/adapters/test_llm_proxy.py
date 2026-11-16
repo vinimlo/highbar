@@ -318,3 +318,177 @@ def test_hb30_the_proxy_listens_on_loopback_only(upstream: FakeUpstream, trace: 
         assert proxy.base_url("openai") == f"{proxy.url}/openai"
     finally:
         proxy.stop()
+
+
+def _sse(*events: dict[str, Any] | str, named: bool = False) -> bytes:
+    """Server-sent events: `data: <json>` each, with `event: <type>` when ``named``."""
+    out = b""
+    for event in events:
+        if isinstance(event, str):
+            out += f"data: {event}\n\n".encode()
+            continue
+        if named:
+            out += f"event: {event['type']}\n".encode()
+        out += b"data: " + _json(event) + b"\n\n"
+    return out
+
+
+def _pieces(stream: bytes, size: int = 7) -> list[bytes]:
+    """The stream in small pieces, so that lines and events are split across reads."""
+    return [stream[i : i + size] for i in range(0, len(stream), size)]
+
+
+SSE_HEADERS = {"Content-Type": "text/event-stream"}
+
+
+def _chat_chunk(content: str | None, usage: dict[str, Any] | None = None) -> dict[str, Any]:
+    choices = [] if content is None else [{"index": 0, "delta": {"content": content}}]
+    chunk: dict[str, Any] = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o-mini-2024-07-18",
+        "choices": choices,
+    }
+    if usage is not None:
+        chunk["usage"] = usage
+    return chunk
+
+
+CHAT_STREAM = _sse(
+    _chat_chunk("Hel"),
+    _chat_chunk("lo"),
+    _chat_chunk(None, {"prompt_tokens": 1000, "completion_tokens": 200}),
+    "[DONE]",
+)
+
+
+def test_hb30_an_openai_stream_asks_for_usage_and_reads_the_last_chunk(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    upstream.answers["/v1/chat/completions"] = Answer(
+        headers=SSE_HEADERS, events=_pieces(CHAT_STREAM)
+    )
+
+    reply = _post(f"{proxy.base_url('openai')}/chat/completions", {**CHAT_REQUEST, "stream": True})
+
+    assert reply.content == CHAT_STREAM
+    (received,) = upstream.received
+    assert json.loads(received.body)["stream_options"] == {"include_usage": True}
+    assert json.loads(received.body)["messages"] == CHAT_REQUEST["messages"]
+    (call,) = _calls(trace)
+    assert call.read is True and call.model == "gpt-4o-mini-2024-07-18"
+    assert (call.input_tokens, call.output_tokens) == (1000, 200)
+
+
+def test_hb30_a_stream_that_asks_for_usage_goes_through_byte_for_byte(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    upstream.answers["/v1/chat/completions"] = Answer(headers=SSE_HEADERS, events=[CHAT_STREAM])
+    sent = b'{"model":"gpt-4o-mini","stream":true,  "stream_options":{"include_usage":true}}'
+
+    httpx.post(f"{proxy.base_url('openai')}/chat/completions", content=sent, timeout=10)
+
+    (received,) = upstream.received
+    assert received.body == sent
+    (call,) = _calls(trace)
+    assert call.read is True
+
+
+def test_hb30_an_openai_stream_without_usage_is_unread_not_zero(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    # A server that ignores stream_options: the stream ends and no chunk said the usage.
+    stream = _sse(_chat_chunk("Hel"), _chat_chunk("lo"), "[DONE]")
+    upstream.answers["/v1/chat/completions"] = Answer(headers=SSE_HEADERS, events=[stream])
+
+    reply = _post(f"{proxy.base_url('openai')}/chat/completions", {**CHAT_REQUEST, "stream": True})
+
+    assert reply.content == stream
+    (call,) = _calls(trace)
+    assert call.read is False
+    assert call.unread is not None and "stream ended without usage" in call.unread
+    assert call.model == "gpt-4o-mini-2024-07-18"
+    assert (call.input_tokens, call.output_tokens, call.cost) == (None, None, None)
+
+
+def test_hb30_an_openai_responses_stream_is_read_from_response_completed(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    stream = _sse(
+        {"type": "response.created", "response": {"model": "gpt-4.1-2025-04-14", "usage": None}},
+        {"type": "response.output_text.delta", "delta": "hi"},
+        {
+            "type": "response.completed",
+            "response": {
+                "model": "gpt-4.1-2025-04-14",
+                "usage": {"input_tokens": 500, "output_tokens": 70},
+            },
+        },
+        named=True,
+    )
+    upstream.answers["/v1/responses"] = Answer(headers=SSE_HEADERS, events=_pieces(stream))
+
+    reply = _post(
+        f"{proxy.base_url('openai')}/responses",
+        {"model": "gpt-4.1", "input": SECRET_PROMPT, "stream": True},
+    )
+
+    assert reply.content == stream
+    assert "stream_options" not in json.loads(upstream.received[0].body)
+    (call,) = _calls(trace)
+    assert call.read is True and call.model == "gpt-4.1-2025-04-14"
+    assert (call.input_tokens, call.output_tokens) == (500, 70)
+
+
+ANTHROPIC_START = {
+    "type": "message_start",
+    "message": {
+        "id": "msg_1",
+        "type": "message",
+        "model": "claude-sonnet-4-5-20250929",
+        "usage": {"input_tokens": 100, "cache_read_input_tokens": 900, "output_tokens": 1},
+    },
+}
+
+
+def test_hb30_an_anthropic_stream_is_read_from_message_start_and_message_delta(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    stream = _sse(
+        ANTHROPIC_START,
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}},
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 20},
+        },
+        {"type": "message_stop"},
+        named=True,
+    )
+    upstream.answers["/v1/messages"] = Answer(headers=SSE_HEADERS, events=_pieces(stream))
+
+    reply = _post(
+        f"{proxy.base_url('anthropic')}/v1/messages", {**ANTHROPIC_REQUEST, "stream": True}
+    )
+
+    assert reply.content == stream
+    (call,) = _calls(trace)
+    assert call.read is True and call.model == "claude-sonnet-4-5-20250929"
+    assert (call.input_tokens, call.output_tokens, call.cache_tokens) == (1000, 20, 900)
+
+
+def test_hb30_an_anthropic_stream_cut_before_message_delta_is_unread(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    # message_start's output_tokens is a placeholder: taken as the count, it would be 1.
+    stream = _sse(ANTHROPIC_START, {"type": "message_stop"}, named=True)
+    upstream.answers["/v1/messages"] = Answer(headers=SSE_HEADERS, events=[stream])
+
+    _post(f"{proxy.base_url('anthropic')}/v1/messages", {**ANTHROPIC_REQUEST, "stream": True})
+
+    (call,) = _calls(trace)
+    assert call.read is False
+    assert call.unread is not None and "stream ended without usage" in call.unread
+    assert call.output_tokens is None
