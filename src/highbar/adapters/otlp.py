@@ -21,7 +21,7 @@ A failed call is a span with status ERROR or an ``error.type``. Spans of other k
 
 A record's context is ``{"test": <trace id>}``: highbar sends each test execution's id
 as the trace id of its ``traceparent``, so the default ``agent.correlate`` matches a
-span to its test, and a span of any other trace is another's.
+span to its test. The runner reads a span of a trace it did not send as untagged.
 
 Arguments and results are opt-in in the GenAI conventions. A tool span without its
 arguments is read with ``has_args`` False, so a ``params`` check on it is unverified,

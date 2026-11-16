@@ -9,6 +9,8 @@ A message with "refund" calls `refund`; any other calls `get_order` with the ord
 it names. Switches:
   --no-content          leave out the tool's arguments and result (capture off)
   --ignore-traceparent  start a new trace per request, as an uninstrumented server does
+  --lost-tool-context   run the tool as a worker that starts a new root trace: its span
+                        gets a fresh trace id, while the turn's keeps the request's
   --seen FILE           append each traceparent received to FILE
 """
 
@@ -57,6 +59,7 @@ def main() -> None:
     parser.add_argument("--traces", required=True)
     parser.add_argument("--no-content", action="store_true")
     parser.add_argument("--ignore-traceparent", action="store_true")
+    parser.add_argument("--lost-tool-context", action="store_true")
     parser.add_argument("--seen")
     options = parser.parse_args()
 
@@ -90,7 +93,12 @@ def main() -> None:
             if not options.no_content:
                 attrs["gen_ai.tool.call.arguments"] = json.dumps(args)
                 attrs["gen_ai.tool.call.result"] = json.dumps(result)
-            tool_span = _span(trace_id, agent_id, f"execute_tool {tool}", attrs, start, time.time())
+            tool_trace, tool_parent = trace_id, agent_id
+            if options.lost_tool_context:
+                tool_trace, tool_parent = secrets.token_hex(16), ""
+            tool_span = _span(
+                tool_trace, tool_parent, f"execute_tool {tool}", attrs, start, time.time()
+            )
             reply = f"Order {args.get('id') or args.get('order')}: done."
             turn = _span(
                 trace_id,

@@ -511,13 +511,14 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
         )
     traces = None
     trace_format = "highbar"
+    trace_tools: tuple[str, ...] | None = None
     if "traces" in raw:
         if managed:
             raise SpecError(
                 f"{where}: 'traces' is for attach mode; with 'start', highbar creates the "
                 "trace file and passes it to the agent in HIGHBAR_TRACES_URL"
             )
-        traces, trace_format = _parse_traces(raw)
+        traces, trace_format, trace_tools = _parse_traces(raw)
     if trace_format == "otlp" and "correlate" in raw:
         raise SpecError(
             "agent.correlate: with traces.format: otlp, a span belongs to the test whose "
@@ -556,6 +557,7 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
         llm_proxy_upstreams=llm_upstreams,
         traces=traces,
         trace_format=trace_format,
+        trace_tools=trace_tools,
         session=session,
         run=_parse_run(raw["run"], read_result) if "run" in raw else None,
         correlate=(
@@ -695,11 +697,11 @@ def _secret_regions(url: str) -> list[tuple[int, int]] | None:
     return regions
 
 
-def _parse_traces(raw: dict[str, Any]) -> tuple[str, str]:
-    """``agent.traces``: a path, or ``{path, format}`` (HB-48). The format is highbar's own
-    contract unless it says ``otlp``."""
+def _parse_traces(raw: dict[str, Any]) -> tuple[str, str, tuple[str, ...] | None]:
+    """``agent.traces``: a path, or ``{path, format, tools}`` (HB-48). The format is
+    highbar's own contract unless it says ``otlp``; ``tools`` lists an OTLP agent's tools."""
     if isinstance(raw["traces"], str):
-        return _required_text(raw, "traces"), "highbar"
+        return _required_text(raw, "traces"), "highbar", None
     where = "agent.traces"
     traces = as_dict(raw["traces"])
     if traces is None:
@@ -724,7 +726,31 @@ def _parse_traces(raw: dict[str, Any]) -> tuple[str, str]:
             f"{where}.format: unknown format '{trace_format}'{hint} "
             f"(formats: {', '.join(TRACE_FORMATS)})"
         )
-    return path, trace_format
+    tools = _parse_trace_tools(traces["tools"]) if "tools" in traces else None
+    if tools is not None and trace_format != "otlp":
+        raise SpecError(
+            f"{where}.tools: only with format: otlp; an agent that writes highbar's own "
+            "contract declares its tools itself (hb.declare, or a `tools` record)"
+        )
+    return path, trace_format, tools
+
+
+def _parse_trace_tools(raw: Any) -> tuple[str, ...]:
+    """``agent.traces.tools`` (review of #98): an OTLP file declares no tools, so the spec
+    says which the agent has. A guardrail on a name not listed cannot be verified."""
+    where = "agent.traces.tools"
+    names = as_list(raw)
+    if names is None:
+        raise SpecError(f"{where}: must be a list of tool names, got {type(raw).__name__}")
+    tools: list[str] = []
+    for name in names:
+        if not isinstance(name, str) or not name.strip():
+            got = f", got {type(name).__name__}" if not isinstance(name, str) else ""
+            raise SpecError(f"{where}: each tool must be a non-empty string{got}")
+        if name in tools:
+            raise SpecError(f"{where}: '{name}' is listed twice")
+        tools.append(name)
+    return tuple(tools)
 
 
 def _required_text(raw: dict[str, Any], key: str) -> str:

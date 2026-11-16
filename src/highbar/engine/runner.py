@@ -162,11 +162,20 @@ UNDECLARED_WARNING = (
     "declares them after each hello since 0.1.0rc2; another writer adds a `tools` record "
     "(see the trace contract)"
 )
-# The same under agent.traces.format: otlp (HB-48), where nothing can declare tools.
-OTLP_UNDECLARED_WARNING = (
-    "an OTLP trace file declares no tools, so these guardrails passed only because no span "
-    "of these tools was read: {names}. A forbid, or function_calls: [], means something "
-    "only if every tool of the agent emits an execute_tool span (GenAI conventions) or an "
+# Under agent.traces.format: otlp (HB-48), a span's trace id is its test: one highbar
+# did not send means the agent lost the trace context (review of #98, F1).
+OTLP_UNTAGGED = "a trace id highbar did not send"
+OTLP_LOST_TRACE = (
+    "The agent's spans must continue the trace of the incoming traceparent: a tool run in "
+    "a thread pool or a worker that starts a new root trace loses it, and needs the "
+    "OpenTelemetry context carried into it (contextvars.copy_context(), or "
+    "opentelemetry.context.attach)"
+)
+# An OTLP file declares no tools: the spec lists them, or absence proves nothing (#98).
+OTLP_NO_TOOLS_ERROR = (
+    "cannot verify {what}: an OTLP trace file declares no tools, so a tool whose calls "
+    "emit no span cannot be told from a tool that was not called. List the agent's tools "
+    "in agent.traces.tools, each emitting an execute_tool span (GenAI conventions) or an "
     "OpenInference TOOL span"
 )
 
@@ -381,15 +390,19 @@ def _is_default(correlate: Mapping[Any, Any]) -> bool:
     return [str(key) for key in correlate] == ["test"]
 
 
-def _untagged(correlate: Mapping[Any, Any]) -> str:
+def _untagged(correlate: Mapping[Any, Any], otlp: bool = False) -> str:
     """What untagged records lack, in the words of the spec's agent.correlate."""
+    if otlp:
+        return OTLP_UNTAGGED
     if _is_default(correlate):
         return "no test context"
     return f"none of agent.correlate's keys ({', '.join(str(key) for key in correlate)})"
 
 
-def _tag_hint(correlate: Mapping[Any, Any]) -> str:
+def _tag_hint(correlate: Mapping[Any, Any], otlp: bool = False) -> str:
     """How records get the context that agent.correlate matches on (FR2)."""
+    if otlp:
+        return "the agent's spans must continue the trace of the incoming traceparent"
     if _is_default(correlate):
         return (
             "tag them with the test id: highbar.asgi.Middleware, or "
@@ -711,6 +724,10 @@ class TestRunner:
         # ones seen in its records: what a name in the spec is checked against (D4).
         self._inventory: set[str] | None = None
         self._seen: set[str] = set()
+        # Under OTLP: the tools the spec lists (agent.traces.tools), and the trace ids
+        # highbar sent in this run. A span of any other trace is no test's (#98, F1).
+        self._trace_tools: tuple[str, ...] | None = None
+        self._issued: set[str] = set()
         # Forbidden names checked while the agent had declared nothing: warned at the end.
         self._undeclared: dict[str, None] = {}
         self._executions: list[_Execution] = []
@@ -805,6 +822,7 @@ class TestRunner:
         self._strays = []
         self._warned = set()
         self._inventory, self._seen, self._undeclared = None, set(), {}
+        self._trace_tools, self._issued = spec.agent.trace_tools, set()
         self._executions, self._findings, self._test_index = [], [], 0
         self._planned = sum(len(suite.tests) for suite in spec.suites)
         self._gates, self._reported, self._warnings = {}, {}, []
@@ -1348,11 +1366,37 @@ class TestRunner:
         on it.
         """
         try:
-            return self._collector.collect(since=self._cursor), None
+            return self._sent_traces(self._collector.collect(since=self._cursor)), None
         except TraceFormatError as e:
             if e.window is not None:
-                return e.window, str(e)
+                return self._sent_traces(e.window), str(e)
             return Window(end=self._collector.checkpoint()), str(e)
+
+    def _sent_traces(self, window: Window) -> Window:
+        """Under OTLP, a span whose trace id highbar did not send in this run is no test's:
+        it is unattributed, as an untagged record is, never another test's (review of
+        #98, F1). A tool run in a worker that starts a new root trace gets a fresh trace
+        id; read as another's, it would be dropped, and a `forbid` would pass on it."""
+        if not self._otlp:
+            return window
+
+        def lost(context: Mapping[str, Any]) -> bool:
+            return context.get("test") not in self._issued
+
+        def untagged(context: Mapping[str, Any]) -> dict[str, Any]:
+            return {"trace_id": context.get("test")}
+
+        return replace(
+            window,
+            tools=[
+                replace(t, context=untagged(t.context)) if lost(t.context) else t
+                for t in window.tools
+            ],
+            turns=[
+                replace(t, context=untagged(t.context)) if lost(t.context) else t
+                for t in window.turns
+            ],
+        )
 
     def _agent_exit(self) -> subprocess_adapter.AgentExit | None:
         """How the agent highbar started ended, or None while it runs, or when attached."""
@@ -1736,10 +1780,15 @@ class TestRunner:
                 _Finding(
                     execution,
                     Status.ERROR,
-                    f"{_names(untagged)} arrived after this test's window with no context "
-                    f"saying which test made it, and would fail it ({'; '.join(errors)}). "
-                    "A call the agent makes off the request needs "
-                    "contextvars.copy_context() to keep the tag",
+                    f"{_names(untagged)} arrived after this test's window with "
+                    f"{OTLP_UNTAGGED if self._otlp else 'no context'}, so nothing says which "
+                    f"test made it, and would fail it ({'; '.join(errors)}). "
+                    + (
+                        OTLP_LOST_TRACE
+                        if self._otlp
+                        else "A call the agent makes off the request needs "
+                        "contextvars.copy_context() to keep the tag"
+                    ),
                 )
             )
 
@@ -1775,7 +1824,7 @@ class TestRunner:
         if self._budgets_of(execution).unverified:
             execution.passed = False
             message = NO_CONTEXT_USAGE_ERROR.format(
-                untagged=_untagged(correlate), hint=_tag_hint(correlate)
+                untagged=_untagged(correlate, self._otlp), hint=_tag_hint(correlate, self._otlp)
             )
             self._findings.append(_Finding(execution, Status.ERROR, message))
 
@@ -1861,7 +1910,7 @@ class TestRunner:
             return (
                 f"not observed: the {len(records)} trace records read while this test ran "
                 "carry no context, so they cannot be told from other traffic on this agent; "
-                f"{_tag_hint(correlate)}"
+                f"{_tag_hint(correlate, self._otlp)}"
             )
         # An empty window cannot tell "no tool was called" from "the agent records nothing".
         return (
@@ -1946,6 +1995,11 @@ class TestRunner:
         would keep a tool known after it lost its recording. Names seen in old tool
         records do not count either; seen names are this run's.
         """
+        if self._otlp:
+            # An OTLP file declares nothing: agent.traces.tools does (review of #98).
+            tools = self._trace_tools
+            self._inventory = set(tools) if tools is not None else None
+            return
         declared = self._collector.declared()
         self._inventory = set(declared) if declared is not None else None
 
@@ -1964,6 +2018,8 @@ class TestRunner:
         must be one the agent declared or one already seen in its records.
         """
         if self._inventory is None:
+            if self._otlp:
+                return self._absence_unverified(expect)
             self._undeclared.update(dict.fromkeys(expect.forbid))
             return None
         known = sorted(self._inventory | self._seen)
@@ -1986,11 +2042,19 @@ class TestRunner:
             missing.append(f"{listed} (did you mean '{close}'?)" if close else listed)
         if not missing:
             return None
-        message = (
-            f"cannot see calls to {', '.join(missing)}: the agent records "
-            f"{', '.join(known) or 'no tools'}. If the agent has no such tool, remove it "
-            "from the spec; if it has, record it: @hb.tool, or hb.record() with hb.declare()"
-        )
+        if self._otlp:
+            message = (
+                f"cannot see calls to {', '.join(missing)}: agent.traces.tools and the spans "
+                f"read name {', '.join(known) or 'no tools'}. If the agent has no such tool, "
+                "remove it from the spec; if it has, add it to agent.traces.tools"
+            )
+        else:
+            message = (
+                f"cannot see calls to {', '.join(missing)}: the agent records "
+                f"{', '.join(known) or 'no tools'}. If the agent has no such tool, remove it "
+                "from the spec; if it has, record it: @hb.tool, or hb.record() with "
+                "hb.declare()"
+            )
         calls = [
             call
             for call in expect.function_calls or []
@@ -2004,6 +2068,20 @@ class TestRunner:
         )
         return message, observable
 
+    @staticmethod
+    def _absence_unverified(expect: Expect) -> tuple[str, Expect] | None:
+        """Under OTLP without agent.traces.tools: a check that passes on the absence of a
+        span cannot be verified (review of #98). The whole expectation is still checked,
+        since a span that is there fails it for real: only a pass is in doubt."""
+        what = [f"forbid {', '.join(expect.forbid)}"] if expect.forbid else []
+        if expect.function_calls == []:
+            what.append("function_calls: []")
+        if expect.exclusive:
+            what.append("exclusive")
+        if not what:
+            return None
+        return OTLP_NO_TOOLS_ERROR.format(what=" and ".join(what)), expect
+
     def _warn_undeclared(self) -> None:
         """Once, at the end: every forbidden name checked while nothing was declared."""
         unseen = [name for name in self._undeclared if name not in self._seen]
@@ -2016,14 +2094,17 @@ class TestRunner:
             else name
             for name in unseen
         )
-        template = OTLP_UNDECLARED_WARNING if self._otlp else UNDECLARED_WARNING
-        self._warn(template.format(names=names))
+        self._warn(UNDECLARED_WARNING.format(names=names))
 
     def _warn_once(self, template: str, correlate: Mapping[Any, Any]) -> None:
         if template in self._warned:
             return
         self._warned.add(template)
-        self._warn(template.format(untagged=_untagged(correlate), hint=_tag_hint(correlate)))
+        self._warn(
+            template.format(
+                untagged=_untagged(correlate, self._otlp), hint=_tag_hint(correlate, self._otlp)
+            )
+        )
 
     def _costs(self) -> dict[str, float]:
         """What --max-cost counts, per currency: earlier specs included, and what a managed
@@ -2747,6 +2828,9 @@ class TestRunner:
             )
         except PlaceholderError as e:
             return unverified(f"agent.correlate: {e}")
+        if self._otlp:
+            # Before the send: from here on, a span of this trace is this execution's.
+            self._issued.add(str(execution.correlate.get("test")))
         log.correlate = dict(execution.correlate)
         if observes and any(
             other is not execution and _same_correlation(other.correlate, execution.correlate)
@@ -2915,8 +2999,10 @@ class TestRunner:
             mine = classified.mine
             seen = mine.tools or mine.turns or mine.llms or mine.retrievals
             if observes and not seen:
-                if self._parallel and (
-                    _any_record(classified.unattributed, shared) or not classified.correlated
+                if (
+                    self._parallel
+                    and not self._otlp
+                    and (_any_record(classified.unattributed, shared) or not classified.correlated)
                 ):
                     return unverified(JOBS_NOT_OBSERVED.format(hint=_tag_hint(execution.correlate)))
                 return unverified(self._not_observed(classified, execution.correlate))
@@ -2933,13 +3019,22 @@ class TestRunner:
             if untagged:
                 with_them = self._check([*traces, *untagged], response, expect)
                 if bool(errors) != bool(with_them):
+                    whose = (
+                        f"its span carries {OTLP_UNTAGGED}"
+                        if self._otlp
+                        else f"no {', '.join(execution.correlate)} in its context"
+                    )
+                    how = (
+                        OTLP_LOST_TRACE
+                        if self._otlp
+                        else "A call the agent makes off the request needs "
+                        "contextvars.copy_context() to keep the tag; hb.record() can also "
+                        "be given it"
+                    )
                     return unverified(
-                        f"cannot tell which test made {_names(untagged)}: no "
-                        f"{', '.join(execution.correlate)} in its context, and this test "
-                        f"{'passes' if errors else 'fails'} with it and "
-                        f"{'fails' if errors else 'passes'} without it. A call the agent "
-                        "makes off the request needs contextvars.copy_context() to keep the "
-                        "tag; hb.record() can also be given it"
+                        f"cannot tell which test made {_names(untagged)}: {whose}, and this "
+                        f"test {'passes' if errors else 'fails'} with it and "
+                        f"{'fails' if errors else 'passes'} without it. {how}"
                     )
 
         # A call whose return was not recorded: `returns` could not be checked on it.

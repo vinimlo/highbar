@@ -59,14 +59,17 @@ class _OtlpAgent:
             self.server.kill()
             self.server.wait()
 
-    def run(self, tests: str) -> subprocess.CompletedProcess[str]:
+    def run(
+        self, tests: str, tools: str | None = "[get_order, refund]"
+    ) -> subprocess.CompletedProcess[str]:
+        listed = f"\n    tools: {tools}" if tools is not None else ""
         (self.root / "otel.highbar.yaml").write_text(
             f"""\
 agent:
   endpoint: "http://127.0.0.1:{self.port}/chat"
   traces:
     path: var/otel.jsonl
-    format: otlp
+    format: otlp{listed}
   settle_time: 50
 suites:
   - name: Orders
@@ -156,3 +159,46 @@ def test_params_without_captured_content_is_an_error(otlp_agent: _OtlpAgent) -> 
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT" in result.stdout
+
+
+NEVER_REFUNDS = """\
+      - name: never refunds
+        trigger: "please refund A1"
+        expect:
+          forbid: [refund]
+"""
+
+
+@pytest.mark.timeout(40)
+def test_f1_a_tool_span_on_a_new_root_trace_is_an_error_not_a_pass(
+    otlp_agent: _OtlpAgent,
+) -> None:
+    """The reviewer's case: the tool ran in a worker that started its own trace."""
+    otlp_agent.start("--lost-tool-context")
+
+    result = otlp_agent.run(NEVER_REFUNDS)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "cannot tell which test made refund" in result.stdout
+    assert "1 passed" not in result.stdout
+
+
+@pytest.mark.timeout(40)
+def test_tools_a_forbid_typo_is_an_error_with_a_suggestion(otlp_agent: _OtlpAgent) -> None:
+    otlp_agent.start()
+
+    result = otlp_agent.run(NEVER_REFUNDS.replace("[refund]", "[refnd]"))
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "did you mean 'refund'?" in result.stdout
+
+
+@pytest.mark.timeout(40)
+def test_tools_without_the_list_a_guardrail_is_an_error(otlp_agent: _OtlpAgent) -> None:
+    otlp_agent.start()
+
+    result = otlp_agent.run(PASSING.replace("please refund", "where is"), tools=None)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "agent.traces.tools" in result.stdout
+    assert "1 passed" not in result.stdout

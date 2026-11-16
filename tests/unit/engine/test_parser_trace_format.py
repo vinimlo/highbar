@@ -80,3 +80,36 @@ def test_otlp_correlates_by_trace_id_so_correlate_is_an_error(tmp_path: Path) ->
     )
     with pytest.raises(SpecError, match=r"agent\.correlate.*trace id.*traceparent"):
         parse_spec(_spec(tmp_path, agent))
+
+
+OTLP = "traces:\n  path: var/otel.jsonl\n  format: otlp\n"
+
+
+def test_tools_lists_the_tools_of_an_otlp_agent(tmp_path: Path) -> None:
+    agent = parse_spec(_spec(tmp_path, ATTACH + OTLP + "  tools: [get_order, refund]\n")).agent
+
+    assert agent.trace_tools == ("get_order", "refund")
+
+
+def test_without_tools_the_list_is_unknown(tmp_path: Path) -> None:
+    assert parse_spec(_spec(tmp_path, ATTACH + OTLP)).agent.trace_tools is None
+
+
+@pytest.mark.parametrize(
+    ("tools", "message"),
+    [
+        ("refund", r"agent\.traces\.tools: must be a list of tool names, got str"),
+        ("[refund, 3]", r"agent\.traces\.tools: each tool must be a non-empty string, got int"),
+        ('[refund, " "]', r"agent\.traces\.tools: each tool must be a non-empty string"),
+        ("[refund, refund]", r"agent\.traces\.tools: 'refund' is listed twice"),
+    ],
+)
+def test_tools_must_be_a_list_of_names(tmp_path: Path, tools: str, message: str) -> None:
+    with pytest.raises(SpecError, match=message):
+        parse_spec(_spec(tmp_path, ATTACH + OTLP + f"  tools: {tools}\n"))
+
+
+def test_tools_is_only_for_otlp(tmp_path: Path) -> None:
+    agent = ATTACH + "traces: {path: var/traces.jsonl, tools: [refund]}\n"
+    with pytest.raises(SpecError, match=r"agent\.traces\.tools: only with format: otlp"):
+        parse_spec(_spec(tmp_path, agent))

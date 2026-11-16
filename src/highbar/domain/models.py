@@ -277,6 +277,9 @@ class AgentConfig:
     traces: str | None = None
     # How the trace file is written: highbar's own contract, or OTLP JSON lines (HB-48).
     trace_format: str = "highbar"
+    # agent.traces.tools (OTLP only): the tools the agent has, each emitting a tool span.
+    # What a name in the spec is checked against; None when the spec does not say.
+    trace_tools: tuple[str, ...] | None = None
     session: SessionConfig | None = None
     run: RunConfig | None = None
     correlate: dict[str, Any] = field(default_factory=lambda: {"test": "{{test.id}}"})
