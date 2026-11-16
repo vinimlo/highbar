@@ -10,7 +10,7 @@ from typing import Any
 from rich.console import Console
 from rich.markup import escape
 
-from highbar.compare.core import CompareError, Round, Row, Side, read_round
+from highbar.compare.core import ALPHA, ONE_ROUND, CompareError, Round, Row, Side, read_round
 
 COMPARE_SCHEMA_VERSION = 1
 
@@ -41,8 +41,9 @@ def load_side(paths: Sequence[str]) -> list[dict[tuple[str, str], Round]]:
 
 
 def render(rows: Sequence[Row], console: Console) -> None:
-    """One line per test, the reason under it, and the means of cost, tokens and time."""
+    """One line per test; under a test that moved, why or why not, and the means that changed."""
     spec: str | None = None
+    one_round = False
     for row in rows:
         if row.spec != spec:
             spec = row.spec
@@ -60,10 +61,14 @@ def render(rows: Sequence[Row], console: Console) -> None:
             f" · p {row.p:.3g}{p_holm}",
             soft_wrap=True,
         )
-        if row.verdict is None:
-            console.print(f"      → {escape(row.reason)}", soft_wrap=True)
+        if row.verdict is None and row.p < ALPHA:
+            reason = row.reason
+            if reason == ONE_ROUND:
+                one_round = True
+                reason = "one round on a side: no conclusion (see below)"
+            console.print(f"      → {escape(reason)}", soft_wrap=True)
         means = _means(row.base, row.head)
-        if means:
+        if means and _moved(row.base, row.head):
             console.print(f"      [dim]{escape(means)}[/dim]", soft_wrap=True)
     compared = [r for r in rows if r.p is not None]
     counts = [
@@ -76,6 +81,8 @@ def render(rows: Sequence[Row], console: Console) -> None:
     if skipped:
         counts.append(f"{skipped} not compared")
     console.print("\n  " + " | ".join(counts), soft_wrap=True)
+    if one_round:
+        console.print(f"  {escape(ONE_ROUND)}.", soft_wrap=True)
 
 
 def write_json(path: str, rows: Sequence[Row], base: Sequence[str], head: Sequence[str]) -> None:
@@ -109,6 +116,22 @@ def _means(base: Side, head: Side) -> str:
     if base.mean_ms is not None and head.mean_ms is not None:
         parts.append(f"{base.mean_ms / 1000:.2f}s → {head.mean_ms / 1000:.2f}s")
     return "per execution: " + " · ".join(parts) if parts else ""
+
+
+def _moved(base: Side, head: Side) -> bool:
+    """Whether a mean differs by more than 5%: below that, the line is noise."""
+    currencies = {*base.mean_cost, *head.mean_cost}
+    pairs = [
+        (base.mean_ms, head.mean_ms),
+        (base.mean_input_tokens, head.mean_input_tokens),
+        *((base.mean_cost.get(c), head.mean_cost.get(c)) for c in currencies),
+    ]
+    for before, after in pairs:
+        if (before is None) != (after is None):
+            return True
+        if before is not None and after is not None and abs(after - before) > 0.05 * abs(before):
+            return True
+    return False
 
 
 def _num(value: float | None, spec: str) -> str:

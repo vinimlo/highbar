@@ -116,3 +116,16 @@ def test_nothing_in_common_exits_2(tmp_path: Path) -> None:
     result = runner.invoke(app, ["compare", "--base", str(base), "--head", str(head)])
     assert result.exit_code == 2
     assert "no test in common" in result.output
+
+
+def test_tests_that_did_not_move_take_one_line(tmp_path: Path) -> None:
+    base = _write(tmp_path / "a.json", ("warranty", 1, 4), ("menu", 5, 0))
+    head = _write(tmp_path / "b.json", ("warranty", 5, 0), ("menu", 5, 0))
+    result = runner.invoke(app, ["compare", "--base", str(base), "--head", str(head)])
+    lines = result.output.splitlines()
+    menu = next(i for i, line in enumerate(lines) if "menu" in line)
+    # No reason and no means under a test where nothing moved.
+    assert "warranty" in lines[menu + 1] or not lines[menu + 1].startswith("      ")
+    # The one-round advice is said once, not once per test.
+    assert result.output.count("4 rounds of 5 rather than 1 of 20") == 1
+    assert "p 0.0476" in result.output
