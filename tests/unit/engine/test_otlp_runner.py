@@ -28,6 +28,7 @@ from highbar.domain.models import Test as Case
 from highbar.engine.placeholders import Values
 from highbar.engine.runner import TestRunner as Runner
 from tests.otlp_spans import agent_span, line, openinference_tool, tool_span
+from tests.unit.engine.fakes import FakeAgent
 
 Spans = Callable[[str], list[dict[str, Any]]]
 
@@ -47,7 +48,14 @@ class _OtlpAgent:
         return "ok"
 
 
-def _run(tmp_path: Path, spans: Spans, expect: Expect, *, runs: int = 1) -> RunSummary:
+def _run(
+    tmp_path: Path,
+    spans: Spans,
+    expect: Expect,
+    *,
+    runs: int = 1,
+    reporter: MagicMock | None = None,
+) -> RunSummary:
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "otel.jsonl"
     path.touch()
@@ -56,7 +64,7 @@ def _run(tmp_path: Path, spans: Spans, expect: Expect, *, runs: int = 1) -> RunS
         client=_OtlpAgent(path, spans),  # pyright: ignore[reportArgumentType]
         collector=FileTraceCollector(path, trace_format="otlp"),
         assertions=[FunctionCallsAssertion(), ResponseAssertion()],
-        reporter=MagicMock(),
+        reporter=reporter or MagicMock(),
         settle_time=0,
         managed=False,
         trace_format="otlp",
@@ -262,3 +270,51 @@ def test_a_late_span_fails_its_own_run(tmp_path: Path) -> None:
 
     first = summary.tests[0]
     assert first.status is Status.FAILED, first.errors
+
+
+def _warnings(reporter: MagicMock) -> list[str]:
+    return [call[0][0] for call in reporter.on_warning.call_args_list]
+
+
+def test_a_guardrail_warns_that_otlp_declares_no_tools(tmp_path: Path) -> None:
+    reporter = MagicMock()
+
+    (test,) = _run(
+        tmp_path,
+        lambda trace: [agent_span(trace)],
+        Expect(function_calls=[], forbid=("refund",)),
+        reporter=reporter,
+    ).tests
+
+    assert test.status is Status.PASSED, test.errors
+    (warning,) = [w for w in _warnings(reporter) if "refund" in w]
+    assert "OTLP trace file declares no tools" in warning
+    assert "only because no span of these tools was read" in warning
+    assert "execute_tool" in warning and "TOOL span" in warning
+    assert "hb.declare" not in warning and "Python SDK" not in warning
+
+
+def test_the_highbar_format_guardrail_warning_is_unchanged() -> None:
+    agent = FakeAgent()  # highbar's own contract, a writer that declares nothing
+    reporter = MagicMock()
+
+    Runner(
+        adapter=MagicMock(),
+        client=agent,  # pyright: ignore[reportArgumentType]
+        collector=agent,
+        assertions=[FunctionCallsAssertion()],
+        reporter=reporter,
+        settle_time=0,
+    ).run(
+        Spec(
+            agent=AgentConfig(endpoint="http://127.0.0.1:1/chat"),
+            suites=[Suite("S", [Case(trigger="hi", expect=Expect(forbid=("refund",)))])],
+        )
+    )
+
+    assert [w for w in _warnings(reporter) if "refund" in w] == [
+        "the agent has not declared the tools it records, so these guardrails cannot tell a "
+        "tool it never records from one it did not call: refund. highbar's Python SDK "
+        "declares them after each hello since 0.1.0rc2; another writer adds a `tools` record "
+        "(see the trace contract)"
+    ]

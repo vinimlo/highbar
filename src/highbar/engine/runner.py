@@ -139,6 +139,13 @@ UNDECLARED_WARNING = (
     "declares them after each hello since 0.1.0rc2; another writer adds a `tools` record "
     "(see the trace contract)"
 )
+# The same under agent.traces.format: otlp (HB-48), where nothing can declare tools.
+OTLP_UNDECLARED_WARNING = (
+    "an OTLP trace file declares no tools, so these guardrails passed only because no span "
+    "of these tools was read: {names}. A forbid, or function_calls: [], means something "
+    "only if every tool of the agent emits an execute_tool span (GenAI conventions) or an "
+    "OpenInference TOOL span"
+)
 
 
 # How often agent.reply: turn reads the trace file while it waits, in seconds.
@@ -1904,7 +1911,8 @@ class TestRunner:
             else name
             for name in unseen
         )
-        self._warn(UNDECLARED_WARNING.format(names=names))
+        template = OTLP_UNDECLARED_WARNING if self._otlp else UNDECLARED_WARNING
+        self._warn(template.format(names=names))
 
     def _warn_once(self, template: str, correlate: Mapping[Any, Any]) -> None:
         if template in self._warned:
