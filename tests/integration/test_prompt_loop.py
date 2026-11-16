@@ -84,9 +84,9 @@ def test_the_fix_is_adopted_and_the_regression_is_rejected(example: Path) -> Non
     assert "adopted prompts/fix-order-id.md" in output
     # The regressing candidate passes more tests than the baseline: only compare stops it.
     assert "prompts/hand-off-more.md: 3 of 4 tests passed" in output
-    assert f"rejected prompts/hand-off-more.md: highbar compare found a regression: {REFUND}" in (
-        output
-    )
+    lost = f"lost a test that passed in every baseline round: {REFUND}"
+    regression = f"highbar compare found a regression: {REFUND}"
+    assert f"rejected prompts/hand-off-more.md: {lost}; {regression}" in output
     assert re.search(rf"✗ worse\s+{re.escape(REFUND)}", output), output
 
     experience = (example / "EXPERIENCE.md").read_text(encoding="utf-8")
@@ -96,6 +96,8 @@ def test_the_fix_is_adopted_and_the_regression_is_rejected(example: Path) -> Non
     assert "### prompts/hand-off-more.md: rejected" in experience
     assert "highbar compare found a regression" in experience
     assert "3/4 tests passed (baseline 2/4)" in experience
+    assert "no test that passed in the baseline was lost" in experience
+    assert "found no regression" not in experience
     assert re.search(rf"✓ better\s+{re.escape(ORDER_ID)}", experience), experience
     assert re.search(rf"✗ worse\s+{re.escape(REFUND)}", experience), experience
     for report in re.findall(r"`([^`]+\.json)`", experience):
@@ -174,3 +176,24 @@ def test_propose_writes_the_candidate_and_dry_run_only_prints_it(example: Path) 
     assert "Never refund without an order id." in output  # the adopted prompt, printed
     experience = (example / "EXPERIENCE.md").read_text(encoding="utf-8")
     assert "proposed.md: adopted (dry run, not copied)" in experience
+
+
+@pytest.mark.timeout(600)
+def test_f1_with_one_run_a_round_the_lost_test_still_rejects(example: Path) -> None:
+    """Review of #101, F1: 3 executions a side are too few for compare's verdict, so it
+    exited 0, and the candidate that breaks the refund test was adopted."""
+    spec = example / "specs" / "prompt-loop.highbar.yaml"
+    text = spec.read_text(encoding="utf-8")
+    assert "defaults:\n  runs: 3\n" in text
+    spec.write_text(text.replace("defaults:\n  runs: 3\n", "defaults:\n  runs: 1\n"), "utf-8")
+
+    result = _loop(
+        example, "prompts/hand-off-more.md", "--max-cost", "0.01", "--cycle-max-cost", "0.2"
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert (example / "prompt.md").read_text(encoding="utf-8") == _prompt(example, "baseline.md")
+    assert "0 worse" in output  # compare could not tell
+    lost = "lost a test that passed in every baseline round"
+    assert f"rejected prompts/hand-off-more.md: {lost}: {REFUND}" in output

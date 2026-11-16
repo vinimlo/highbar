@@ -26,6 +26,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 EXIT_ADOPTED, EXIT_NOTHING_ADOPTED, EXIT_UNRUNNABLE = 0, 1, 2
+# highbar.compare.core.MIN_ROUNDS: below it, compare gives no verdict. Mirrored, not
+# imported, so the loop runs wherever the `highbar` command does (a container, a venv).
+MIN_ROUNDS = 3
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 STOPS = {
     2: "could not run",
@@ -103,6 +106,7 @@ class Comparison:
     worse: list[str]
     better: list[str]
     report: Path
+    no_verdict: list[str] = field(default_factory=list[str])  # compared, and no verdict
 
 
 @dataclass
@@ -140,10 +144,11 @@ def read_run(report: Path, exit_code: int) -> Run:
 def charge(run: Run, max_cost: float) -> float:
     """What a run counts against the cycle: its cost, or its ceiling when that is unknown.
 
-    Unknown is a report with no totals, totals that left something out, or costs in more
-    than one currency, which one ceiling cannot hold.
+    Unknown is a report with no totals, totals that left something out, no cost (tokens
+    for a model the price table lacks), or costs in more than one currency, which one
+    ceiling cannot hold.
     """
-    if run.cost is None or len(run.cost) > 1:
+    if run.cost is None or len(run.cost) != 1:
         return max(max_cost, sum(run.cost.values()) if run.cost else 0.0)
     return sum(run.cost.values())
 
@@ -161,19 +166,31 @@ def judge(baseline: Side, candidate: Side, comparison: Comparison | None) -> tup
     problem = candidate.problem()
     if problem:
         return False, problem
+    # The guard that needs no statistics: compare exits 0 with no verdict when it has too
+    # few executions to tell, and a test that passed every time must not be traded away.
+    kept = set(candidate.passed())
+    lost = [test for test in baseline.passed() if test not in kept]
+    reasons: list[str] = []
+    if lost:
+        reasons.append(f"lost a test that passed in every baseline round: {', '.join(lost)}")
     if comparison is None or comparison.exit_code not in (0, 1):
         code = comparison.exit_code if comparison else "none"
-        return False, f"highbar compare could not compare them (exit {code})"
-    if comparison.worse or comparison.exit_code == 1:
+        reasons.append(f"highbar compare could not compare them (exit {code})")
+    elif comparison.worse or comparison.exit_code == 1:
         worse = ", ".join(comparison.worse) or "see its output"
-        return False, f"highbar compare found a regression: {worse}"
+        reasons.append(f"highbar compare found a regression: {worse}")
+    if reasons or comparison is None:
+        return False, "; ".join(reasons)
     total = len(candidate.tests())
     passed, before = len(candidate.passed()), len(baseline.passed())
     if passed <= before:
         return False, f"{passed} of {total} tests passed, not more than the baseline's {before}"
+    # What was established, and no more: "no verdict" is not "no regression".
     return True, (
         f"{passed} of {total} tests passed, the baseline {before}; "
-        "highbar compare found no regression"
+        "no test that passed in the baseline was lost; "
+        f"highbar compare: {len(comparison.better)} better, {len(comparison.worse)} worse, "
+        f"{len(comparison.no_verdict)} no verdict"
     )
 
 
@@ -248,14 +265,16 @@ def compare(cycle: Cycle, name: str) -> Comparison:
         for line in output.splitlines()
         if "✓ better" in line or "✗ worse" in line or " compared |" in line
     ]
-    verdicts: dict[str, list[str]] = {"better": [], "worse": []}
+    verdicts: dict[str, list[str]] = {"better": [], "worse": [], "none": []}
     try:
         for row in json.loads(report.read_text(encoding="utf-8"))["tests"]:
-            if row.get("verdict") in verdicts:
-                verdicts[row["verdict"]].append(str(row["test"]))
+            verdict = row.get("verdict") or ("none" if row.get("compared") else None)
+            if verdict in verdicts:
+                verdicts[verdict].append(str(row["test"]))
     except (OSError, ValueError, KeyError, TypeError):
         pass  # no report: the exit code says compare could not run
-    return Comparison(done.returncode, lines, verdicts["worse"], verdicts["better"], report)
+    worse, better, none = verdicts["worse"], verdicts["better"], verdicts["none"]
+    return Comparison(done.returncode, lines, worse, better, report, none)
 
 
 def propose(cycle: Cycle, baseline: Side) -> list[Path] | None:
@@ -345,7 +364,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--max-cost", type=float, required=True, help="each run's ceiling")
     parser.add_argument("--cycle-max-cost", type=float, required=True, help="the cycle's")
-    parser.add_argument("--rounds", type=int, default=3, help="runs a side (default 3)")
+    parser.add_argument("--rounds", type=int, default=MIN_ROUNDS, help="runs a side (at least 3)")
     parser.add_argument("--spec", default="specs", help="spec or folder (default specs)")
     parser.add_argument("--prompt-env", default="PROMPT_FILE", help="names the prompt's path")
     parser.add_argument("--runs-dir", type=Path, default=Path("loop-runs"))
@@ -357,8 +376,10 @@ def parse(argv: list[str]) -> argparse.Namespace:
         parser.error("give 1 or 2 candidate prompts, or --propose CMD")
     if len(args.candidates) > 2:
         parser.error("at most 2 candidates a cycle")
-    if args.rounds < 1:
-        parser.error("--rounds must be at least 1")
+    if args.rounds < MIN_ROUNDS:
+        parser.error(
+            f"--rounds must be at least {MIN_ROUNDS}: with fewer, highbar compare gives no verdict"
+        )
     for path in [args.prompt, *args.candidates]:
         if not path.is_file():
             parser.error(f"{path}: no such file")

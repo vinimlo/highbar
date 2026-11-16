@@ -69,7 +69,14 @@ TWO_FIXED = {"s/a": "passed", "s/b": "passed", "s/c": "passed"}
 
 
 def _clean(loop: ModuleType) -> Any:
-    return loop.Comparison(exit_code=0, lines=[], worse=[], better=["s/b"], report=Path("c.json"))
+    return loop.Comparison(
+        exit_code=0,
+        lines=[],
+        worse=[],
+        better=["s/b"],
+        report=Path("c.json"),
+        no_verdict=["s/a", "s/c"],
+    )
 
 
 def test_a_candidate_that_passes_more_with_no_regression_is_adopted(
@@ -81,7 +88,75 @@ def test_a_candidate_that_passes_more_with_no_regression_is_adopted(
     adoptable, reason = loop.judge(base, head, _clean(loop))
 
     assert adoptable, reason
-    assert "2 of 3 tests passed, the baseline 1" in reason
+    assert reason == (
+        "2 of 3 tests passed, the baseline 1; no test that passed in the baseline was lost; "
+        "highbar compare: 1 better, 0 worse, 2 no verdict"
+    )
+
+
+LOST_A = {"s/a": "failed", "s/b": "passed", "s/c": "passed"}
+
+
+def test_f1_a_lost_test_rejects_when_compare_has_no_verdict(
+    loop: ModuleType, tmp_path: Path
+) -> None:
+    """Review of #101, F1: with too few executions compare exits 0 with no verdict, and a
+    candidate that broke a test the baseline passed was adopted."""
+    base = _side(loop, tmp_path, "base", (BASE, 1), (BASE, 1), (BASE, 1))
+    head = _side(loop, tmp_path, "head", (LOST_A, 1), (LOST_A, 1), (LOST_A, 1))
+    silent = loop.Comparison(
+        exit_code=0, lines=[], worse=[], better=[], report=Path("c"), no_verdict=["s/a", "s/b"]
+    )
+
+    adoptable, reason = loop.judge(base, head, silent)
+
+    assert not adoptable
+    assert reason == "lost a test that passed in every baseline round: s/a"
+
+
+def test_f1_a_test_lost_in_one_round_is_lost(loop: ModuleType, tmp_path: Path) -> None:
+    base = _side(loop, tmp_path, "base", (BASE, 1), (BASE, 1), (BASE, 1))
+    head = _side(loop, tmp_path, "head", (TWO_FIXED, 0), (LOST_A, 1), (TWO_FIXED, 0))
+
+    adoptable, reason = loop.judge(base, head, _clean(loop))
+
+    assert not adoptable
+    assert reason == "lost a test that passed in every baseline round: s/a"
+
+
+def test_f1_compare_worse_is_a_second_reason(loop: ModuleType, tmp_path: Path) -> None:
+    base = _side(loop, tmp_path, "base", (BASE, 1), (BASE, 1), (BASE, 1))
+    head = _side(loop, tmp_path, "head", (LOST_A, 1), (LOST_A, 1), (LOST_A, 1))
+    worse = loop.Comparison(exit_code=1, lines=[], worse=["s/a"], better=[], report=Path("c"))
+
+    adoptable, reason = loop.judge(base, head, worse)
+
+    assert not adoptable
+    assert reason == (
+        "lost a test that passed in every baseline round: s/a; "
+        "highbar compare found a regression: s/a"
+    )
+
+
+@pytest.mark.parametrize("rounds", ["1", "2"])
+def test_f1_rounds_below_compare_minimum_cannot_run(
+    loop: ModuleType, tmp_path: Path, rounds: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prompt = tmp_path / "p.md"
+    prompt.write_text("x", encoding="utf-8")
+    argv = [str(prompt), "--prompt", str(prompt), "--max-cost", "1", "--cycle-max-cost", "9"]
+
+    with pytest.raises(SystemExit) as exited:
+        loop.parse([*argv, "--rounds", rounds])
+
+    assert exited.value.code == 2
+    assert "--rounds must be at least 3" in capsys.readouterr().err
+
+
+def test_f1_the_minimum_is_compares(loop: ModuleType) -> None:
+    from highbar.compare.core import MIN_ROUNDS
+
+    assert loop.MIN_ROUNDS == MIN_ROUNDS
 
 
 def test_a_run_stopped_by_max_cost_is_not_adoptable(loop: ModuleType, tmp_path: Path) -> None:
@@ -174,10 +249,13 @@ def test_a_run_with_no_known_cost_is_charged_its_ceiling(loop: ModuleType, tmp_p
     known = loop.read_run(_report(tmp_path, "k", BASE, cost={"USD": 0.004}), 0)
     unknown = loop.read_run(_report(tmp_path, "u", BASE), 0)
     two = loop.read_run(_report(tmp_path, "t", BASE, cost={"USD": 0.004, "EUR": 0.001}), 0)
+    # Totals complete, no cost in them: tokens for a model the price table lacks.
+    none = loop.read_run(_report(tmp_path, "n", BASE, cost={}), 0)
 
     assert loop.charge(known, 0.01) == pytest.approx(0.004)
     assert loop.charge(unknown, 0.01) == 0.01
     assert loop.charge(two, 0.01) == 0.01
+    assert loop.charge(none, 0.01) == 0.01
 
 
 def test_a_missing_report_is_a_run_that_cannot_be_judged(loop: ModuleType, tmp_path: Path) -> None:
