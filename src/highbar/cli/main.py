@@ -494,6 +494,62 @@ def compare(
 
 
 @app.command()
+def redteam(
+    spec_path: Annotated[str, typer.Argument(help="The spec whose agent the attacks target.")],
+    allow: Annotated[
+        list[str] | None,
+        typer.Option("--allow", help="A tool an attack may make the agent call. Repeatable."),
+    ] = None,
+    secret: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--secret",
+            help="Text no reply may hold, such as a line of the system prompt. "
+            "Written into the file. Repeatable.",
+        ),
+    ] = None,
+    lang: Annotated[
+        list[str] | None,
+        typer.Option("--lang", help="Only these languages: en, pt, es. Repeatable."),
+    ] = None,
+    out: Annotated[
+        str | None,
+        typer.Option("--out", help="Where to write it. Default: next to the spec."),
+    ] = None,
+    force: Annotated[
+        bool, typer.Option("--force", help="Write over an attack file already there.")
+    ] = False,
+) -> None:
+    """Write a spec of attacks on the agent's guardrails; run it with `highbar run`."""
+    from highbar.redteam import AttackFileExists, write_attacks
+
+    try:
+        target = write_attacks(
+            Path(spec_path),
+            allow=allow or (),
+            secrets=secret or (),
+            languages=lang,
+            out=Path(out) if out else None,
+            force=force,
+        )
+    except (SpecError, OSError, ValueError) as exc:
+        if isinstance(exc, AttackFileExists):
+            message = (
+                f"{exc} is already there, and may hold your edits: "
+                "pass --force to write it again, or --out for another file."
+            )
+        else:
+            message = str(exc)
+        console.print(f"[red]{escape(message)}[/red]", soft_wrap=True)
+        raise typer.Exit(EXIT_UNRUNNABLE) from exc
+    count = len(parse_spec(str(target)).suites[0].tests)
+    console.print(f"  Wrote {count} attacks to {escape(str(target))}.", soft_wrap=True)
+    console.print(
+        f"  Run them with: [bold]highbar run {escape(str(target))}[/bold]", soft_wrap=True
+    )
+
+
+@app.command()
 def validate(
     spec_path: str = typer.Argument(
         default="",
