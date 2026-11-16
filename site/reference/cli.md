@@ -114,14 +114,15 @@ It exits 2 when a report cannot be read, a folder holds no report, or no test is
 
 ## `highbar export braintrust REPORT --project NAME`
 
-Sends a finished run's `--report json=` file to Braintrust as an experiment, one event per execution, scored `highbar`: 1 passed, 0 failed, `null` error. The key is read from `BRAINTRUST_API_KEY`. See [exporting results](/guides/exporting-results).
+Sends a finished run's `--report json=` file to Braintrust as an experiment, one event per execution, scored `highbar` (1 passed, 0 failed, `null` error) and `highbar_verified` (1 passed or failed, 0 error). The key is read from `BRAINTRUST_API_KEY`. See [exporting results](/guides/exporting-results).
 
 - `--project NAME`: the Braintrust project; created if it is not there.
 - `--experiment NAME`: the experiment. Default: the report file's name and the run's start, such as `run 2026-11-16T12:00:00.250Z`.
 - `--api-key-env VAR`: read the key from `VAR` instead.
 - `--api-url URL`: the Braintrust API. Default `https://api.braintrust.dev`.
+- `--partial`: send a run that stopped before every test ran (`complete: false`), marked as partial in the experiment's metadata.
 
-It exits 2, sending nothing, for a file that is not a highbar JSON report, an unknown `schema_version`, a run that did not finish (`exit_code: null`), or a missing key. It exits 1 when Braintrust refuses a request after three retries of a `429` or a `5xx`, and says how many events were sent; sending again is safe.
+It exits 2, sending nothing, for a file that is not a highbar JSON report, an unknown `schema_version`, a run that did not finish (`exit_code: null`), a run that stopped before every test ran without `--partial`, or a key that is missing, empty, or not printable ASCII once trimmed. It exits 1 when Braintrust refuses a request after three retries of a `429` or a `5xx`, and says how many events were sent; sending again is safe.
 
 ## `highbar redteam SPEC_PATH`
 
