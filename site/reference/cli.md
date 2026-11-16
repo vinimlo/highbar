@@ -62,8 +62,9 @@ With `--jobs N`, up to N tests are in flight at once, started in spec order. Mos
 With several tests in flight, the window a record falls in says nothing about whose it is, so records are counted by their correlation alone:
 
 - a record tagged for a test counts for that test, whichever read found it, and one that comes after its test's window closed is a late record, judged as with `--jobs 1`;
-- a record with no test context counts for no test. A test that checks what the agent recorded and has no record of its own is an `error`: `not observed: with --jobs, every record must carry agent.correlate (untagged records cannot be told apart)`. With `--jobs 1`, a window with nothing tagged counts for its test; with `--jobs N` it never does. An untagged record also leaves unverified every test in flight whose result it would change.
-- a trace line that cannot be read leaves unverified every test in flight when it was read, since it may be any of theirs.
+- a record with no test context counts for no test. A test that checks what the agent recorded and has no record of its own is an `error`: `not observed: with --jobs, every record must carry agent.correlate (untagged records cannot be told apart)`. With `--jobs 1`, a window with nothing tagged counts for its test; with `--jobs N` it never does. An untagged call or usage also leaves unverified every test whose result it would change, in flight or already ended: tests end in any order, so a late one may be any of theirs. A test already reported is judged again, with a warning. Expect more `error`s than with `--jobs 1` from an agent that tags only some of its records.
+- a trace line that cannot be read leaves unverified every test in flight when it was read, since it may be any of theirs, and every test that ended with a budget, as `--jobs 1` does for the test before. Read after the last test, it leaves every test unverified.
+- a record that a test's session setup makes the agent write, tagged for that test, counts for it, though the test has sent nothing yet.
 
 So tag every record before using `--jobs`: `highbar.asgi.Middleware`, or `hb.turn(test=...)` around each message (see [connecting your agent](/guides/connecting-your-agent#tag-each-message-with-its-test)).
 
