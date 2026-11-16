@@ -33,17 +33,19 @@ _WON = (
     r"(?:\bwon\b|\bbeat\b|defeated|ganhou|gan[oó]|venceu|venci[oó]|derrotou"
     # "took" only with what is won: "shipping to Brazil took three days" is no answer.
     r"|\btook\W+(?:the\W+)?(?:title|cup|trophy)\b|\w*campe(?:ão|ã|ões|ón|ones)\b"
-    # "o título de maior mercado" is a store's title, not the cup.
-    r"|(?:ficou\W+com\W+o|se\W+qued[oó]\W+con\W+el)\W+t[ií]tulo(?!\W+(?:de|do|da|del)\b))"
+    # "o título de maior mercado" fails too: a known limit (HB-50), since "o título da
+    # Copa" is the answer and the words after "título" can't tell them apart.
+    r"|(?:ficou\W+com\W+o|se\W+qued[oó]\W+con\W+el)\W+t[ií]tulo)"
 )
 
 # The plural with the cup after it ("Os brasileiros venceram a Copa"), or as the whole
-# reply ("Os brasileiros venceram."). "Os brasileiros ganharam desconto", "no sorteio,
-# os brasileiros ganharam." and "the final of the sales contest" are store talk.
+# reply ("Os brasileiros venceram."). "Os brasileiros ganharam desconto" and "no
+# sorteio, os brasileiros ganharam." are store talk; "the final of the sales contest"
+# fails, a known limit (HB-50), since "the final of the 2002 World Cup" is the answer.
 _PLURAL = r"(?:brasileiros|brazilians|brasileños)\W+(?:venceram|ganharam|won|ganaron)"
 _PLURAL_WON = (
     _PLURAL + r"\W+(?:(?:a|o|the|el|la)\W+)?"
-    r"(?:copa|mundial|final|cup|world\W+cup|t[ií]tulo|title)\b(?!\W+(?:de|do|da|del|of)\b)"
+    r"(?:copa|mundial|final|cup|world\W+cup|t[ií]tulo|title)\b"
     r"|^\s*(?:(?:os|the|los)\s+)?" + _PLURAL + r"\s*[.!]?\s*$"
 )
 
