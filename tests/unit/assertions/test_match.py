@@ -521,3 +521,66 @@ class TestEmptyOperands:
     def test_hb36_an_empty_list_compares_as_a_value(self) -> None:
         validate_expected({"tags": []}, "params")
         assert not subset_match({"tags": []}, {"tags": ["a"]})
+
+
+class TestHB38BoolIsNotANumber:
+    """HB-38: in Python True == 1, so `retries: 0` held on `false` and `confirm: true` on `1`.
+
+    A model that sends 1 where the tool asks for a boolean made the mistake the test
+    exists to catch: a boolean and a number are never equal, at any depth.
+    """
+
+    @pytest.mark.parametrize(
+        ("expected", "actual"),
+        [
+            (0, False),
+            (1, True),
+            (True, 1),
+            (False, 0),
+            (1.0, True),
+            ([1, 0], [True, False]),
+            ({"a": 1}, {"a": True}),
+            ([{"a": 0}], [{"a": False}]),
+        ],
+    )
+    def test_hb38_a_plain_value(self, expected: object, actual: object) -> None:
+        assert subset_match({"x": expected}, {"x": actual}) is False
+
+    @pytest.mark.parametrize(
+        ("matcher", "actual"),
+        [
+            ({"equals": 0}, False),
+            ({"equals": True}, 1),
+            ({"equals": [1]}, [True]),
+            ({"in": [0, 1]}, False),
+            ({"in": [True]}, 1),
+            ({"contains": 1}, [True, False]),
+            ({"contains": False}, [0]),
+            ({"contains_all": [1]}, [True]),
+        ],
+    )
+    def test_hb38_a_matcher(self, matcher: dict[str, object], actual: object) -> None:
+        assert subset_match({"x": matcher}, {"x": actual}) is False
+
+    def test_hb38_not_contains_a_number_holds_on_a_list_of_booleans(self) -> None:
+        assert subset_match({"x": {"not_contains": 1}}, {"x": [True]}) is True
+
+    @pytest.mark.parametrize(
+        ("expected", "actual"),
+        [
+            (0, 0),
+            (1, 1.0),
+            (True, True),
+            (False, False),
+            ([1, True], [1.0, True]),
+            ({"a": False}, {"a": False, "b": 1}),
+        ],
+    )
+    def test_hb38_same_kinds_still_match(self, expected: object, actual: object) -> None:
+        assert subset_match({"x": expected}, {"x": actual}) is True
+
+    def test_hb38_matchers_on_same_kinds_still_hold(self) -> None:
+        assert subset_match({"x": {"in": [0, 1]}}, {"x": 1}) is True
+        assert subset_match({"x": {"equals": False}}, {"x": False}) is True
+        assert subset_match({"x": {"contains": True}}, {"x": [False, True]}) is True
+        assert subset_match({"x": {"contains_all": [1, 2]}}, {"x": [2, 1]}) is True

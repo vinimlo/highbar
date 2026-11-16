@@ -37,7 +37,7 @@ expect:
 
 | Matcher | Holds when the value |
 |---|---|
-| `equals` | is exactly the operand. Use it to compare a whole object, or an object that looks like a matcher. |
+| `equals` | is exactly the operand. Use it to compare a whole object, or an object that looks like a matcher. A boolean is never a number: `0` is not `false`, and `1` is not `true`. |
 | `contains`, `icontains` | contains the text (`icontains` ignores case). For a list: has the item. |
 | `not_contains`, `not_icontains` | does not contain it. |
 | `matches`, `not_matches` | matches the regular expression somewhere (Python's `re.search`), or does not. **Case-sensitive:** `matches: "eleven years"` fails on "Eleven years" at the start of a sentence. |
