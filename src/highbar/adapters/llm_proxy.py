@@ -6,6 +6,14 @@ unchanged, and the reply comes back unchanged, streaming included. On the way, t
 reads the usage the provider reports and writes one `llm` record per call to the trace
 file, with ``source: "proxy"``.
 
+One request is changed: an OpenAI chat stream that does not set
+``stream_options.include_usage`` is sent with it set, and with ``Accept-Encoding:
+identity``, since without it the stream has no usage. The client still gets the stream it
+would get directly: the chunk the upstream adds for it (``choices: []`` and a ``usage``)
+is read and not forwarded, and every other byte is the upstream's, ``data: [DONE]``
+included. Each event of that stream reaches the client when it ends, not byte by byte.
+A stream the upstream compresses anyway is passed as it is, that chunk included.
+
 A call whose usage it cannot read is recorded with ``read: false`` and the reason in
 ``unread``: it is never written as zero tokens. The record is in the trace file before
 the client has the last byte of the reply, so an agent that writes its `turn` after the
@@ -343,25 +351,77 @@ def _request_model(body: bytes) -> str | None:
     return _label(request.get("model")) if request is not None else None
 
 
-def _with_stream_usage(body: bytes) -> bytes:
+def _with_stream_usage(body: bytes) -> tuple[bytes, bool]:
     """An OpenAI chat stream asks for its usage, unless it says something already.
 
     Without ``stream_options.include_usage`` the stream has no usage, and the call would
-    be unread. One that sets it, to true or to false, is sent as it is.
+    be unread. One that sets it, to true or to false, is sent as it is. The flag says
+    whether the proxy set it, and so owes the client the stream without that chunk.
     """
     try:
         request = as_dict(json.loads(body))
     except (ValueError, UnicodeDecodeError):
-        return body
+        return body, False
     if request is None or request.get("stream") is not True:
-        return body
+        return body, False
     options = request.get("stream_options")
     if options is None:
         options = {}
     elif as_dict(options) is None or "include_usage" in options:
-        return body
+        return body, False
     request["stream_options"] = {**options, "include_usage": True}
-    return json.dumps(request, ensure_ascii=False).encode()
+    return json.dumps(request, ensure_ascii=False).encode(), True
+
+
+class _WithoutUsageChunk:
+    """A stream's bytes, less the usage chunk the proxy asked for in the client's place.
+
+    That chunk is the event whose data has ``choices: []`` and a ``usage`` object: the
+    one OpenAI adds for ``include_usage``. Every other event goes out as its own bytes,
+    once its blank line has come. A usage on a chunk with choices goes out with it.
+    """
+
+    def __init__(self) -> None:
+        self._held = bytearray()  # the line not yet ended
+        self._event = bytearray()  # the lines of the event not yet ended
+        self._data: list[bytes] = []
+
+    def feed(self, data: bytes) -> bytes:
+        """What can go to the client now."""
+        self._held.extend(data)
+        out = bytearray()
+        while (newline := self._held.find(b"\n")) >= 0:
+            line = bytes(self._held[: newline + 1])
+            del self._held[: newline + 1]
+            self._event.extend(line)
+            text = line.rstrip(b"\r\n")
+            if text.startswith(b"data:"):
+                value = text[5:]
+                self._data.append(value[1:] if value.startswith(b" ") else value)
+            elif not text:
+                if not self._is_usage_chunk():
+                    out.extend(self._event)
+                self._event.clear()
+                self._data.clear()
+        return bytes(out)
+
+    def end(self) -> bytes:
+        """At the stream's end, what is left: an event without its blank line goes as is."""
+        rest = bytes(self._event + self._held)
+        self._event.clear()
+        self._held.clear()
+        return rest
+
+    def _is_usage_chunk(self) -> bool:
+        try:
+            event = as_dict(json.loads(b"\n".join(self._data)))
+        except (ValueError, UnicodeDecodeError):
+            return False
+        return (
+            event is not None
+            and event.get("choices") == []
+            and as_dict(event.get("usage")) is not None
+        )
 
 
 def _readable_encodings(value: str | None) -> str:
@@ -480,10 +540,16 @@ class _Handler(BaseHTTPRequestHandler):
             headers.append(
                 ("Accept-Encoding", _readable_encodings(self.headers.get("Accept-Encoding")))
             )
+        injected = False
         if endpoint == "chat":
-            body = _with_stream_usage(body)
+            body, injected = _with_stream_usage(body)
+        if injected:
+            # The proxy takes a chunk out of this stream, which it can do only uncompressed.
+            headers = [(k, v) for k, v in headers if k.lower() != "accept-encoding"]
+            headers.append(("Accept-Encoding", "identity"))
         test = self.headers.get(TEST_HEADER)
         call = _Call(proxy, upstream, endpoint, test, _request_model(body) if endpoint else None)
+        call.injected = injected
         if endpoint is None:
             call.passed = (
                 f"the proxy does not read {self.command} {path} of the '{name}' upstream"
@@ -537,6 +603,17 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(raw_length) if raw_length is not None and raw_length.isdigit() else None
         if "transfer-encoding" in response.headers:
             length = None
+        strip = (
+            _WithoutUsageChunk()
+            if call.injected
+            and reading is not None
+            and reading.stream
+            and (response.headers.get("Content-Encoding") or "identity").strip().lower()
+            == "identity"
+            else None
+        )
+        if strip is not None:
+            length = None  # the client gets fewer bytes than the upstream sent
         if no_body:
             if raw_length is not None:
                 self.send_header("Content-Length", raw_length)
@@ -559,7 +636,9 @@ class _Handler(BaseHTTPRequestHandler):
                     reading.feed(raw)
                 if length is not None and sent + len(raw) >= length:
                     call.finish(reading, error=error)  # before the client has the last byte
-                self._write(raw, chunked)
+                out = strip.feed(raw) if strip is not None else raw
+                if out:
+                    self._write(out, chunked)
                 sent += len(raw)
         except httpx.HTTPError as exc:
             call.record(None, f"the reply was cut off ({type(exc).__name__})", error=error)
@@ -570,6 +649,9 @@ class _Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             return
         call.finish(reading, error=error)
+        rest = strip.end() if strip is not None else b""
+        if rest:
+            self._write(rest, chunked)
         if chunked:
             self.wfile.write(b"0\r\n\r\n")
         self.wfile.flush()
@@ -603,6 +685,7 @@ class _Call:
         self.started = time.monotonic()
         self.recorded = False
         self.passed = "the call was not read"  # why, for a call passed through unread
+        self.injected = False  # the proxy set include_usage on this stream
 
     def finish(self, reading: _Reading | None, *, error: str | None) -> None:
         if self.recorded:

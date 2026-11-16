@@ -128,7 +128,7 @@ A call whose usage it could not read is recorded all the same, with `"read": fal
 {"v": 1, "type": "llm", "ts": 1792983751.020, "source": "proxy", "model": "gpt-4o-mini-2024-07-18", "provider": "openai", "read": false, "unread": "the stream ended without usage", "latency_ms": 1301.7}
 ```
 
-For an OpenAI chat stream that does not set `stream_options.include_usage`, the proxy sets it to `true`, so the stream's last chunk, with no `choices`, carries the usage; one that sets it to `false` is sent as it is, and recorded unread. The proxy never logs a header, a URL or a body, and never writes a key or a body to the trace.
+For an OpenAI chat stream that does not set `stream_options.include_usage`, the proxy sets it to `true`, and asks for the stream uncompressed. It reads the usage from the chunk the upstream adds for it, the one with `"choices": []`, and does not forward that chunk, so the agent gets the stream it would get directly, `data: [DONE]` included. A stream that sets `include_usage` itself gets that chunk as usual, and one that sets it to `false` is sent as it is and recorded unread. The proxy never logs a header, a URL or a body, and never writes a key or a body to the trace.
 
 ## `retrieval`: what entered the prompt
 

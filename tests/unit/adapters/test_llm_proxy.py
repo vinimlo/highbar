@@ -40,6 +40,9 @@ class Answer:
     headers: dict[str, str] = field(default_factory=dict[str, str])
     events: list[bytes] | None = None  # sent chunked, one write each
     cut: bool = False  # the connection closes before the stream's end
+    # What a stream is when the request sets stream_options.include_usage, as OpenAI
+    # answers: one more chunk, with `choices: []` and the usage. None: always `events`.
+    usage_events: list[bytes] | None = None
 
 
 @dataclass
@@ -48,6 +51,14 @@ class Received:
     path: str
     headers: dict[str, str]
     body: bytes
+
+
+def _asks_for_usage(body: bytes) -> bool:
+    try:
+        options = json.loads(body).get("stream_options") or {}
+    except ValueError:
+        return False
+    return options.get("include_usage") is True
 
 
 class FakeUpstream:
@@ -79,7 +90,10 @@ class FakeUpstream:
                     return
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
-                for event in answer.events:
+                events = answer.events
+                if answer.usage_events is not None and _asks_for_usage(body):
+                    events = answer.usage_events
+                for event in events:
                     self.wfile.write(f"{len(event):x}\r\n".encode() + event + b"\r\n")
                     self.wfile.flush()
                 if answer.cut:
@@ -369,36 +383,68 @@ CHAT_STREAM = _sse(
 )
 
 
-def test_hb30_an_openai_stream_asks_for_usage_and_reads_the_last_chunk(
+CHAT_STREAM_WITHOUT_USAGE = _sse(_chat_chunk("Hel"), _chat_chunk("lo"), "[DONE]")
+
+
+def test_hb30_a_stream_the_proxy_asked_usage_for_reaches_the_client_as_it_would_directly(
     upstream: FakeUpstream, proxy: LlmProxy, trace: Path
 ) -> None:
+    # The usage chunk has `choices: []`: a loop on `chunk.choices[0]` raises IndexError on
+    # it, so an agent the proxy hands it would fail only because highbar is in front.
     upstream.answers["/v1/chat/completions"] = Answer(
-        headers=SSE_HEADERS, events=_pieces(CHAT_STREAM)
+        headers=SSE_HEADERS,
+        events=_pieces(CHAT_STREAM_WITHOUT_USAGE),
+        usage_events=_pieces(CHAT_STREAM),
     )
+    request = {**CHAT_REQUEST, "stream": True}
 
-    reply = _post(f"{proxy.base_url('openai')}/chat/completions", {**CHAT_REQUEST, "stream": True})
+    direct = _post(f"{upstream.url}/v1/chat/completions", request)
+    proxied = _post(f"{proxy.base_url('openai')}/chat/completions", request)
 
-    assert reply.content == CHAT_STREAM
-    (received,) = upstream.received
-    assert json.loads(received.body)["stream_options"] == {"include_usage": True}
-    assert json.loads(received.body)["messages"] == CHAT_REQUEST["messages"]
+    assert direct.content == CHAT_STREAM_WITHOUT_USAGE
+    assert proxied.content == direct.content
+    sent_direct, sent_proxied = upstream.received
+    assert "stream_options" not in json.loads(sent_direct.body)
+    assert json.loads(sent_proxied.body)["stream_options"] == {"include_usage": True}
+    assert json.loads(sent_proxied.body)["messages"] == CHAT_REQUEST["messages"]
+    assert sent_proxied.headers["Accept-Encoding"] == "identity"  # the chunk comes out plain
     (call,) = _calls(trace)
     assert call.read is True and call.model == "gpt-4o-mini-2024-07-18"
     assert (call.input_tokens, call.output_tokens) == (1000, 200)
 
 
+def test_hb30_usage_on_a_chunk_with_choices_is_read_and_forwarded(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    # Some providers put the usage on the last chunk that still has choices: the client
+    # gets that chunk either way, so it goes through as it is.
+    last = _chat_chunk("lo", {"prompt_tokens": 30, "completion_tokens": 4})
+    stream = _sse(_chat_chunk("Hel"), last, "[DONE]")
+    upstream.answers["/v1/chat/completions"] = Answer(headers=SSE_HEADERS, events=[stream])
+
+    reply = _post(f"{proxy.base_url('openai')}/chat/completions", {**CHAT_REQUEST, "stream": True})
+
+    assert reply.content == stream
+    (call,) = _calls(trace)
+    assert call.read is True and (call.input_tokens, call.output_tokens) == (30, 4)
+
+
 def test_hb30_a_stream_that_asks_for_usage_goes_through_byte_for_byte(
     upstream: FakeUpstream, proxy: LlmProxy, trace: Path
 ) -> None:
-    upstream.answers["/v1/chat/completions"] = Answer(headers=SSE_HEADERS, events=[CHAT_STREAM])
+    # The client asked for the usage chunk: it gets it, as it would directly.
+    upstream.answers["/v1/chat/completions"] = Answer(
+        headers=SSE_HEADERS, events=_pieces(CHAT_STREAM)
+    )
     sent = b'{"model":"gpt-4o-mini","stream":true,  "stream_options":{"include_usage":true}}'
 
-    httpx.post(f"{proxy.base_url('openai')}/chat/completions", content=sent, timeout=10)
+    reply = httpx.post(f"{proxy.base_url('openai')}/chat/completions", content=sent, timeout=10)
 
+    assert reply.content == CHAT_STREAM
     (received,) = upstream.received
     assert received.body == sent
     (call,) = _calls(trace)
-    assert call.read is True
+    assert call.read is True and (call.input_tokens, call.output_tokens) == (1000, 200)
 
 
 def test_hb30_an_openai_stream_without_usage_is_unread_not_zero(
