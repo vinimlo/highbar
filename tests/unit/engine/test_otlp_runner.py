@@ -367,6 +367,31 @@ def test_f1_the_warning_names_the_lost_trace_context(tmp_path: Path) -> None:
     assert "X-Highbar-Test" not in warning and "highbar.asgi" not in warning
 
 
+def test_f1_the_warning_gives_the_otlp_fix_not_the_sdk_tag(tmp_path: Path) -> None:
+    """Review of #98, note 1: the advice at the end is OpenTelemetry's, not the SDK's."""
+    reporter = MagicMock()
+
+    _run(tmp_path, _stray_refund, NO_REFUND, reporter=reporter)
+
+    (warning,) = [w for w in _warnings(reporter) if "count for no test" in w]
+    assert "to keep the tag" not in warning
+    assert "opentelemetry.context.attach" in warning
+
+
+def test_f1_the_usage_warning_gives_the_otlp_fix_not_the_sdk_tag(tmp_path: Path) -> None:
+    def spans(trace: str) -> list[dict[str, Any]]:
+        return [agent_span(FRESH, input_tokens=50, output_tokens=5), agent_span(trace)]
+
+    reporter = MagicMock()
+
+    _run(tmp_path, spans, NO_REFUND, reporter=reporter)
+
+    (warning,) = [w for w in _warnings(reporter) if "usage" in w and "no test" in w]
+    assert "trace id" in warning
+    assert "to keep the tag" not in warning
+    assert "opentelemetry.context.attach" in warning
+
+
 def test_f1_only_spans_of_a_fresh_trace_are_not_observed(tmp_path: Path) -> None:
     (test,) = _run(tmp_path, lambda trace: [tool_span(FRESH, "refund", {})], NO_REFUND).tests
 

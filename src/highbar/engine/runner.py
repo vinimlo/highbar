@@ -110,24 +110,22 @@ NO_PROXY_CALL_WARNING = (
 # A window with no tagged record: its untagged calls are all there is, and count.
 NO_CONTEXT_WARNING = (
     "some tool calls carry {untagged}, so each counts for the test whose window it falls "
-    "in, and a call that ends after the response can land in the next test; {hint}; a "
-    "thread the agent starts itself needs contextvars.copy_context() to keep the tag"
+    "in, and a call that ends after the response can land in the next test; {hint}; "
+    "{thread}"
 )
 
 # The same for usage: nothing ties a `turn` to its test, so the test before answers for it too.
 NO_CONTEXT_USAGE_WARNING = (
     "some `turn` records with usage carry {untagged}, so each counts for the test whose window "
     "it falls in, and the test before it, which may have spent it, is an error if its budget "
-    "holds only without it; {hint}; a thread the agent starts itself needs "
-    "contextvars.copy_context() to keep the tag"
+    "holds only without it; {hint}; {thread}"
 )
 
 # What that test says. Nothing needs to be late: tests that pass a limit together are enough.
 NO_CONTEXT_USAGE_ERROR = (
     "cannot tell which test spent the usage read in the next test's window: its `turn` records "
     "carry {untagged}, and this test keeps to its budget only without it; {hint}, and each "
-    "counts for the test that spent it; a thread the agent starts itself needs "
-    "contextvars.copy_context() to keep the tag"
+    "counts for the test that spent it; {thread}"
 )
 
 # A line read after a test's window that cannot be read may be that test's late usage.
@@ -139,15 +137,14 @@ UNREADABLE_USAGE_ERROR = (
 # Next to tagged records, an untagged call counts for no test (PR 14 review I1).
 UNATTRIBUTED_WARNING = (
     "some tool calls carry {untagged}, so they count for no test, and a test whose result "
-    "they would change is an error; {hint}; a thread the agent starts itself needs "
-    "contextvars.copy_context() to keep the tag"
+    "they would change is an error; {hint}; {thread}"
 )
 
 # The same for usage: a `turn` that lost its context is in no sum, and no budget passes on it.
 UNATTRIBUTED_USAGE_WARNING = (
     "some `turn` records with usage carry {untagged}, so they count for no test and the sums "
-    "are incomplete, and a test whose budget they would change is an error; {hint}; a thread "
-    "the agent starts itself needs contextvars.copy_context() to keep the tag"
+    "are incomplete, and a test whose budget they would change is an error; {hint}; "
+    "{thread}"
 )
 
 # With --jobs, a record names its test or it counts for none (HB-8): several tests are
@@ -166,12 +163,16 @@ UNDECLARED_WARNING = (
 # Under agent.traces.format: otlp (HB-48), a span's trace id is its test: one highbar
 # did not send means the agent lost the trace context (review of #98, F1).
 OTLP_UNTAGGED = "a trace id highbar did not send"
-OTLP_LOST_TRACE = (
-    "The agent's spans must continue the trace of the incoming traceparent: a tool run in "
-    "a thread pool or a worker that starts a new root trace loses it, and needs the "
-    "OpenTelemetry context carried into it (contextvars.copy_context(), or "
+OTLP_THREAD = (
+    "a tool run in a thread pool or a worker that starts a new root trace loses it, and "
+    "needs the OpenTelemetry context carried into it (contextvars.copy_context(), or "
     "opentelemetry.context.attach)"
 )
+OTLP_LOST_TRACE = (
+    f"The agent's spans must continue the trace of the incoming traceparent: {OTLP_THREAD}"
+)
+# How a record keeps its tag across a thread, for the highbar SDK (the templates' {thread}).
+SDK_THREAD = "a thread the agent starts itself needs contextvars.copy_context() to keep the tag"
 # An OTLP file declares no tools: the spec lists them, or absence proves nothing (#98).
 OTLP_NO_TOOLS_ERROR = (
     "cannot verify {what}: an OTLP trace file declares no tools, so a tool whose calls "
@@ -398,6 +399,11 @@ def _untagged(correlate: Mapping[Any, Any], otlp: bool = False) -> str:
     if _is_default(correlate):
         return "no test context"
     return f"none of agent.correlate's keys ({', '.join(str(key) for key in correlate)})"
+
+
+def _thread_hint(otlp: bool = False) -> str:
+    """How a record keeps its test across a thread the agent starts (review of #98)."""
+    return OTLP_THREAD if otlp else SDK_THREAD
 
 
 def _tag_hint(correlate: Mapping[Any, Any], otlp: bool = False) -> str:
@@ -1825,7 +1831,9 @@ class TestRunner:
         if self._budgets_of(execution).unverified:
             execution.passed = False
             message = NO_CONTEXT_USAGE_ERROR.format(
-                untagged=_untagged(correlate, self._otlp), hint=_tag_hint(correlate, self._otlp)
+                untagged=_untagged(correlate, self._otlp),
+                hint=_tag_hint(correlate, self._otlp),
+                thread=_thread_hint(self._otlp),
             )
             self._findings.append(_Finding(execution, Status.ERROR, message))
 
@@ -2111,7 +2119,9 @@ class TestRunner:
         self._warned.add(template)
         self._warn(
             template.format(
-                untagged=_untagged(correlate, self._otlp), hint=_tag_hint(correlate, self._otlp)
+                untagged=_untagged(correlate, self._otlp),
+                hint=_tag_hint(correlate, self._otlp),
+                thread=_thread_hint(self._otlp),
             )
         )
 
