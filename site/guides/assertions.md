@@ -153,8 +153,8 @@ expect:
     max_calls: 3
 ```
 
-- `model`: the model of the call that answered, the last one without an `error`. A name, or a text matcher like `{matches: "^gpt-4o"}`.
-- `fallback`: whether some call stood in for another model (`fallback_from`) or was a retry (`attempt` over 1).
+- `model`: the model of the call that answered, the last one without an `error`. A name, or a text matcher like `{matches: "^gpt-4o"}`. A call that answered without a `model` fails the check.
+- `fallback`: whether some call stood in for another model (`fallback_from`), was a retry (`attempt` over 1), or came after a call that failed, whatever its fields say.
 - `last_role`: the role of the last message sent, in every call. A failure names the call.
 - `max_calls`: how many calls, failed ones included.
 

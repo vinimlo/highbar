@@ -117,3 +117,24 @@ def test_hb11_a_test_that_failed_otherwise_stays_failed_without_llm_records() ->
     (test,) = _run(_with(), expect).tests
 
     assert test.status is Status.FAILED, test.errors
+
+
+def test_hb11_an_llm_record_alone_lets_expect_check_read_the_turn() -> None:
+    """Review of #67: the window counted as observed for expect.llm, and not for
+    expect.check, whose ctx.tools refused to be read."""
+    from tests.unit.engine.test_expect_check import CHECKED, _Checks
+    from tests.unit.engine.test_outcomes import Replying
+    from tests.unit.engine.test_outcomes import _run as run_managed
+
+    def script(message: str, test_id: str) -> Window:
+        return Window(llms=[LlmCall(ts=1.0, context={"test": test_id}, roles=("system",))])
+
+    checks = _Checks([])
+    summary = run_managed(
+        [Case(trigger="hi", expect=CHECKED)], Replying(["ok"], script), session=checks
+    )
+
+    (test,) = summary.tests
+    assert test.status is Status.PASSED, test.errors
+    (ctx,) = checks.seen
+    assert tuple(ctx.tools) == ()

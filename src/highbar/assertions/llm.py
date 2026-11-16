@@ -23,35 +23,27 @@ def check_llm(calls: list[LlmCall], expect: LlmExpect) -> list[str]:
         )
     failures: list[str] = []
     if expect.model is not None:
-        answered = next((call for call in reversed(calls) if call.error is None), None)
-        if answered is None:
+        answered = [(n, call) for n, call in enumerate(calls, 1) if call.error is None]
+        if not answered:
             failures.append(f"llm: every one of the {len(calls)} calls failed: none answered")
+        elif (model := answered[-1][1].model) is None:
+            # Matched as "", it would pass every not_contains (review of #67).
+            failures.append(
+                f"llm: call {answered[-1][0]} answered without saying its model, "
+                "so it cannot be checked"
+            )
         else:
             for key, operand in expect.model.items():
-                if not value_match({key: operand}, answered.model or ""):
+                if not value_match({key: operand}, model):
                     failures.append(
-                        f"llm: the model that answered is {answered.model!r}, "
-                        f"expected {key} {operand!r}"
+                        f"llm: the model that answered is {model!r}, expected {key} {operand!r}"
                     )
     if expect.fallback is not None:
-        fell = next(
-            (
-                (n, call)
-                for n, call in enumerate(calls, 1)
-                if call.fallback_from or (call.attempt or 1) > 1
-            ),
-            None,
-        )
+        fell = _fallback(calls)
         if expect.fallback and fell is None:
             failures.append("llm: no fallback happened, expected one")
         elif not expect.fallback and fell is not None:
-            n, call = fell
-            how = (
-                f"came from {call.fallback_from!r}"
-                if call.fallback_from
-                else f"was attempt {call.attempt}"
-            )
-            failures.append(f"llm: a fallback happened (call {n} {how}), expected none")
+            failures.append(f"llm: a fallback happened ({fell}), expected none")
     if expect.last_role is not None:
         for n, call in enumerate(calls, 1):
             if not call.roles:
@@ -64,3 +56,19 @@ def check_llm(calls: list[LlmCall], expect: LlmExpect) -> list[str]:
     if expect.max_calls is not None and len(calls) > expect.max_calls:
         failures.append(f"llm: {len(calls)} calls to the model, at most {expect.max_calls}")
     return failures
+
+
+def _fallback(calls: list[LlmCall]) -> str | None:
+    """The first sign of a fallback or a retry, said as a clause, or None.
+
+    A call after one that failed is one, whatever its fields say: an agent that does not
+    set ``fallback_from`` or ``attempt`` still fell back (review of #67).
+    """
+    for n, call in enumerate(calls, 1):
+        if call.fallback_from:
+            return f"call {n} came from {call.fallback_from!r}"
+        if (call.attempt or 1) > 1:
+            return f"call {n} was attempt {call.attempt}"
+        if n > 1 and calls[n - 2].error is not None:
+            return f"call {n} came after call {n - 1} failed"
+    return None
