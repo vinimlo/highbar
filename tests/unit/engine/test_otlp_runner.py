@@ -534,3 +534,58 @@ def test_tools_without_a_list_a_test_of_present_calls_still_passes(tmp_path: Pat
     (test,) = _run(tmp_path, spans, GET_ORDER, tools=None).tests
 
     assert test.status is Status.PASSED, test.errors
+
+
+def _untimed(trace: str, name: str) -> dict[str, Any]:
+    record = tool_span(trace, name, {})
+    del record["startTimeUnixNano"], record["endTimeUnixNano"]
+    return record
+
+
+def test_f2_ordered_on_spans_without_timestamps_is_an_error(tmp_path: Path) -> None:
+    expect = Expect(
+        function_calls=[FunctionCallExpect(name="get_order"), FunctionCallExpect(name="refund")],
+        ordered=True,
+    )
+
+    def spans(trace: str) -> list[dict[str, Any]]:
+        # Written in the wrong order: nothing says which ran first.
+        return [_untimed(trace, "refund"), _untimed(trace, "get_order"), agent_span(trace)]
+
+    (test,) = _run(tmp_path, spans, expect).tests
+
+    assert test.status is Status.ERROR, test.errors
+    (error,) = test.errors
+    assert "start and end times of 'get_order' and 'refund' were not recorded" in error
+    assert "`ordered`" in error
+
+
+def test_f2_ordered_still_fails_on_timed_spans_out_of_order(tmp_path: Path) -> None:
+    expect = Expect(
+        function_calls=[FunctionCallExpect(name="get_order"), FunctionCallExpect(name="refund")],
+        ordered=True,
+    )
+
+    def spans(trace: str) -> list[dict[str, Any]]:
+        return [
+            tool_span(trace, "refund", {}, start=1, end=2),
+            tool_span(trace, "get_order", {}, start=3, end=4),
+            agent_span(trace),
+        ]
+
+    (test,) = _run(tmp_path, spans, expect).tests
+
+    assert test.status is Status.FAILED, test.errors
+
+
+def test_f2_untimed_spans_without_ordered_pass(tmp_path: Path) -> None:
+    expect = Expect(
+        function_calls=[FunctionCallExpect(name="get_order"), FunctionCallExpect(name="refund")]
+    )
+
+    def spans(trace: str) -> list[dict[str, Any]]:
+        return [_untimed(trace, "refund"), _untimed(trace, "get_order"), agent_span(trace)]
+
+    (test,) = _run(tmp_path, spans, expect).tests
+
+    assert test.status is Status.PASSED, test.errors

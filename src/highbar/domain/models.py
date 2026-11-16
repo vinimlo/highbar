@@ -54,8 +54,10 @@ class Trace:
     fn: str
     args: dict[str, Any]
     result: Any
-    started_at: float
-    ended_at: float
+    # None when the record did not say: an OpenTelemetry span without its timestamps.
+    # `ordered` cannot be checked on such a call (review of #98, F2).
+    started_at: float | None
+    ended_at: float | None
     error: str | None = None
     context: dict[str, Any] = field(default_factory=dict[str, Any])
     # False when the record had no `result` key: what the tool returned was not seen,
@@ -66,7 +68,13 @@ class Trace:
     has_args: bool = True
 
     @property
-    def duration_ms(self) -> float:
+    def timed(self) -> bool:
+        return self.started_at is not None and self.ended_at is not None
+
+    @property
+    def duration_ms(self) -> float | None:
+        if self.started_at is None or self.ended_at is None:
+            return None
         return (self.ended_at - self.started_at) * 1000
 
 
@@ -608,7 +616,7 @@ class ToolOutcome:
     name: str
     args: dict[str, Any]
     error: str | None
-    duration_ms: float
+    duration_ms: float | None  # None when the call's times were not recorded
     late: bool = False  # recorded after the test's window closed
 
 

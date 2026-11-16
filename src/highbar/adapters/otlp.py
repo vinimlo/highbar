@@ -150,8 +150,9 @@ def _tool(span: dict[str, Any], attrs: dict[str, Any]) -> Trace:
         result=_json_value(attrs[result_key]) if has_result else None,
         has_result=has_result,
         has_args=has_args,
-        started_at=start if start is not None else 0.0,
-        ended_at=end if end is not None else (start or 0.0),
+        # Unknown stays unknown: a made-up 0.0 would let `ordered` pass (F2).
+        started_at=start,
+        ended_at=end,
         error=_error(span, attrs),
         context={"test": _trace_id(span)},
     )

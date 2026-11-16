@@ -248,3 +248,17 @@ def test_the_default_format_is_highbars_own(tmp_path: Path) -> None:
     # Read as highbar's contract, an OTLP line is a v0 line without 'fn'.
     with pytest.raises(TraceFormatError, match="tool record without 'fn'"):
         FileTraceCollector(path).collect(since=0)
+
+
+def test_f2_a_span_without_timestamps_keeps_its_time_unknown(tmp_path: Path) -> None:
+    """Not 0.0: a made-up time would let `ordered` pass on it (review of #98, F2)."""
+    untimed = tool_span(TRACE, "a", {})
+    del untimed["startTimeUnixNano"], untimed["endTimeUnixNano"]
+    only_start = tool_span(TRACE, "b", {}, start=2)
+    del only_start["endTimeUnixNano"]
+
+    first, second = _otlp(tmp_path / "otel.jsonl", line(untimed, only_start)).collect(since=0).tools
+
+    assert (first.started_at, first.ended_at) == (None, None)
+    assert first.duration_ms is None
+    assert (second.started_at, second.ended_at) == (2.0, None)

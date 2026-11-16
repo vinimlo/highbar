@@ -20,6 +20,7 @@ from highbar.assertions.function_calls import (
     FunctionCallsAssertion,
     unrecorded_args,
     unrecorded_returns,
+    untimed_calls,
 )
 from highbar.assertions.llm import check_llm
 from highbar.assertions.records import RecordNotObserved
@@ -1840,7 +1841,9 @@ class TestRunner:
         message = UNREADABLE_USAGE_ERROR.format(error=error)
         self._findings.append(_Finding(execution, Status.ERROR, message))
 
-    def _unrecorded(self, args: list[str], returns: list[str]) -> list[str]:
+    def _unrecorded(
+        self, args: list[str], returns: list[str], untimed: list[str] | None = None
+    ) -> list[str]:
         """What could not be checked on calls whose arguments or return were not recorded."""
         capture = (
             "turn on content capture in the agent's instrumentation "
@@ -1861,6 +1864,12 @@ class TestRunner:
             messages.append(
                 f"the return of {_quoted(returns)} was not recorded, so `returns` was not "
                 f"checked: {how}"
+            )
+        if untimed:
+            messages.append(
+                f"the start and end times of {_quoted(untimed)} were not recorded, so "
+                "`ordered` was not checked: each span must carry startTimeUnixNano and "
+                "endTimeUnixNano"
             )
         return messages
 
@@ -3041,12 +3050,14 @@ class TestRunner:
         # A test that passes once those returns are taken to fit was not checked,
         # which is not the same as failed (review of #74).
         unseen_returns = unrecorded_returns(traces, expect) if errors else []
-        # The same for arguments an OpenTelemetry span did not export (HB-48).
+        # The same for arguments an OpenTelemetry span did not export (HB-48), and for
+        # the times `ordered` needs, which a span may lack (review of #98, F2).
         unseen_args = unrecorded_args(traces, expect) if errors else []
-        if (unseen_returns or unseen_args) and not self._check(
+        untimed = untimed_calls(traces, expect) if errors else []
+        if (unseen_returns or unseen_args or untimed) and not self._check(
             traces, response, expect, assume_unrecorded=True
         ):
-            return unverified("; ".join(self._unrecorded(unseen_args, unseen_returns)))
+            return unverified("; ".join(self._unrecorded(unseen_args, unseen_returns, untimed)))
 
         # expect.llm reads the agent's own records: the proxy's feed usage only (P8).
         llms = [call for call in llms if call.source != PROXY]

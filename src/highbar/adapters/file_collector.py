@@ -311,10 +311,18 @@ def _rank(path: Path, known: Collection[Path]) -> tuple[bool, bool]:
     return (path not in known, path.is_symlink())
 
 
+def _ended(tool: Trace) -> float:
+    """When a call ended, to merge files by; one whose times are unknown goes first."""
+    for moment in (tool.ended_at, tool.started_at):
+        if moment is not None:
+            return moment
+    return float("-inf")
+
+
 def _merged(windows: list[Window], *, end: int) -> Window:
     """The records of several files' windows in time order, each file's order kept."""
     return Window(
-        tools=list(heapq.merge(*(w.tools for w in windows), key=lambda tool: tool.ended_at)),
+        tools=list(heapq.merge(*(w.tools for w in windows), key=_ended)),
         turns=list(heapq.merge(*(w.turns for w in windows), key=lambda turn: turn.ts)),
         hellos=list(heapq.merge(*(w.hellos for w in windows), key=lambda hello: hello.ts)),
         declarations=[names for w in windows for names in w.declarations],
