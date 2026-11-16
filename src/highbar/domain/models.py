@@ -112,6 +112,8 @@ class LlmCall:
     the agent. ``read`` is False when the writer saw the call and could not read its
     usage, with ``unread`` saying why; None means the writer did not say. A token field
     that is None is unknown, never zero, and an unread call's count is not whole.
+    ``call`` is the proxy's: ``"model"`` for a call to a model endpoint (chat/completions,
+    responses, messages), ``"other"`` for one it passed on (a list of the models).
     """
 
     ts: float
@@ -131,6 +133,8 @@ class LlmCall:
     unread: str | None = None  # why the usage was not read, when read is False
     cost: float | None = None  # what the provider said the call cost (OpenRouter)
     currency: str | None = None
+    # The proxy's: "model" for a call to a model endpoint, "other" for one it passed on.
+    call: str | None = None
 
 
 @dataclass(frozen=True)
@@ -269,6 +273,12 @@ class AgentConfig:
     correlate: dict[str, Any] = field(default_factory=lambda: {"test": "{{test.id}}"})
     # Each value expanded from ${NAME}, and the name: what output must never show.
     secrets: dict[str, str] = field(default_factory=dict[str, str])
+    # HB-30: the agent's model calls go through highbar's LLM proxy, whose count of them
+    # is the usage budgets and --max-cost hold. Managed mode only. The upstreams, by
+    # provider ("openai", "anthropic"), when the spec gives them: they take the place of
+    # the environment's base URLs.
+    llm_proxy: bool = False
+    llm_proxy_upstreams: dict[str, str] = field(default_factory=dict[str, str])
 
     @property
     def managed(self) -> bool:
@@ -626,6 +636,9 @@ class TurnOutcome:
     tools: tuple[ToolOutcome, ...] = ()
     usage: Usage | None = None
     budget: Budget | None = None
+    # agent.llm_proxy (HB-30): what the agent's `turn` records said, when the proxy's
+    # count took its place as ``usage``. Shown, not added.
+    agent_usage: Usage | None = None
 
 
 @dataclass(frozen=True)

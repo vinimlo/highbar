@@ -15,9 +15,10 @@ included. Each event of that stream reaches the client when it ends, not byte by
 A stream the upstream compresses anyway is passed as it is, that chunk included.
 
 A call whose usage it cannot read is recorded with ``read: false`` and the reason in
-``unread``: it is never written as zero tokens. The record is in the trace file before
-the client has the last byte of the reply, so an agent that writes its `turn` after the
-reply has come back writes it after the call's record.
+``unread``: it is never written as zero tokens. The one zero it writes is a request the
+provider rejected with a 4xx and no usage, which is not billed. The record is in the
+trace file before the client has the last byte of the reply, so an agent that writes its
+`turn` after the reply has come back writes it after the call's record.
 
 The proxy never logs a header, and never writes a key or a body to the trace or a log.
 """
@@ -343,6 +344,12 @@ class _Reading:
         return self._usage, None
 
 
+def _first_segment(path: str) -> str:
+    """``/files/file-abc/content`` as ``/files``: an id further on stays out of the trace."""
+    first = path.lstrip("/").split("/", 1)[0]
+    return f"/{first}"
+
+
 def _request_model(body: bytes) -> str | None:
     try:
         request = as_dict(json.loads(body))
@@ -552,7 +559,8 @@ class _Handler(BaseHTTPRequestHandler):
         call.injected = injected
         if endpoint is None:
             call.passed = (
-                f"the proxy does not read {self.command} {path} of the '{name}' upstream"
+                f"the proxy does not read {self.command} {_first_segment(path)} of the "
+                f"'{name}' upstream"
                 if upstream.protocol is not None
                 else f"the '{name}' upstream has no protocol the proxy reads"
             )
@@ -583,6 +591,7 @@ class _Handler(BaseHTTPRequestHandler):
             else None
         )
         error = f"HTTP {response.status_code}" if response.status_code >= 400 else None
+        call.status = response.status_code
         self.send_response_only(response.status_code, response.reason_phrase)
         upstream_connection = {
             token.strip().lower()
@@ -686,6 +695,7 @@ class _Call:
         self.recorded = False
         self.passed = "the call was not read"  # why, for a call passed through unread
         self.injected = False  # the proxy set include_usage on this stream
+        self.status: int | None = None  # the upstream's
 
     def finish(self, reading: _Reading | None, *, error: str | None) -> None:
         if self.recorded:
@@ -693,7 +703,13 @@ class _Call:
         if reading is None:
             self.record(None, self.passed, error=error)
             return
+        decoded = reading.unread is None  # its body could be read, usage or none
         usage, unread = reading.finish()
+        if unread is not None and decoded and self.status is not None and 400 <= self.status < 500:
+            # A request the provider rejected (a 429, a 401) is not billed: with no usage
+            # in its reply, it used nothing. A 5xx may have run the model: it stays unread.
+            model = usage.model if usage is not None else None
+            usage, unread = _Usage(model=model, input_tokens=0, output_tokens=0), None
         self.record(usage, unread, error=error)
 
     def record(self, usage: _Usage | None, unread: str | None, error: str | None) -> None:
@@ -719,6 +735,8 @@ class _Call:
             ]
             if missing and unread is None:
                 unread = f"the reply's usage had no readable {' or '.join(missing)}"
+        # A call to a model endpoint, read or not, is one the budgets must count.
+        record["call"] = "model" if self.endpoint is not None else "other"
         record["read"] = unread is None
         if unread is not None:
             record["unread"] = unread

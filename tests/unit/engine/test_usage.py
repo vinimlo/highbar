@@ -602,3 +602,48 @@ class TestCheckBudget:
 
         assert check.exceeded == []
         assert check.unverified
+
+
+class TestUndated:
+    """HB-30, P6: a dated name the proxy reads from a reply is priced as its model."""
+
+    def test_hb30_a_dated_name_is_priced_as_its_model_when_asked(self) -> None:
+        usage = Usage(
+            model="gpt-4.1-2025-04-14", provider="openai", input_tokens=1000, output_tokens=0
+        )
+
+        result, warning = priced(usage, undated=True)
+
+        assert warning is None and result.cost is not None and result.cost > 0
+        assert result.model == "gpt-4.1-2025-04-14"  # the name stays the one that answered
+
+    def test_hb30_anthropics_dated_name_is_priced_too(self) -> None:
+        usage = Usage(model="claude-sonnet-4-5-20250929", input_tokens=1000, output_tokens=0)
+
+        result, warning = priced(usage, undated=True)
+
+        assert warning is None and result.cost is not None
+
+    def test_hb30_a_name_in_the_table_keeps_its_own_price(self) -> None:
+        dated = Usage(
+            model="gpt-4o-2024-05-13", provider="openai", input_tokens=1000, output_tokens=0
+        )
+        alias = Usage(model="gpt-4o", provider="openai", input_tokens=1000, output_tokens=0)
+
+        assert priced(dated, undated=True)[0].cost != priced(alias, undated=True)[0].cost
+
+    def test_hb30_without_undated_a_dated_name_is_not_priced(self) -> None:
+        usage = Usage(
+            model="gpt-4.1-2025-04-14", provider="openai", input_tokens=1, output_tokens=0
+        )
+
+        result, warning = priced(usage)
+
+        assert result.cost is None and warning is not None
+
+    def test_hb30_still_unknown_once_undated_is_missing_with_a_warning(self) -> None:
+        usage = Usage(model="no-such-model-2025-04-14", input_tokens=1, output_tokens=0)
+
+        result, warning = priced(usage, undated=True)
+
+        assert result.cost is None and warning is not None

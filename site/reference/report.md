@@ -126,6 +126,7 @@ The one exception is a command line that highbar cannot read: an unknown option,
 | `turns[].correlate` | The values of `agent.correlate` for this turn: what finds its records in the trace file. |
 | `tools[].late` | Recorded after the test's window closed. |
 | `turns[].usage` | What the turn consumed, or `null` when it reported nothing. See below. |
+| `turns[].agent_usage` | With [`agent.llm_proxy`](/reference/spec-format#usage-counted-at-the-source-agent-llm-proxy): what the agent's own `turn` records said, when the proxy's count took its place in `usage`. Shown, not added. `null` otherwise. |
 | `turns[].budget` | The turn's own limit, or `null`. |
 | `budget` | What each execution of the test could spend, or `null`: its own budget, else `defaults.budget`. |
 | `totals` | On each test and each execution, its [tokens and cost](#tokens-and-cost). |

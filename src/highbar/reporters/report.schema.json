@@ -100,7 +100,7 @@
       }
     },
     "usage": {
-      "description": "What one turn consumed, as the agent reported it, with the cost from the price table when it sent none. Every field is optional, and null means not reported, which is not zero. null for the whole object: the turn reported no usage.",
+      "description": "What one turn consumed, as the agent reported it or, with agent.llm_proxy, as the proxy read it from each model call, with the cost from the price table when it sent none. Every field is optional, and null means not reported, which is not zero. null for the whole object: the turn reported no usage.",
       "type": ["object", "null"],
       "properties": {
         "model": { "type": ["string", "null"] },
@@ -321,6 +321,10 @@
         },
         "tools": { "type": "array", "items": { "$ref": "#/$defs/tool" } },
         "usage": { "$ref": "#/$defs/usage" },
+        "agent_usage": {
+          "description": "With agent.llm_proxy: what the agent's own turn records said, when the proxy's count took its place in usage. Shown, not added. null otherwise.",
+          "$ref": "#/$defs/usage"
+        },
         "budget": {
           "description": "The turn's own limit, from the expect of the turn.",
           "$ref": "#/$defs/budget"

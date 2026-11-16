@@ -441,3 +441,70 @@ class TestSessionInTriggers:
             r"cannot have variations",
         ):
             parse_spec(_spec(tmp_path, self.WITH_SESSION, suites))
+
+
+class TestLlmProxy:
+    """HB-30, P1: agent.llm_proxy is opt-in, and only for an agent highbar starts."""
+
+    def test_hb30_off_unless_written(self, tmp_path: Path) -> None:
+        assert parse_spec(_spec(tmp_path, MANAGED)).agent.llm_proxy is False
+
+    def test_hb30_on_for_a_managed_agent(self, tmp_path: Path) -> None:
+        spec = parse_spec(_spec(tmp_path, MANAGED + "llm_proxy: true\n"))
+
+        assert spec.agent.llm_proxy is True
+
+    def test_hb30_attach_mode_is_refused_and_says_why(self, tmp_path: Path) -> None:
+        agent = ATTACH + 'traces: "/tmp/t.jsonl"\nllm_proxy: true\n'
+
+        with pytest.raises(SpecError, match=r"llm_proxy.*'start'.*environment"):
+            parse_spec(_spec(tmp_path, agent))
+
+    def test_hb30_a_value_that_is_not_a_boolean_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(SpecError, match="llm_proxy must be true or false"):
+            parse_spec(_spec(tmp_path, MANAGED + 'llm_proxy: "yes"\n'))
+
+
+class TestLlmProxyUpstreams:
+    """Review of #97, note: an agent whose base URL lives in its own .env needs the
+    upstream given in the spec, or the proxy sends its calls to the provider's own URL."""
+
+    def test_hb30_a_mapping_turns_it_on_and_names_the_upstreams(self, tmp_path: Path) -> None:
+        agent = MANAGED + 'llm_proxy:\n  openai: "http://127.0.0.1:11434/v1"\n'
+
+        spec = parse_spec(_spec(tmp_path, agent))
+
+        assert spec.agent.llm_proxy is True
+        assert spec.agent.llm_proxy_upstreams == {"openai": "http://127.0.0.1:11434/v1"}
+
+    def test_hb30_an_unknown_provider_is_refused_with_a_suggestion(self, tmp_path: Path) -> None:
+        agent = MANAGED + 'llm_proxy:\n  opnai: "http://127.0.0.1:11434/v1"\n'
+
+        with pytest.raises(SpecError, match="did you mean 'openai'"):
+            parse_spec(_spec(tmp_path, agent))
+
+    def test_hb30_a_value_that_is_not_a_url_is_refused(self, tmp_path: Path) -> None:
+        agent = MANAGED + 'llm_proxy:\n  anthropic: "localhost:8000"\n'
+
+        with pytest.raises(
+            SpecError, match=r"llm_proxy\.anthropic must be an http:// or https:// URL"
+        ):
+            parse_spec(_spec(tmp_path, agent))
+
+    def test_hb30_a_mapping_in_attach_mode_is_refused(self, tmp_path: Path) -> None:
+        agent = ATTACH + 'traces: "/tmp/t.jsonl"\nllm_proxy:\n  openai: "http://x.test/v1"\n'
+
+        with pytest.raises(SpecError, match="llm_proxy needs 'start'"):
+            parse_spec(_spec(tmp_path, agent))
+
+    def test_hb30_the_spec_upstream_wins_over_the_environment(self) -> None:
+        from highbar.engine.run_spec import proxy_upstreams
+
+        upstreams = proxy_upstreams(
+            {"OPENAI_BASE_URL": "https://openrouter.ai/api/v1"},
+            {"openai": "http://127.0.0.1:11434/v1"},
+        )
+
+        assert upstreams["openai"].base_url == "http://127.0.0.1:11434/v1"
+        assert upstreams["openai"].provider is None
+        assert upstreams["anthropic"].base_url == "https://api.anthropic.com"
