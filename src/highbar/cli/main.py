@@ -19,9 +19,6 @@ from rich.markup import escape
 
 from highbar.adapters.subprocess_adapter import AgentStartError
 from highbar.cli.scaffold import quickstart_files
-from highbar.compare.core import CompareError
-from highbar.compare.core import compare as compare_rounds
-from highbar.compare.output import load_side, render, write_json
 from highbar.domain.models import RunSummary, Spec
 from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.parser import parse_spec
@@ -475,6 +472,11 @@ def compare(
     ] = None,
 ) -> None:
     """Compare two groups of runs (--report json= files) test by test."""
+    # Imported here, so `run` does not load what only `compare` uses.
+    from highbar.compare.core import CompareError
+    from highbar.compare.core import compare as compare_rounds
+    from highbar.compare.output import load_side, render, write_json
+
     if report is not None and not report.startswith("json="):
         console.print("[red]--report takes json=FILE for compare.[/red]")
         raise typer.Exit(EXIT_UNRUNNABLE)
