@@ -511,6 +511,10 @@ def _llm(record: dict[str, Any]) -> LlmCall:
         roles = tuple(items)
     error = record.get("error")
     latency = record.get("latency_ms")
+    read = record.get("read")
+    if read is not None and not isinstance(read, bool):
+        # Read loosely, "no" would vouch for a count nobody read.
+        raise _BadLine(f"'read' must be true or false, got {read!r}")
     return LlmCall(
         ts=_number(record, "ts", 0.0),
         context=_context(record),
@@ -524,6 +528,11 @@ def _llm(record: dict[str, Any]) -> LlmCall:
         cache_tokens=_whole(record.get("cache_tokens")),
         latency_ms=_number(record, "latency_ms", 0.0) if latency is not None else None,
         error=str(error) if error else None,  # false, "" and null all say "no error"
+        source=_text(record.get("source")),
+        read=read,
+        unread=_text(record.get("unread")),
+        cost=_cost(record.get("cost")),
+        currency=_currency(record.get("currency")),
     )
 
 

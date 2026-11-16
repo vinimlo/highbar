@@ -84,3 +84,55 @@ def test_hb11_the_sdk_writes_a_call_the_reader_reads_back(
     assert call.error == "timeout"
     assert call.input_tokens == 10
     assert call.context == {"test": "t-1"}
+
+
+def test_hb30_a_proxy_record_says_its_source_and_the_cost_it_read(tmp_path: Path) -> None:
+    record = {
+        **CALL,
+        "source": "proxy",
+        "read": True,
+        "cost": 0.0021,
+        "currency": "usd",
+    }
+
+    (call,) = _write(tmp_path / "t.jsonl", record).collect(since=0).llms
+
+    assert call.source == "proxy"
+    assert call.read is True
+    assert call.unread is None
+    assert call.cost == 0.0021
+    assert call.currency == "USD"
+
+
+def test_hb30_an_unread_call_keeps_its_reason_and_no_tokens(tmp_path: Path) -> None:
+    record = {
+        "v": 1,
+        "type": "llm",
+        "ts": 2.0,
+        "source": "proxy",
+        "read": False,
+        "unread": "the stream ended without usage",
+        "model": "gpt-4o-mini",
+    }
+
+    (call,) = _write(tmp_path / "t.jsonl", record).collect(since=0).llms
+
+    assert call.read is False
+    assert call.unread == "the stream ended without usage"
+    # Unknown is not zero: nothing was read, so nothing is there.
+    assert call.input_tokens is None and call.output_tokens is None and call.cost is None
+
+
+def test_hb30_a_record_without_source_or_read_reads_as_before(tmp_path: Path) -> None:
+    (call,) = _write(tmp_path / "t.jsonl", CALL).collect(since=0).llms
+
+    assert call.source is None and call.read is None and call.unread is None
+    assert call.cost is None and call.currency is None
+
+
+def test_hb30_a_read_that_is_not_a_boolean_is_a_bad_line(tmp_path: Path) -> None:
+    # "no" taken as true would vouch for a count nobody read.
+    collector = _write(tmp_path / "t.jsonl", {**CALL, "read": "no"})
+
+    with pytest.raises(TraceFormatError, match="line 1: 'read' must be true or false"):
+        collector.collect(since=0)
