@@ -79,11 +79,11 @@ With no `min_pass`, all ten runs must pass. See [repetition](/guides/repetition)
 
 ## A guardrail an idle agent passes
 
-A guardrail made only of what must not happen is green on an agent that does nothing: `function_calls: []` with `not_matches` holds on a silent one. `highbar vacuum` finds those tests without running any agent. It judges each test, with the checks a run uses, against four trivial agents:
+A guardrail made only of what must not happen is green on an agent that does nothing: `function_calls: []` with `not_matches` holds on a silent one. `highbar vacuum` finds those tests without running any agent. It judges each test, with the checks a run uses, against trivial agents:
 
 - **silent:** no reply, no call;
 - **echo:** the message sent back;
-- **every tool:** each tool the spec names, called with no arguments;
+- **every tool:** each tool the spec names, called with no arguments: the ones the test expects first, in its order, then the rest. It counts only when it calls more than the test expects, since exactly those tools are the right answer;
 - **every option:** one reply that names every text the replies of the test's suite must contain, when one of them is not the test's own answer in other words.
 
 ```bash

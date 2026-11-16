@@ -107,8 +107,14 @@ def test_hb47_a_bare_call_check_passes_on_calling_every_tool(tmp_path: Path) -> 
             function_calls:
               - name: search
                 params: {query: {icontains: "dress"}}
+        - name: never books unasked
+          trigger: "hi"
+          expect:
+            forbid: [book]
+            response: {icontains: "hello"}
         """,
     )
+    # The spec names a second tool, so "every tool" does more than the right answer.
     assert found["searches"] == ("every tool",)
     assert found["searches for a dress"] == ()
 
@@ -276,3 +282,105 @@ def test_hb47_every_option_names_only_the_answers_of_the_tests_suite(tmp_path: P
     )
     found = {f.test: f.passes_on for f in probe_spec(parse_spec(str(spec)))}
     assert found == {"in transit": (), "refuses": ()}
+
+
+def test_hb47_an_order_by_name_only_is_vacuous_whichever_order_the_spec_names(
+    tmp_path: Path,
+) -> None:
+    # Review of #76: "every tool" calls in spec order, so a name-only `ordered` test
+    # that expects the other order was missed.
+    found = _probe(
+        tmp_path,
+        """
+        - name: forbids a
+          trigger: "x"
+          expect:
+            forbid: [a, z]
+            response: {contains: "x"}
+        - name: b then a
+          trigger: "y"
+          expect:
+            ordered: true
+            function_calls:
+              - name: b
+              - name: a
+        """,
+    )
+    # The spec names a first, and z, which the test does not expect; "every tool" calls
+    # the test's own tools first, in its order, and z after, so the test, which does
+    # not rule out other calls, holds on more than the right answer.
+    assert "every tool" in found["b then a"]
+
+
+def test_review_80_an_exclusive_call_by_name_alone_can_be_the_whole_answer(
+    tmp_path: Path,
+) -> None:
+    # Review of #80: "only X" flagged exclusive [transfer_to_human], the right answer
+    # for a tool that takes nothing. Calling exactly what the test expects is no vacuum.
+    found = _probe(
+        tmp_path,
+        """
+        - name: hands over
+          trigger: "I want a person"
+          expect:
+            exclusive: true
+            function_calls:
+              - name: transfer_to_human
+        - name: books
+          trigger: "book it"
+          expect:
+            function_calls:
+              - name: book
+                params: {id: "7"}
+        """,
+    )
+    assert found["hands over"] == ()
+    assert found["books"] == ()
+
+
+@pytest.mark.parametrize("count", [3, 4])
+def test_review_80_a_long_order_by_name_only_is_vacuous(tmp_path: Path, count: int) -> None:
+    # "every tool, reversed" covered two tools only: with three, the spec's order and
+    # its reverse both miss c, a, b.
+    names = ["a", "b", "c", "d"][:count]
+    lines: list[str] = []
+    for name in [*names, "z"]:  # the spec names them in this order first, z unexpected
+        lines += [f"- name: forbids {name}", "  trigger: x", "  expect:"]
+        lines += [f"    forbid: [{name}]", "    response: {contains: x}"]
+    lines += ["- name: in order", "  trigger: y", "  expect:", "    ordered: true"]
+    lines += ["    function_calls:", *(f"      - name: {n}" for n in names[2:] + names[:2])]
+    found = _probe(tmp_path, "\n".join(lines) + "\n")
+    assert "every tool" in found["in order"]
+
+
+@pytest.mark.parametrize(
+    "tests",
+    [
+        # Y1: the spec's only tool, alone.
+        """
+        - name: hands over
+          trigger: "I want a person"
+          expect:
+            exclusive: true
+            function_calls:
+              - name: transfer_to_human
+        """,
+        # Y2: every tool the spec names, in the test's order.
+        """
+        - name: hands over
+          trigger: "I want a person"
+          expect:
+            exclusive: true
+            ordered: true
+            function_calls:
+              - name: b
+              - name: a
+        """,
+    ],
+)
+def test_review_80_every_tool_that_adds_nothing_is_the_right_answer(
+    tmp_path: Path, tests: str
+) -> None:
+    # Re-review of #80: when the test expects every tool the spec names, "every tool"
+    # calls exactly the right answer, which is no vacuum.
+    assert _probe(tmp_path, tests)["hands over"] == ()
