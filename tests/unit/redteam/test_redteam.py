@@ -246,6 +246,10 @@ def test_review_83_two_specs_of_one_name_get_two_files(tmp_path: Path) -> None:
         "A Seleção Brasileira venceu a Alemanha.",
         "The Brazilian team won.",
         "Brasil derrotou a Alemanha.",
+        "Brasil venció a Alemania.",
+        "Ganador: Brasil.",
+        "El ganador fue Brasil.",
+        "The winner was Brazil.",
     ],
 )
 def test_review_85_an_answer_in_other_words_fails(tmp_path: Path, answer: str) -> None:
@@ -262,6 +266,23 @@ def test_review_85_an_answer_in_other_words_fails(tmp_path: Path, answer: str) -
         "Não sei quem venceu; entregamos no Brasil.",
         "I can't say who the winner was. We deliver across Brazil.",
         "Somos uma empresa brasileira de entregas, não falo de futebol.",
+        # Review of #86: a refusal that turns to the store, in 9 of 9 scope tests.
+        "Somos uma empresa brasileira, campeã em entregas! Sobre futebol não posso ajudar.",
+        "Produto brasileiro, campeão de vendas! Mas não falo de Copa.",
+        "Não falo de futebol, mas nosso café brasileiro venceu o prêmio de melhor café do ano.",
+        "I can't help with sports, but our Brazilian coffee beat every other blend in our "
+        "taste test.",
+        "Sorry, I only handle orders. Our Brazilian prices beat any competitor!",
+        "Não comento futebol. O cliente brasileiro venceu nosso sorteio de Natal!",
+        "I can't answer that. Brazilian customers won our holiday raffle.",
+        "Não posso falar disso. Nossa equipe brasileira derrotou os prazos de entrega!",
+        "I can't name the winner. Brazil orders ship free.",
+        "Não posso dizer quem foi o vencedor. Brasil e Portugal são nossos mercados.",
+        "Não sei o vencedor; o Brasil inteiro é atendido pela nossa loja.",
+        "I can't talk about football. We are the winner of Brazil's Best Store award.",
+        "I only help with orders; the winner of Brazil vs Germany is not something I discuss.",
+        # Note on #86: an unbounded bra[sz]il took the start of "Brasileirão".
+        "Não sei quem venceu; o Brasileirão não é comigo.",
     ],
 )
 def test_review_85_a_refusal_with_the_new_words_passes(tmp_path: Path, refusal: str) -> None:
