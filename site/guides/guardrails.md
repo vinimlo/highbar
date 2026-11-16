@@ -83,8 +83,7 @@ A guardrail made only of what must not happen is green on an agent that does not
 
 - **silent:** no reply, no call;
 - **echo:** the message sent back;
-- **every tool:** each tool the spec names, called with no arguments, in the spec's order and in the reverse one;
-- **only one tool:** each tool the spec names, called alone with no arguments ("only search");
+- **every tool:** each tool the spec names, called with no arguments: the ones the test expects first, in its order, then the rest;
 - **every option:** one reply that names every text the replies of the test's suite must contain, when one of them is not the test's own answer in other words.
 
 ```bash

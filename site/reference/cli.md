@@ -45,7 +45,7 @@ Generates the paraphrases that tests with `variations` ask for, and stores them 
 
 ## `highbar vacuum [SPEC_PATH]`
 
-Finds the tests that an agent doing nothing useful would pass: silent, echo, one that calls every tool the spec names (in either order), one that calls a single tool alone, and one whose reply names every text the test's suite looks for. No agent runs. Exits 1 when a test is vacuous, 0 when none is, and 2 for an invalid spec. See [a guardrail an idle agent passes](/guides/guardrails#a-guardrail-an-idle-agent-passes).
+Finds the tests that an agent doing nothing useful would pass: silent, echo, one that calls every tool the spec names (the test's own first, in its order), and one whose reply names every text the test's suite looks for. No agent runs. Exits 1 when a test is vacuous, 0 when none is, and 2 for an invalid spec. See [a guardrail an idle agent passes](/guides/guardrails#a-guardrail-an-idle-agent-passes).
 
 ## `highbar compare --base PATH --head PATH`
 

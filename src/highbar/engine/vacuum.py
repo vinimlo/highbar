@@ -41,7 +41,7 @@ class _Doing:
     calls: tuple[str, ...] = ()
 
 
-TrivialAgent = Callable[[str], _Doing]
+TrivialAgent = Callable[[Turn], _Doing]
 
 
 def probe_spec(spec: Spec) -> list[Finding]:
@@ -71,32 +71,23 @@ def probe_spec(spec: Spec) -> list[Finding]:
 
 def _agents(tools: tuple[str, ...], every_text: list[str], test: Test) -> dict[str, TrivialAgent]:
     agents: dict[str, TrivialAgent] = {
-        "silent": lambda _message: _Doing(reply=""),
-        "echo": lambda message: _Doing(reply=message),
-        "every tool": lambda _message: _Doing(reply="", calls=tools),
+        "silent": lambda _turn: _Doing(reply=""),
+        "echo": lambda turn: _Doing(reply=turn.trigger),
+        "every tool": lambda turn: _Doing(reply="", calls=_every_tool(tools, turn)),
     }
-    if len(tools) > 1:
-        # The spec's order is one order: a test that checks the order by name alone is
-        # held by one of the two (review of #76).
-        backwards = tools[::-1]
-        agents["every tool, reversed"] = lambda _message: _Doing(reply="", calls=backwards)
-    for tool in tools:
-        # Calling every tool breaks `exclusive`; one tool alone, with no arguments,
-        # holds a test that checks only that tool's name (review of #76).
-        agents[f"only {tool}"] = lambda _message, tool=tool: _Doing(reply="", calls=(tool,))
     # "every option" names each text the spec looks for, this test's among them. It
     # says something only when it also names one this test does not ask for: alone,
     # the test's own text is just the right answer (review of #76).
     own = _texts_looked_for(turn.expect for turn in _turns(test))
     if any(not _same_answer(text, own) for text in every_text):
         everything = " · ".join(every_text)
-        agents["every option"] = lambda _message: _Doing(reply=everything)
+        agents["every option"] = lambda _turn: _Doing(reply=everything)
     return agents
 
 
 def _passes(test: Test, agent: TrivialAgent) -> bool:
     """Every turn of the test holds on what the agent did with its message."""
-    return all(_holds(turn.expect, agent(turn.trigger)) for turn in _turns(test))
+    return all(_holds(turn.expect, agent(turn)) for turn in _turns(test))
 
 
 def _holds(expect: Expect, doing: _Doing) -> bool:
@@ -126,6 +117,15 @@ def _beyond_trivial(test: Test) -> str | None:
         if turn.expect.retrieval is not None:
             return "expect.retrieval"
     return None
+
+
+def _every_tool(tools: tuple[str, ...], turn: Turn) -> tuple[str, ...]:
+    """Every tool the spec names: the ones this turn expects first, in its order, then
+    the rest. A test that checks the order by name alone, and does not rule out other
+    calls, holds on it at any length (review of #80). Calling exactly the expected
+    tools is left out: for a tool that takes nothing, that is the right answer."""
+    expected = [call.accepted_names[0] for call in turn.expect.function_calls or []]
+    return tuple(dict.fromkeys([*expected, *tools]))
 
 
 def _same_answer(text: str, own: list[str]) -> bool:

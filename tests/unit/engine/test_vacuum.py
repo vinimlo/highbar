@@ -109,7 +109,7 @@ def test_hb47_a_bare_call_check_passes_on_calling_every_tool(tmp_path: Path) -> 
                 params: {query: {icontains: "dress"}}
         """,
     )
-    assert found["searches"] == ("every tool", "only search")
+    assert found["searches"] == ("every tool",)
     assert found["searches for a dress"] == ()
 
 
@@ -300,22 +300,25 @@ def test_hb47_an_order_by_name_only_is_vacuous_whichever_order_the_spec_names(
               - name: a
         """,
     )
-    # The spec names a first, so "every tool" calls a then b; the test wants b then a.
-    assert "every tool, reversed" in found["b then a"]
+    # The spec names a first; "every tool" calls the test's own tools first, in its
+    # order, and the rest after, so the test, which does not rule out extra calls, holds.
+    assert "every tool" in found["b then a"]
 
 
-def test_hb47_an_exclusive_call_by_name_only_is_vacuous(tmp_path: Path) -> None:
-    # Review of #76: "every tool" breaks `exclusive`, so a name-only exclusive test was
-    # missed. An agent that calls one tool alone, with no arguments, holds it.
+def test_review_80_an_exclusive_call_by_name_alone_can_be_the_whole_answer(
+    tmp_path: Path,
+) -> None:
+    # Review of #80: "only X" flagged exclusive [transfer_to_human], the right answer
+    # for a tool that takes nothing. Calling exactly what the test expects is no vacuum.
     found = _probe(
         tmp_path,
         """
-        - name: searches only
-          trigger: "find a dress"
+        - name: hands over
+          trigger: "I want a person"
           expect:
             exclusive: true
             function_calls:
-              - name: search
+              - name: transfer_to_human
         - name: books
           trigger: "book it"
           expect:
@@ -324,5 +327,20 @@ def test_hb47_an_exclusive_call_by_name_only_is_vacuous(tmp_path: Path) -> None:
                 params: {id: "7"}
         """,
     )
-    assert found["searches only"] == ("only search",)
+    assert found["hands over"] == ()
     assert found["books"] == ()
+
+
+@pytest.mark.parametrize("count", [3, 4])
+def test_review_80_a_long_order_by_name_only_is_vacuous(tmp_path: Path, count: int) -> None:
+    # "every tool, reversed" covered two tools only: with three, the spec's order and
+    # its reverse both miss c, a, b.
+    names = ["a", "b", "c", "d"][:count]
+    lines: list[str] = []
+    for name in names:  # the spec names them in this order first
+        lines += [f"- name: forbids {name}", "  trigger: x", "  expect:"]
+        lines += [f"    forbid: [{name}]", "    response: {contains: x}"]
+    lines += ["- name: in order", "  trigger: y", "  expect:", "    ordered: true"]
+    lines += ["    function_calls:", *(f"      - name: {n}" for n in names[2:] + names[:2])]
+    found = _probe(tmp_path, "\n".join(lines) + "\n")
+    assert "every tool" in found["in order"]
