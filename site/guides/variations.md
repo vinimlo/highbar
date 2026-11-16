@@ -57,4 +57,8 @@ print(hashlib.sha256(key.encode()).hexdigest()[:16])  # 1a40c26135e2d5ff
 
 ## With runs
 
-Each phrasing runs `runs` times and must reach `min_pass` on its own. A test with `variations: 3` and `runs: 5` sends 20 messages: the trigger and three paraphrases, five times each. Variations do not apply to multi-turn tests.
+Each phrasing runs `runs` times and must reach `min_pass` on its own. A test with `variations: 3` and `runs: 5` sends 20 messages: the trigger and three paraphrases, five times each.
+
+## In a conversation
+
+On a multi-turn test, `variations` goes on the last turn: see [variations on the last turn](/guides/multi-turn#variations-on-the-last-turn). The paraphrases are generated with the earlier turns' triggers, and their cache entry has them as `context`, a list of the user's messages before that turn, in order. Its key is computed with `context` too: add `"context": [...]` to the JSON above before hashing it.

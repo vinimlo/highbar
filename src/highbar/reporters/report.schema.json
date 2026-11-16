@@ -45,6 +45,7 @@
                 "no_specs",
                 "agent_start_failed",
                 "agent_not_observed",
+                "run_setup_failed",
                 "budget_exceeded",
                 "repeated_errors",
                 "interrupted",
@@ -252,7 +253,11 @@
           "description": "What each execution of the test could spend: its own budget, else defaults.budget.",
           "$ref": "#/$defs/budget"
         },
-        "totals": { "$ref": "#/$defs/totals" }
+        "totals": { "$ref": "#/$defs/totals" },
+        "expect_status": {
+          "description": "The state this negative control must end in (expect_status in the spec), or null. status is already judged against it: passed when the test ended exactly there. Its phrasings and executions keep what happened.",
+          "enum": ["failed", "error", null]
+        }
       }
     },
     "phrasing": {

@@ -131,3 +131,123 @@ class TestHonestTemplates:
 
         with pytest.raises(TemplateError, match="invalid path"):
             resolve_template(template, [_trace({"m": [1, 2]})])
+
+
+class TestPreviousResponse:
+    """HB-20: a turn quotes what the agent said before ("that second one you said")."""
+
+    def test_hb20_previous_response_is_the_last_turns_reply(self) -> None:
+        template = "the second one you said: {{previous.response}}"
+
+        assert resolve_template(template, [], ["hi", "A or B"]) == "the second one you said: A or B"
+
+    def test_hb20_a_turn_by_its_index(self) -> None:
+        template = "{{previous.turns[0].response}} / {{ previous.turns[1].response }}"
+
+        assert resolve_template(template, [], ["first", "second"]) == "first / second"
+
+    def test_hb20_the_first_turn_has_no_previous_response(self) -> None:
+        with pytest.raises(TemplateError, match=r"\{\{previous\.response\}\}: no earlier turn"):
+            resolve_template("{{previous.response}}", [])
+
+    def test_hb20_a_reply_that_was_not_read_is_an_error_not_null(self) -> None:
+        """Sending "null" would test a message nobody meant to write."""
+        with pytest.raises(TemplateError, match=r"turn 2 has no response"):
+            resolve_template("{{previous.response}}", [], ["hi", None])
+        with pytest.raises(TemplateError, match=r"turn 1 has no response"):
+            resolve_template("{{previous.turns[0].response}}", [], [None, "ok"])
+
+    def test_hb20_a_turn_that_is_not_there(self) -> None:
+        with pytest.raises(TemplateError, match=r"only 2 earlier turns"):
+            resolve_template("{{previous.turns[2].response}}", [], ["a", "b"])
+
+    def test_hb20_an_unknown_field_of_a_turn_says_what_there_is(self) -> None:
+        with pytest.raises(TemplateError, match=r"no field 'reply' \(fields: response\)"):
+            resolve_template("{{previous.turns[0].reply}}", [], ["a"])
+
+    def test_hb20_an_unknown_name_lists_all_three(self) -> None:
+        with pytest.raises(TemplateError, match=r"keys: function_calls, response, turns"):
+            resolve_template("{{previous.reply}}", [], ["a"])
+
+    @pytest.mark.parametrize("path", ["turns", "turns[0]", "turns[1]"])
+    def test_hb20_a_turn_is_not_a_value_only_its_response_is(self, path: str) -> None:
+        """Review of #33: a turn as JSON carried an unread reply out as "response": null."""
+        template = "{{previous." + path + "}}"
+        for replies in (["a", None], ["a", "b"]):
+            with pytest.raises(TemplateError, match=r"end the path with \.response"):
+                resolve_template(template, [], replies)
+
+    def test_hb20_calls_still_resolve_next_to_responses(self) -> None:
+        template = "{{previous.function_calls[0].result.id}} after {{previous.response}}"
+
+        assert resolve_template(template, [_trace({"id": 7})], ["found it"]) == "7 after found it"
+
+
+class TestSessionInTrigger:
+    """HB-20 v1: a trigger names a value of the session, as the request already can."""
+
+    def test_hb20_a_session_value_goes_into_the_message(self) -> None:
+        template = "my customer id is {{session.customer_id}}, I am {{ session.user.name }}"
+
+        result = resolve_template(template, [], (), {"customer_id": 42, "user": {"name": "Ana"}})
+
+        assert result == "my customer id is 42, I am Ana"
+
+    def test_hb20_a_session_key_that_is_not_there_says_what_is(self) -> None:
+        with pytest.raises(TemplateError, match=r"\{\{session\.cid\}\}: .*conversation_id"):
+            resolve_template("{{session.cid}}", [], (), {"conversation_id": 7})
+
+    def test_hb20_a_quoted_reply_is_never_read_again_as_a_placeholder(self) -> None:
+        """The agent's text goes in as text: one pass over what the spec wrote."""
+        result = resolve_template("{{previous.response}}", [], ["say {{session.k}}"], {"k": "v"})
+
+        assert result == "say {{session.k}}"
+
+    def test_hb20_a_session_value_is_never_read_again_either(self) -> None:
+        result = resolve_template("{{session.k}}", [], ["hi"], {"k": "{{previous.response}}"})
+
+        assert result == "{{previous.response}}"
+
+    def test_hb20_other_braces_are_left_as_they_are(self) -> None:
+        text = "{{test.id}} and {{foo}} stay"
+
+        assert resolve_template(text, [], (), {"k": "v"}) == text
+
+
+class TestNoValueGoesOutAsAValue:
+    """Review of #36: a null, or a template with no path, never goes out as text."""
+
+    def test_hb20_a_null_session_value_is_an_error_not_the_text_null(self) -> None:
+        """Sent as "Where is order null?", it would fail the agent for the setup's fault."""
+        with pytest.raises(
+            TemplateError, match=r"^\{\{session\.order\}\}: the value is null: the session setup"
+        ):
+            resolve_template("Where is order {{session.order}}?", [], (), {"order": None})
+
+    def test_hb20_a_null_from_an_earlier_call_is_an_error(self) -> None:
+        template = "Refund {{previous.function_calls[0].result.order_id}}"
+
+        with pytest.raises(
+            TemplateError,
+            match=r"^\{\{previous\.function_calls\[0\]\.result\.order_id\}\}: the value is null",
+        ):
+            resolve_template(template, [_trace({"order_id": None})])
+
+    def test_hb20_a_null_inside_an_object_stays_json(self) -> None:
+        """Only the value named is checked: an object goes as JSON, with its nulls."""
+        assert (
+            resolve_template("{{session.user}}", [], (), {"user": {"id": None}}) == '{"id": null}'
+        )
+
+    @pytest.mark.parametrize(
+        "template",
+        ["{{session}}", "{{ session }}", "{{session.}}", "{{previous}}", "{{previous.}}"],
+    )
+    def test_hb20_a_template_with_no_path_is_an_error(self, template: str) -> None:
+        with pytest.raises(TemplateError, match=r"^\{\{(session|previous)\}\}: names no value"):
+            resolve_template(f"hi {template}", [], ["a reply"], {"k": "v"})
+
+    def test_hb20_a_template_ends_at_its_own_closing_braces(self) -> None:
+        """`(.+?)` crossed a `}}`: this came out as one path, `}} {{ session`."""
+        with pytest.raises(TemplateError, match=r"^\{\{session\}\}: names no value"):
+            resolve_template("{{session.}} {{ session }}", [], (), {"k": "v"})

@@ -11,6 +11,7 @@ from functools import partial
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import FrameType
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -28,6 +29,9 @@ from highbar.engine.session import SessionError, SessionHooks
 from highbar.engine.streak import DEFAULT_MAX_ERRORS, ErrorStreak
 from highbar.engine.usage import add_costs, add_up
 from highbar.reporters.json_report import JsonReport, ReportError
+from highbar.reporters.junit_report import JUnitReport
+from highbar.reporters.markdown_report import MarkdownReport
+from highbar.reporters.reports import Reports
 from highbar.reporters.terminal import format_summary
 from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
 from highbar.variations.generator import VariationError, VariationGenerator
@@ -120,15 +124,19 @@ def run(
             "runs still wins. With min_pass, a flaky test becomes a gate."
         ),
     ),
-    report_to: str | None = typer.Option(
-        None,
-        "--report",
-        metavar="json=FILE",
-        help=(
-            "Also write the results to FILE as JSON. It is replaced before the first "
-            "message, and written on every way out of the run."
+    # Annotated, unlike the options around it: a list default in the signature is mutable.
+    report_to: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--report",
+            metavar="json=FILE|junit=FILE|markdown=FILE",
+            help=(
+                "Also write the results to FILE, as JSON, as JUnit XML or as a Markdown "
+                "summary (for $GITHUB_STEP_SUMMARY). Give it once per file. Each is replaced "
+                "before the first message, and written on every way out of the run."
+            ),
         ),
-    ),
+    ] = None,
     max_cost: float | None = typer.Option(
         None,
         "--max-cost",
@@ -187,23 +195,42 @@ def run(
     raise typer.Exit(_close_report(report, code))
 
 
-def _open_report(value: str | None, paths: list[str]) -> JsonReport | None:
+# The formats of --report: the same report, for a script (JSON), for the CI tools that
+# read JUnit XML, and for a CI job's summary page (Markdown).
+_REPORTS: dict[str, type[JsonReport]] = {
+    "json": JsonReport,
+    "junit": JUnitReport,
+    "markdown": MarkdownReport,
+}
+
+
+def _open_report(values: list[str] | None, paths: list[str]) -> JsonReport | None:
     """The report of this run, already on disk, or exit 2 before anything starts.
 
-    Writing it now proves the path works before an hour of tests, and replaces an
-    older report: a run that dies must not leave someone else's green at that path.
+    Writing it now proves the paths work before an hour of tests, and replaces older
+    reports: a run that dies must not leave someone else's green at those paths.
     """
-    if value is None:
+    if not values:
         return None
-    kind, separator, target = value.partition("=")
-    if kind != "json" or not separator or not target:
-        console.print(f"  [red]\u2717[/red] --report takes json=<file>, got {escape(value)}")
-        raise typer.Exit(EXIT_UNRUNNABLE)
-    path = Path(target)
-    if path.resolve() in {Path(spec).resolve() for spec in paths}:
-        console.print(f"  [red]\u2717[/red] --report: {escape(target)} is a spec of this run")
-        raise typer.Exit(EXIT_UNRUNNABLE)
-    report = JsonReport(path, version=_version())
+    specs = {Path(spec).resolve() for spec in paths}
+    parts: list[JsonReport] = []
+    for value in values:
+        kind, separator, target = value.partition("=")
+        if kind not in _REPORTS or not separator or not target:
+            console.print(
+                "  [red]\u2717[/red] --report takes json=<file>, junit=<file> or markdown=<file>, "
+                f"got {escape(value)}"
+            )
+            raise typer.Exit(EXIT_UNRUNNABLE)
+        path = Path(target)
+        if path.resolve() in specs:
+            console.print(f"  [red]\u2717[/red] --report: {escape(target)} is a spec of this run")
+            raise typer.Exit(EXIT_UNRUNNABLE)
+        if path.resolve() in {part.path.resolve() for part in parts}:
+            console.print(f"  [red]\u2717[/red] --report: {escape(target)} is given twice")
+            raise typer.Exit(EXIT_UNRUNNABLE)
+        parts.append(_REPORTS[kind](path, version=_version()))
+    report = parts[0] if len(parts) == 1 else Reports(parts, version=_version())
     try:
         report.start()
     except ReportError as e:
@@ -221,7 +248,7 @@ def _close_report(report: JsonReport | None, code: int) -> int:
     except ReportError as e:
         _last_line(f"  [red]\u2717[/red] {escape(str(e))}")
         return EXIT_UNRUNNABLE
-    _last_line(f"  Report: {escape(str(report.path))}\n")
+    _last_line(f"  Report: {escape(', '.join(str(path) for path in report.paths))}\n")
     return code
 
 
@@ -333,6 +360,13 @@ def _run_all(
         # Nothing could be checked: the agent is up but not instrumented (or not ours).
         console.print(f"  [red]\u2717[/red] {escape(current)}: {escape(str(e))}", soft_wrap=True)
         return _stopped(report, "agent_not_observed", f"{current}: {e}", EXIT_UNRUNNABLE)
+    except SessionError as e:
+        # Only agent.run's setup gets here (RunHookError, HB-10): a session's own hooks
+        # fail one execution, inside the run. Nothing was sent, and the specs left would
+        # find what it was to set up missing too.
+        message = f"{current}: {e}; nothing was sent"
+        console.print(f"  [red]\u2717[/red] {escape(message)}", soft_wrap=True)
+        return _stopped(report, "run_setup_failed", message, EXIT_UNRUNNABLE)
 
     total = _total(summaries)
     if len(summaries) > 1:
@@ -394,13 +428,20 @@ def variations(
     for _, spec in specs:
         for suite in spec.suites:
             for test in suite.tests:
-                if not test.variations or not test.trigger:
+                # A conversation's paraphrases replace its last turn, and are made with
+                # what the user said before it (HB-16).
+                if test.turns:
+                    sentence = test.turns[-1].trigger
+                    context = [turn.trigger for turn in test.turns[:-1]]
+                else:
+                    sentence, context = test.trigger or "", []
+                if not test.variations or not sentence:
                     continue
 
                 # Triggers and paraphrases are user text: escaped, or Rich would read
                 # anything in square brackets as a style tag and drop it.
-                trigger = escape(test.trigger)
-                key = fingerprint(test.trigger, test.variations)
+                trigger = escape(sentence)
+                key = fingerprint(sentence, test.variations, context)
                 try:
                     if force:
                         cache.invalidate(key)
@@ -416,7 +457,7 @@ def variations(
                             )
                         continue
 
-                    produced = generator.generate(test.trigger, test.variations)
+                    produced = generator.generate(sentence, test.variations, context=context)
                 except (VariationError, CacheError) as exc:
                     console.print(f"  [red]✗[/red] {trigger}\n    {escape(str(exc))}")
                     raise typer.Exit(1) from exc
@@ -439,6 +480,53 @@ def variations(
     if short:
         summary += f" | [yellow]{short} with fewer than requested[/yellow]"
     console.print(f"{summary} [dim]({escape(str(cache.path))} — commit it)[/dim]\n")
+
+
+@app.command()
+def compare(
+    base: Annotated[
+        list[str],
+        typer.Option("--base", help="A JSON report, or a folder of them: each one is a round."),
+    ],
+    head: Annotated[
+        list[str],
+        typer.Option("--head", help="The same, for the side under test."),
+    ],
+    fail_on_regression: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-regression",
+            help=(
+                "Exit 1 when a test is worse: Holm p under 0.05, "
+                "2+ rounds a side, rounds that agree."
+            ),
+        ),
+    ] = False,
+    report: Annotated[
+        str | None,
+        typer.Option("--report", help="json=FILE: the comparison as JSON, for CI."),
+    ] = None,
+) -> None:
+    """Compare two groups of runs (--report json= files) test by test."""
+    # Imported here, so `run` does not load what only `compare` uses.
+    from highbar.compare.core import CompareError
+    from highbar.compare.core import compare as compare_rounds
+    from highbar.compare.output import load_side, render, write_json
+
+    if report is not None and not report.startswith("json="):
+        console.print("[red]--report takes json=FILE for compare.[/red]")
+        raise typer.Exit(EXIT_UNRUNNABLE)
+    try:
+        seen: dict[str, Path] = {}
+        rows = compare_rounds(load_side(base, seen), load_side(head, seen))
+    except CompareError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(EXIT_UNRUNNABLE) from exc
+    render(rows, console)
+    if report is not None:
+        write_json(report.removeprefix("json="), rows, base, head)
+    worse = any(row.verdict == "worse" for row in rows)
+    raise typer.Exit(EXIT_FAILED if fail_on_regression and worse else EXIT_OK)
 
 
 @app.command()

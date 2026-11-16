@@ -12,7 +12,7 @@ hb = highbar.Highbar()
 
 The object that writes the trace file.
 
-- `traces`: the file to append to. Without it, `HIGHBAR_TRACES_URL` is used, which highbar sets for an agent it starts. With neither, the SDK records nothing.
+- `traces`: the file to append to. Without it, `HIGHBAR_TRACES_URL` is used, which highbar sets for an agent it starts. With neither, the SDK records nothing. `{pid}` in the path is the id of the process that writes, so a server and its workers each write a file of their own, which `agent.traces` reads through a glob. When Python itself ends the process (the end of its main module, `sys.exit`, or Ctrl-C), the SDK writes a `bye` record in its file, and highbar stops counting the tools it declared there. A process stopped by SIGTERM (`kill`, `docker stop`, `docker compose down`, uvicorn included) writes none, so the `bye` is only an extra: clear the folder before each start of the agent, as [the guide](/guides/attach-mode#an-agent-with-several-processes) says.
 - `hb.enabled`: whether a trace file is set.
 - `hb.traces`: the file in use, or `None`.
 

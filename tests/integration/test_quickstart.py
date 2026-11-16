@@ -6,11 +6,14 @@ The agent is examples/quickstart/agent.py, started by the spec on its own port.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.fixtures.quickstart import move_to_a_free_port
 
 
 def _highbar(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -28,6 +31,7 @@ def _highbar(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 def quickstart(tmp_path: Path) -> Path:
     result = _highbar(tmp_path, "init")
     assert result.returncode == 0, result.stdout + result.stderr
+    move_to_a_free_port(tmp_path)
     return tmp_path
 
 
@@ -58,11 +62,23 @@ def test_quickstart_guardrails_fire_against_a_misbehaving_agent(quickstart: Path
     assert "2 passed | 2 failed" in output
 
 
+@pytest.mark.timeout(30)
+def test_hb40_each_quickstart_listens_on_a_port_of_its_own(quickstart: Path) -> None:
+    """Two suites at once both started the agent on 8731, and one of them failed."""
+    agent = (quickstart / "agent.py").read_text(encoding="utf-8")
+    spec = (quickstart / "specs" / "quickstart.highbar.yaml").read_text(encoding="utf-8")
+
+    assert "8731" not in agent
+    assert "8731" not in spec
+    (port,) = set(re.findall(r"port=(\d+)", agent))
+    assert f"127.0.0.1:{port}/chat" in spec
+
+
 FORBID_ONLY = """\
 agent:
   start: "python agent.py"
-  endpoint: "http://127.0.0.1:8731/chat"
-  health: "http://127.0.0.1:8731/health"
+  endpoint: "http://127.0.0.1:{port}/chat"
+  health: "http://127.0.0.1:{port}/health"
 suites:
   - name: Guardrails
     tests:
@@ -74,9 +90,9 @@ suites:
 
 
 def _forbid_only(quickstart: Path, name: str) -> None:
-    (quickstart / "specs" / "quickstart.highbar.yaml").write_text(
-        FORBID_ONLY.format(name=name), encoding="utf-8"
-    )
+    spec = quickstart / "specs" / "quickstart.highbar.yaml"
+    (port,) = set(re.findall(r"127\.0\.0\.1:(\d+)/", spec.read_text(encoding="utf-8")))
+    spec.write_text(FORBID_ONLY.format(name=name, port=port), encoding="utf-8")
 
 
 @pytest.mark.timeout(120)

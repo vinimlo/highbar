@@ -12,7 +12,7 @@ expect:
     - name: cancel_order
 ```
 
-The title shows the count: `✓ cancels when asked 5/5 (min 4)` or `✗ cancels when asked 3/5 (min 4)`. A failure that repeats across runs is shown once, with how many runs it hit: `(2 of 5 runs)`.
+The title shows the count: `✓ cancels when asked 5/5 (min 4)` or `✗ cancels when asked 3/5 (min 4)`. A failure that repeats across runs is shown once, with how many runs it hit: `(2 of 5 runs)`. It is one line too when what the agent did changed between runs, a reply or the calls it made, and the line is the first run it failed in: `Response does not contain 'refund'. Got: 'I can't help with that' (3 of 5 runs; as in run 2)`, or `Expected no function calls, but got: search (2 of 5 runs; as in run 1)`. The JSON report keeps each run's own message.
 
 ## `min_pass`
 
@@ -81,7 +81,7 @@ So a spec can keep `runs: 1` for a fast local loop, and CI can run everything th
 
 A run that ended in `error` (the agent timed out, the message was not observed) counts as not passed. It is not evidence that the agent did wrong, either. When the runs that passed plus the runs that errored could have reached `min_pass`, the test is an `error`, not a `failed`: 3 passed and 2 timed out with `min_pass: 4` is unverified. Both are red, and both exit with 1.
 
-Errors that come now and then are what `min_pass` is for. Errors that never stop are not: when 5 executions in a row get no reply for the same cause (the same HTTP status, a refused connection, a timeout or an empty body, from the same endpoint), the infrastructure is down, and the run stops there with exit code 4, even in the middle of a test's runs. The test it stopped in is an `error`, whatever its runs so far. Any other ending starts the count over. [`--max-errors`](/reference/cli#max-errors) changes the 5, and `--max-errors 0` turns the stop off.
+Errors that come now and then are what `min_pass` is for. Errors that never stop are not: when 5 executions in a row get no reply for the same cause (the same HTTP status, a refused connection, a timeout or an empty body, from the same endpoint), the infrastructure is down, and the run stops there with exit code 4, even in the middle of a test's runs. The test it stopped in is never a pass: it is `failed` when a failure is already known (a phrasing that ended failed, or one whose failures alone keep it under `min_pass` whatever the runs it did not make), and an `error` otherwise. Any other ending starts the count over. [`--max-errors`](/reference/cli#max-errors) changes the 5, and `--max-errors 0` turns the stop off.
 
 A tool call that arrives after its run was judged (a background task that finished late) fails that run, and the test is judged again against `min_pass`. When the test was already reported, highbar prints a warning, and counts it again if its result changed.
 

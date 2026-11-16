@@ -970,3 +970,29 @@ def test_hb34_ac11_a_count_that_is_not_one_exits_2_before_any_message(
     assert result.returncode == 2, result.stdout + result.stderr
     assert "--max-errors" in result.stdout + result.stderr
     assert not (project.root / "agent-started").exists()
+
+
+@pytest.mark.timeout(30)
+def test_hb35_after_the_summary_of_a_passing_run_only_the_report_line(project: _Project) -> None:
+    """A write after the summary races a reader that leaves there (`sed '/passed/q'`).
+
+    `--keep-traces` printed the trace path after the summary, in a write of its own,
+    and 8 of 30 passing runs piped into such a reader exited 1. `Report:` is the one
+    line allowed after it: it goes through `_last_line`, which cannot change the code.
+    """
+    result = subprocess.run(
+        project.command(
+            project.spec(PASSES), "--keep-traces", "--report", f"json={project.report}"
+        ),
+        cwd=project.root,
+        env=project.env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = result.stdout
+    assert "Traces kept at" in out
+    after = out[out.index("passed") :].splitlines()[1:]
+    assert [line.strip() for line in after if line.strip()] == [f"Report: {project.report}"]

@@ -9,6 +9,9 @@ import inspect
 import json
 import logging
 import os
+import subprocess
+import sys
+import textwrap
 import threading
 from collections.abc import Iterator
 from decimal import Decimal
@@ -690,3 +693,92 @@ class TestInventoryFollowsTheFile:
         get_order("1")
         names = [json.loads(line) for line in traces.read_text().splitlines()]
         assert ["1", "get_order"] in [r.get("names") for r in names]
+
+
+class TestOneFilePerProcess:
+    """HB-15 v1: ``{pid}`` in the path gives each process a file of its own."""
+
+    def test_hb15_pid_in_the_path_gives_each_process_its_own_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(ENV, str(tmp_path / "traces-{pid}.jsonl"))
+        pid = [101]
+        monkeypatch.setattr(os, "getpid", lambda: pid[0])
+        hb = Highbar()
+
+        @hb.tool
+        def get_order(order_id: str) -> str:
+            return order_id
+
+        get_order("1042")
+        pid[0] = 202  # a worker forked after the module was imported
+        get_order("1043")
+
+        server, worker = tmp_path / "traces-101.jsonl", tmp_path / "traces-202.jsonl"
+        assert [r["args"] for r in _of(server, "tool")] == [{"order_id": "1042"}]
+        assert [r["args"] for r in _of(worker, "tool")] == [{"order_id": "1043"}]
+        # Each file starts as a new one: its process's hello, then what it records.
+        assert [r["pid"] for r in _of(worker, "hello")] == [202]
+        assert _of(worker, "tools")[0]["names"] == ["get_order"]
+        assert not (tmp_path / "traces-{pid}.jsonl").exists()
+
+    def _run(self, tmp_path: Path, code: str) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, ENV: str(tmp_path / "traces-{pid}.jsonl")}
+        return subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(code)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_hb15_a_process_says_bye_when_it_exits(self, tmp_path: Path) -> None:
+        """highbar stops counting the tools a process declared once it ended (#52)."""
+        done = self._run(
+            tmp_path,
+            """\
+            from highbar import Highbar
+            hb = Highbar()
+
+            @hb.tool
+            def refund(order_id: str) -> str:
+                return order_id
+
+            refund("1042")
+            """,
+        )
+
+        assert done.returncode == 0, done.stderr
+        (traces,) = tmp_path.glob("traces-*.jsonl")
+        (hello,) = _of(traces, "hello")
+        assert [r["pid"] for r in _of(traces, "bye")] == [hello["pid"]]
+        assert FileTraceCollector(traces).declared() is None
+
+    @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
+    def test_hb15_a_forked_child_says_bye_only_in_its_own_file(self, tmp_path: Path) -> None:
+        """A child inherits its parent's hello: its own end must not end its parent's."""
+        done = self._run(
+            tmp_path,
+            """\
+            import os, sys
+            from highbar import Highbar
+            hb = Highbar()
+
+            @hb.tool
+            def get_order(order_id: str) -> str:
+                return order_id
+
+            child = os.fork()
+            if child == 0:
+                get_order("1042")
+                sys.exit(0)
+            os.waitpid(child, 0)
+            print(os.getpid(), child)
+            """,
+        )
+
+        assert done.returncode == 0, done.stderr
+        parent, child = done.stdout.split()
+        for pid in (parent, child):
+            traces = tmp_path / f"traces-{pid}.jsonl"
+            assert [r["pid"] for r in _of(traces, "bye")] == [int(pid)], pid
