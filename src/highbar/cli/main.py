@@ -505,7 +505,7 @@ def redteam(
         typer.Option(
             "--secret",
             help="Text no reply may hold, such as a line of the system prompt. "
-            "Written into the file. Repeatable.",
+            "Written into the file, and shown when a test fails. Repeatable.",
         ),
     ] = None,
     lang: Annotated[
