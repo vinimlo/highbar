@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import signal
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
@@ -28,6 +29,17 @@ from highbar.engine.schema import SpecError
 from highbar.engine.session import SessionError, SessionHooks
 from highbar.engine.streak import DEFAULT_MAX_ERRORS, ErrorStreak
 from highbar.engine.usage import add_costs, add_up
+from highbar.export.braintrust import (
+    DEFAULT_API_URL,
+    DEFAULT_KEY_ENV,
+    Client,
+    ExportFailed,
+    ReportRefused,
+    build_events,
+    experiment_name,
+    export,
+    read_report,
+)
 from highbar.reporters.json_report import JsonReport, ReportError
 from highbar.reporters.junit_report import JUnitReport
 from highbar.reporters.markdown_report import MarkdownReport
@@ -554,6 +566,80 @@ def compare(
         write_json(report.removeprefix("json="), rows, base, head)
     worse = any(row.verdict == "worse" for row in rows)
     raise typer.Exit(EXIT_FAILED if fail_on_regression and worse else EXIT_OK)
+
+
+export_app = typer.Typer(
+    help="Send a finished run's results (a --report json= file) to another tool.",
+    no_args_is_help=True,
+)
+app.add_typer(export_app, name="export")
+
+
+@export_app.command("braintrust")
+def export_braintrust(
+    report_path: Annotated[
+        str, typer.Argument(metavar="REPORT", help="A --report json= file of a finished run.")
+    ],
+    project: Annotated[
+        str, typer.Option("--project", help="The Braintrust project; created if it is not there.")
+    ],
+    experiment: Annotated[
+        str | None,
+        typer.Option(
+            "--experiment",
+            help="The experiment to send to. Default: the report's file name and start time.",
+        ),
+    ] = None,
+    api_key_env: Annotated[
+        str,
+        typer.Option("--api-key-env", metavar="VAR", help="The variable that holds the API key."),
+    ] = DEFAULT_KEY_ENV,
+    api_url: Annotated[
+        str, typer.Option("--api-url", metavar="URL", help="The Braintrust API to send to.")
+    ] = DEFAULT_API_URL,
+) -> None:
+    """Send a run's results to Braintrust: one experiment event per execution."""
+    path = Path(report_path)
+    try:
+        body = read_report(path)
+        events = build_events(body)
+    except ReportRefused as e:
+        console.print(f"  [red]✗[/red] {escape(str(e))}", soft_wrap=True)
+        raise typer.Exit(EXIT_UNRUNNABLE) from None
+    if not project.strip():
+        console.print("  [red]✗[/red] --project needs the name of a Braintrust project")
+        raise typer.Exit(EXIT_UNRUNNABLE)
+    if not api_url.startswith(("http://", "https://")):
+        console.print(f"  [red]✗[/red] --api-url must be an http(s) URL, got {escape(api_url)}")
+        raise typer.Exit(EXIT_UNRUNNABLE)
+    key = os.environ.get(api_key_env, "")
+    if not key.strip():
+        console.print(
+            f"  [red]✗[/red] {escape(api_key_env)} is not set: put the Braintrust API key "
+            "in it, or name the variable that holds it with --api-key-env",
+            soft_wrap=True,
+        )
+        raise typer.Exit(EXIT_UNRUNNABLE)
+    name = experiment or experiment_name(path, body)
+    client = Client(api_url, key, api_key_env)
+    try:
+        export(events, client, project=project, experiment=name)
+    except ExportFailed as e:
+        console.print(
+            f"  [red]✗[/red] Braintrust: {escape(e.reason)}. {e.sent} of {e.total} events "
+            f"sent, {e.total - e.sent} not sent; sending again is safe, each event keeps its id",
+            soft_wrap=True,
+        )
+        raise typer.Exit(EXIT_FAILED) from None
+    finally:
+        client.close()
+    scores = [event["scores"]["highbar"] for event in events]
+    console.print(
+        f"  Sent {len(events)} events to Braintrust, project {escape(project)}, experiment "
+        f"{escape(name)}: {scores.count(1)} passed, {scores.count(0)} failed, "
+        f"{scores.count(None)} error (score null).",
+        soft_wrap=True,
+    )
 
 
 @app.command()
