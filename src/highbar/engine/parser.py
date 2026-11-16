@@ -1368,6 +1368,12 @@ def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
                 f"{where}.error.{key}: a boolean is not text, and an error is; "
                 f'write the text it must hold, such as {{{key}: "Timeout"}}'
             )
+        if key == "equals" and not isinstance(operand, str):
+            # equals compares as is, and an error is text: 1 never equals "1".
+            raise SpecError(
+                f"{where}.error.equals: {operand!r} is not text, and an error is; "
+                'write it as text, such as {equals: "1"}'
+            )
     try:
         validate_expected(matcher, f"{where}.error")
     except ValueError as e:
