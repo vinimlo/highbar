@@ -78,10 +78,14 @@ def _as_text(actual: Any) -> str | None:
     """Text form of a scalar, or None when the value has no meaningful text form.
 
     None and containers are deliberately left out: ``str(None)`` is ``"None"``, which
-    happily matches ``^[a-zA-Z]+$``, and a dict's repr contains its keys.
+    happily matches ``^[a-zA-Z]+$``, and a dict's repr contains its keys. So is a
+    boolean (HB-46): ``"True"`` held ``contains: "Tr"``, and a negative matcher on it
+    checked no text at all.
     """
     if isinstance(actual, str):
         return actual
+    if isinstance(actual, bool):
+        return None
     if isinstance(actual, (int, float)):
         return str(actual)
     return None
@@ -97,7 +101,8 @@ def _contains(actual: Any, operand: Any, *, ignore_case: bool) -> bool | None:
         return any(same_value(operand, item) for item in items)
 
     text = _as_text(actual)
-    if text is None:
+    if text is None or isinstance(operand, bool):
+        # A boolean operand is not text either: `contains: true` held on "untrue".
         return None
     needle = str(operand)
     if ignore_case:
