@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -45,9 +46,13 @@ class AgentAdapter(Protocol):
 
 
 class VariationGenerator(Protocol):
-    """Produces N paraphrases of a trigger that keep the same intent."""
+    """Produces N paraphrases of a trigger that keep the same intent.
 
-    def generate(self, trigger: str, count: int) -> list[str]: ...
+    ``context`` is what the user said before it in the conversation, for the last turn
+    of a multi-turn test (HB-16); a single-turn test calls without it.
+    """
+
+    def generate(self, trigger: str, count: int, context: Sequence[str] = ()) -> list[str]: ...
 
 
 class TraceCollector(Protocol):

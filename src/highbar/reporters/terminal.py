@@ -5,7 +5,8 @@ from __future__ import annotations
 from rich.console import Console
 from rich.markup import escape
 
-from highbar.domain.models import RunSummary, Status, Suite, TestResult
+from highbar.domain.models import RunSummary, Status, Suite, TestResult, UsageTotals
+from highbar.engine.usage import amount
 
 # Mark and color per outcome. An error gets its own mark: it is neither a pass nor a
 # failure of the agent, and reading it as either is the mistake this is here to stop.
@@ -16,11 +17,28 @@ _MARKS = {
 }
 
 
+def _usage_parts(totals: UsageTotals) -> list[str]:
+    """Tokens and cost as far as they are known, and whether that is all of them."""
+    parts: list[str] = []
+    if totals.input_tokens is not None:
+        cached = f" ({totals.cached_input_tokens} cached)" if totals.cached_input_tokens else ""
+        parts.append(f"{totals.input_tokens} input tokens{cached}")
+    if totals.output_tokens is not None:
+        parts.append(f"{totals.output_tokens} output tokens")
+    if totals.cost:
+        costs = sorted(totals.cost.items())
+        parts.append(" + ".join(f"{amount(cost)} {currency}" for currency, cost in costs))
+    if not totals.complete:
+        parts.append("incomplete")
+    return parts
+
+
 def format_summary(summary: RunSummary, *, styled: bool = False) -> str:
     """``N passed | N failed | N error | N variations | 1.23s``, without zero counts.
 
     ``passed`` is always shown, so a run where nothing passed says so. ``styled`` adds
-    Rich markup with the same colors as the marks.
+    Rich markup with the same colors as the marks. A run that reported usage ends with
+    its tokens and cost, marked ``incomplete`` when they are only part of the sum.
     """
     parts = [(f"{summary.passed} passed", "green")]
     if summary.failed:
@@ -31,8 +49,11 @@ def format_summary(summary: RunSummary, *, styled: bool = False) -> str:
         # Executions, not tests: a test with 5 variations still counts as one test.
         parts.append((f"{summary.variations} variations", "dim"))
     parts.append((f"{summary.duration_ms / 1000:.2f}s", ""))
+    usage = _usage_parts(summary.totals) if summary.totals is not None else []
     if not styled:
-        return " | ".join(text for text, _ in parts)
+        return " | ".join([*(text for text, _ in parts), *usage])
+    # A currency is the agent's text: unescaped, Rich would read one in brackets as a tag.
+    parts.extend((escape(part), "yellow" if part == "incomplete" else "") for part in usage)
     return " | ".join(f"[{style}]{text}[/{style}]" if style else text for text, style in parts)
 
 
@@ -54,8 +75,14 @@ class TerminalReporter:
         if result.counts is not None:
             passed, runs, min_pass = result.counts
             test_name += f" {passed}/{runs}" + (f" (min {min_pass})" if min_pass != runs else "")
+        if result.expected is not None:
+            test_name += f" (expected {result.expected})"
         color, mark = _MARKS[result.status]
         self._console.print(f"    [{color}]{mark}[/{color}] {test_name}  [dim]{duration}[/dim]")
+        if result.expected is not None and result.status is Status.PASSED:
+            # A negative control that ended as it should: what made it fail is the
+            # expected part, and it stays in the report.
+            return
         for error in result.errors:
             self._console.print(f"      [{color}]→ {escape(error)}[/{color}]")
 
@@ -64,5 +91,11 @@ class TerminalReporter:
 
     def on_run_end(self, summary: RunSummary) -> None:
         self._console.print()
-        self._console.print(f"  {format_summary(summary, styled=True)}")
-        self._console.print()
+        # One write from the summary line to its blank line (rich buffers inside `with`).
+        # rich exits 1 when a write finds the pipe closed, so a reader that leaves at the
+        # summary must find nothing after it in a write of its own (HB-35).
+        with self._console:
+            self._console.print(f"  {format_summary(summary, styled=True)}")
+            for warning in summary.totals.warnings if summary.totals is not None else ():
+                self.on_warning(f"incomplete sum: {warning}")
+            self._console.print()

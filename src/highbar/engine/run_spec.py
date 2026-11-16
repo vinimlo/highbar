@@ -3,33 +3,62 @@
 from __future__ import annotations
 
 import tempfile
-import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from rich.console import Console
 from rich.markup import escape
 
 from highbar.adapters.attached import AttachedAgent
-from highbar.adapters.file_collector import FileTraceCollector, NoTraceCollector
+from highbar.adapters.file_collector import (
+    FileTraceCollector,
+    NoTraceCollector,
+    trace_collector,
+)
 from highbar.adapters.http_client import HTTPClient
 from highbar.adapters.subprocess_adapter import AgentStartError, SubprocessAdapter
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
-from highbar.domain.models import RunSummary, Spec
-from highbar.domain.protocols import TraceCollector
+from highbar.domain.models import RunSummary, SessionConfig, Spec
+from highbar.domain.protocols import Reporter, TraceCollector
+from highbar.engine.logs import log_path
 from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.runner import TestRunner
 from highbar.engine.secrets import redact
 from highbar.engine.session import SessionHooks
+from highbar.engine.streak import ErrorStreak
 from highbar.reporters.terminal import TerminalReporter
 from highbar.variations.generator import VariationGenerator
 
+# Called once per spec, however it ended: the result so far, and whether it ran to the end.
+OnEnd = Callable[[RunSummary, bool], None]
+
 
 def load_session_hooks(path: str, spec: Spec) -> SessionHooks | None:
-    """The spec's session hooks, with the Python ones imported. Raises ``SessionError``."""
-    if spec.agent.session is None:
+    """The spec's session and run hooks and its ``expect.check`` functions, with the
+    Python ones imported.
+
+    Raises ``SessionError``.
+    """
+    checks = sorted(
+        {
+            expect.check
+            for suite in spec.suites
+            for test in suite.tests
+            for expect in [test.expect, *(turn.expect for turn in test.turns or [])]
+            if expect is not None and expect.check is not None
+        }
+    )
+    if spec.agent.session is None and spec.agent.run is None and not checks:
         return None
-    hooks = SessionHooks(spec.agent.session, spec_path=path, timeout_ms=spec.agent.timeout)
+    hooks = SessionHooks(
+        spec.agent.session or SessionConfig(),
+        spec_path=path,
+        timeout_ms=spec.agent.timeout,
+        secrets=spec.agent.secrets,
+        run=spec.agent.run,
+        checks=checks,
+    )
     hooks.load()
     return hooks
 
@@ -43,6 +72,13 @@ def run_spec(
     console: Console,
     session: SessionHooks | None = None,
     default_runs: int | None = None,
+    reporter: Reporter | None = None,
+    on_end: OnEnd | None = None,
+    max_cost: float | None = None,
+    spent: Mapping[str, float] | None = None,
+    spent_untagged: Mapping[str, float] | None = None,
+    max_errors: int | None = None,
+    streak: ErrorStreak | None = None,
 ) -> RunSummary:
     """Run one spec against its agent.
 
@@ -50,9 +86,18 @@ def run_spec(
     ``HIGHBAR_TRACES_URL``, stops it after, and removes the file unless kept.
     Attach mode: the agent is already running and writes ``traces`` itself; highbar
     neither stops it nor touches its file.
+
+    ``reporter`` takes the place of the terminal output of each test. ``on_end`` gets
+    the result on every way out, including a run that stopped halfway. ``max_cost`` is the
+    ceiling of a whole run, of which earlier specs already ``spent`` that much per
+    currency, ``spent_untagged`` of it with no test context: over it, the spec stops at
+    the end of a test, and ``stopped`` says so. ``max_errors`` executions in a row that
+    failed for one cause of the infrastructure stop it after the last of them, counted in
+    ``streak``, which earlier specs of the run may have started (None or 0: no stop).
     """
     console.print(f"  Running {escape(path)}")
     agent = spec.agent
+    reporter = reporter or TerminalReporter()
     # The CLI's --runs, when given, takes the place of the spec's defaults.runs.
     runs = spec.default_runs if default_runs is None else default_runs
     client = HTTPClient(
@@ -64,7 +109,7 @@ def run_spec(
 
     if agent.start is None:
         collector: TraceCollector = (
-            FileTraceCollector(agent.traces) if agent.traces else NoTraceCollector()
+            trace_collector(agent.traces) if agent.traces else NoTraceCollector()
         )
         runner = _runner(
             spec,
@@ -76,13 +121,23 @@ def run_spec(
             session=session,
             managed=False,
             default_runs=runs,
+            reporter=reporter,
+            max_cost=max_cost,
+            spent=spent,
+            spent_untagged=spent_untagged,
+            max_errors=max_errors,
+            streak=streak,
         )
-        return _run(runner, spec)
+        return _run(runner, spec, on_end)
 
     with tempfile.NamedTemporaryFile(
         suffix=".jsonl", prefix="highbar-traces-", delete=False
     ) as traces_fd:
         traces_file = traces_fd.name
+    if keep_traces:
+        # Said before the run, not after: after the summary, a write of its own races a
+        # reader that leaves at the summary line, and rich exits 1 on it (HB-35).
+        console.print(f"  Traces kept at {escape(traces_file)}")
 
     adapter = SubprocessAdapter(
         start_cmd=agent.start,
@@ -102,14 +157,18 @@ def run_spec(
         session=session,
         managed=True,
         default_runs=runs,
+        reporter=reporter,
+        max_cost=max_cost,
+        spent=spent,
+        spent_untagged=spent_untagged,
+        max_errors=max_errors,
+        streak=streak,
     )
 
     try:
-        summary = _run(runner, spec)
+        summary = _run(runner, spec, on_end)
     finally:
-        if keep_traces:
-            console.print(f"  Traces kept at {escape(traces_file)}")
-        else:
+        if not keep_traces:
             Path(traces_file).unlink(missing_ok=True)
 
     if summary.failed or summary.errored:
@@ -129,13 +188,19 @@ def _runner(
     session: SessionHooks | None,
     managed: bool,
     default_runs: int,
+    reporter: Reporter,
+    max_cost: float | None,
+    spent: Mapping[str, float] | None,
+    spent_untagged: Mapping[str, float] | None,
+    max_errors: int | None,
+    streak: ErrorStreak | None,
 ) -> TestRunner:
     return TestRunner(
         adapter=adapter,  # type: ignore[arg-type]
         client=client,
         collector=collector,
         assertions=[FunctionCallsAssertion(), ResponseAssertion()],
-        reporter=TerminalReporter(),
+        reporter=reporter,
         settle_time=spec.agent.settle_time / 1000.0,
         variations=generator,
         managed=managed,
@@ -144,29 +209,39 @@ def _runner(
         correlate=spec.agent.correlate,
         secrets=spec.agent.secrets,
         default_runs=default_runs,
+        max_cost=max_cost,
+        hook_timeout=spec.agent.timeout / 1000,
+        spent=spent,
+        spent_untagged=spent_untagged,
+        max_errors=max_errors,
+        streak=streak,
     )
 
 
-def _run(runner: TestRunner, spec: Spec) -> RunSummary:
-    """Run the spec; an error that stops the run is masked like every other message."""
+def _run(runner: TestRunner, spec: Spec, on_end: OnEnd | None) -> RunSummary:
+    """Run the spec; an error that stops the run is masked like every other message.
+
+    ``complete`` is whether every test ran all of its executions. A ceiling passed at the
+    last test, or by what the read after it found, left none out: ``stopped`` says it was
+    passed (HB-32). So did repeated errors whose last was the last execution of the last
+    test; a test they stopped halfway is in the result, and is not complete (HB-34).
+    """
+    complete = False
     try:
-        return runner.run(spec)
+        summary = runner.run(spec)
+        every_test = summary.total == sum(len(suite.tests) for suite in spec.suites)
+        complete = every_test and not runner.interrupted
+        return summary
     except (AgentStartError, AgentNotObservedError) as e:
         if not spec.agent.secrets:
             raise
         raise type(e)(redact(str(e), spec.agent.secrets)) from None
+    finally:
+        # A run that stopped halfway still has the results of the tests that finished.
+        if on_end is not None:
+            on_end(runner.snapshot(), complete)
 
 
 def agent_log_path(spec_path: str) -> Path:
-    """``.highbar/logs/<spec stem>-<timestamp>.log``, relative to where highbar runs.
-
-    Never an existing file: two specs with the same name in the same second would
-    share a log, and one's failure would show the other agent's output.
-    """
-    stem = Path(spec_path).name.removesuffix(".yaml").removesuffix(".highbar")
-    base = Path(".highbar") / "logs" / f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}"
-    path, n = base.with_suffix(".log"), 1
-    while path.exists():
-        n += 1
-        path = base.parent / f"{base.name}-{n}.log"
-    return path
+    """``.highbar/logs/<spec stem>-<timestamp>.log``, relative to where highbar runs."""
+    return log_path(spec_path)

@@ -11,6 +11,8 @@ What it guarantees, each one a bug it used to have:
   `npm run` or `make` would otherwise leave the real server behind on the port.
 - An agent that exits while starting is reported at once, with the end of its log,
   instead of after the whole startup timeout with nothing to read.
+- An agent that exits after it was ready is seen (``exited()``), with whether something
+  else answers on its port: that process may be the one the tests talked to (HB-43).
 """
 
 from __future__ import annotations
@@ -21,11 +23,13 @@ import shlex
 import signal
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 
 from highbar.adapters.ports import accepts_connections, describe_listener, endpoint_address
+from highbar.engine.logs import make_folder
 
 _POLL_INTERVAL = 0.2
 _STOP_GRACE = 5.0
@@ -34,6 +38,14 @@ _TAIL_BYTES = 64 * 1024
 
 class AgentStartError(RuntimeError):
     """The agent did not come up. The message ends with the tail of its log, if any."""
+
+
+@dataclass(frozen=True)
+class AgentExit:
+    """How the agent highbar started ended on its own, while the run went on (HB-43)."""
+
+    code: int
+    port_answers: bool  # something still accepts connections on the agent's port
 
 
 class SubprocessAdapter:
@@ -77,10 +89,7 @@ class SubprocessAdapter:
             raise AgentStartError(f"`start` is not a valid command line: {e}") from None
 
         try:
-            self._log_path.parent.mkdir(parents=True, exist_ok=True)
-            gitignore = self._log_path.parent / ".gitignore"
-            if not gitignore.exists():
-                gitignore.write_text("*\n")
+            make_folder(self._log_path)
             log = open(self._log_path, "ab")  # noqa: SIM115 — closed right after Popen
         except OSError as e:
             raise AgentStartError(
@@ -133,6 +142,22 @@ class SubprocessAdapter:
         _signal_group(group, signal.SIGKILL)
         with contextlib.suppress(subprocess.TimeoutExpired):
             process.wait(timeout=2)
+
+    def exited(self) -> AgentExit | None:
+        """How the agent ended, or None while it runs (and before start, after stop).
+
+        Another process can take the port between the check in ``start()`` and the
+        agent's own bind: the agent then dies, after its SDK wrote the hello, and that
+        process answers every message in its place.
+        """
+        process = self._process
+        if process is None:
+            return None
+        code = process.poll()
+        if code is None:
+            return None
+        host, port = endpoint_address(self._endpoint)
+        return AgentExit(code=code, port_answers=accepts_connections(host, port))
 
     def tail(self, lines: int = 40) -> str:
         """The last ``lines`` lines of the agent's log, reading at most its last 64 KB."""

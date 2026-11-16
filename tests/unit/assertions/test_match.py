@@ -173,6 +173,37 @@ class TestValidateExpected:
             validate_expected({"order": {"status": {"matches": "("}}}, "result")
 
 
+class TestIgnoringCase:
+    def test_imatches_finds_what_matches_misses(self) -> None:
+        answer = {"note": "Onze anos de garantia"}
+
+        assert subset_match({"note": {"imatches": "^onze anos"}}, answer)
+        assert not subset_match({"note": {"matches": "^onze anos"}}, answer)
+        assert not subset_match({"note": {"imatches": "^seis anos"}}, answer)
+
+    def test_not_imatches_refuses_what_not_matches_lets_through(self) -> None:
+        answer = {"note": "Onze anos de garantia"}
+
+        assert not subset_match({"note": {"not_imatches": "onze"}}, answer)
+        assert subset_match({"note": {"not_matches": "onze"}}, answer)
+        assert subset_match({"note": {"not_imatches": "seis"}}, answer)
+
+    @pytest.mark.parametrize("actual", [None, {"a": 1}, ["abc"]])
+    def test_a_value_with_no_text_form_fails_both(self, actual: object) -> None:
+        assert not subset_match({"v": {"imatches": ".*"}}, {"v": actual})
+        assert not subset_match({"v": {"not_imatches": "x"}}, {"v": actual})
+
+    @pytest.mark.parametrize("key", ["imatches", "not_imatches"])
+    def test_invalid_regex_is_rejected(self, key: str) -> None:
+        with pytest.raises(ValueError, match=rf"params.note: invalid regex in '{key}'"):
+            validate_expected({"note": {key: "("}}, "params")
+
+    @pytest.mark.parametrize("key", ["imatches", "not_imatches"])
+    def test_a_pattern_has_to_be_text(self, key: str) -> None:
+        with pytest.raises(ValueError, match=rf"'{key}' needs a regex string"):
+            validate_expected({"note": {key: 123}}, "params")
+
+
 class TestNotMatches:
     def test_not_matches_in_params_and_on_a_non_text_value(self) -> None:
         assert subset_match({"note": {"not_matches": "[0-9]{16}"}}, {"note": "card on file"})
@@ -186,3 +217,405 @@ class TestNotMatches:
     def test_invalid_regex_in_not_matches_is_rejected(self) -> None:
         with pytest.raises(ValueError, match=r"params.note: invalid regex in 'not_matches'"):
             validate_expected({"note": {"not_matches": "("}}, "params")
+
+
+class TestComparisons:
+    """HB-7: lt, lte, gt, gte compare numbers, and only numbers."""
+
+    def test_each_comparison_holds_on_its_side_of_the_bound(self) -> None:
+        assert subset_match({"n": {"lt": 3}}, {"n": 2})
+        assert not subset_match({"n": {"lt": 3}}, {"n": 3})
+        assert subset_match({"n": {"lte": 3}}, {"n": 3})
+        assert not subset_match({"n": {"lte": 3}}, {"n": 4})
+        assert subset_match({"n": {"gt": 3}}, {"n": 4})
+        assert not subset_match({"n": {"gt": 3}}, {"n": 3})
+        assert subset_match({"n": {"gte": 3}}, {"n": 3})
+        assert not subset_match({"n": {"gte": 3}}, {"n": 2})
+
+    def test_ints_and_floats_compare_with_each_other(self) -> None:
+        assert subset_match({"tokens": {"lte": 6000}}, {"tokens": 5999.5})
+        assert subset_match({"score": {"gte": 0.5}}, {"score": 1})
+
+    def test_a_range_is_two_conditions(self) -> None:
+        bounded = {"limit": {"gte": 1, "lte": 3}}
+
+        assert subset_match(bounded, {"limit": 2})
+        assert not subset_match(bounded, {"limit": 0})
+        assert not subset_match(bounded, {"limit": 4})
+
+    @pytest.mark.parametrize("key", ["lt", "lte", "gt", "gte"])
+    @pytest.mark.parametrize("actual", ["2", None, True, False, [1], {"n": 1}, float("nan")])
+    def test_hb7_a_value_that_is_not_a_number_fails(self, key: str, actual: object) -> None:
+        """A numeric string, a bool or a missing value is not evidence of a bound.
+
+        `True < 3` is true in Python, and `"2"` is what a model writes when the schema
+        says integer: either would make a bound green on a value it never checked.
+        """
+        assert not subset_match({"n": {key: 3}}, {"n": actual})
+
+    def test_hb7_a_missing_key_fails(self) -> None:
+        assert not subset_match({"n": {"lte": 3}}, {"other": 1})
+
+
+class TestLengths:
+    """HB-7: len and len_lte measure lists, and only lists."""
+
+    def test_len_is_the_exact_length(self) -> None:
+        assert subset_match({"docs": {"len": 2}}, {"docs": ["a", "b"]})
+        assert not subset_match({"docs": {"len": 2}}, {"docs": ["a"]})
+        assert subset_match({"docs": {"len": 0}}, {"docs": []})
+
+    def test_len_lte_is_a_ceiling(self) -> None:
+        assert subset_match({"docs": {"len_lte": 3}}, {"docs": [1, 2, 3]})
+        assert subset_match({"docs": {"len_lte": 3}}, {"docs": []})
+        assert not subset_match({"docs": {"len_lte": 3}}, {"docs": [1, 2, 3, 4]})
+
+    @pytest.mark.parametrize("key", ["len", "len_lte"])
+    @pytest.mark.parametrize("actual", ["ab", None, {"a": 1, "b": 2}, 2])
+    def test_hb7_a_value_that_is_not_a_list_fails(self, key: str, actual: object) -> None:
+        """A string has a length too, but a list that came as a string is the defect."""
+        assert not subset_match({"docs": {key: 2}}, {"docs": actual})
+
+    def test_combines_with_contains(self) -> None:
+        expected = {"ids": {"len_lte": 3, "contains": "t-7"}}
+
+        assert subset_match(expected, {"ids": ["t-1", "t-7"]})
+        assert not subset_match(expected, {"ids": ["t-1", "t-2"]})
+
+
+class TestComparisonOperands:
+    """HB-7: a bound that is not a number fails at `highbar validate`."""
+
+    @pytest.mark.parametrize("key", ["lt", "lte", "gt", "gte"])
+    @pytest.mark.parametrize("operand", [3, 0, -1, 2.5])
+    def test_accepts_a_number(self, key: str, operand: object) -> None:
+        validate_expected({"n": {key: operand}}, "params")
+
+    @pytest.mark.parametrize("key", ["lt", "lte", "gt", "gte"])
+    @pytest.mark.parametrize(
+        ("operand", "kind"), [("3", "str"), (True, "bool"), (None, "NoneType"), ([3], "list")]
+    )
+    def test_hb7_rejects_a_bound_that_is_not_a_number(
+        self, key: str, operand: object, kind: str
+    ) -> None:
+        with pytest.raises(ValueError, match=rf"params\.n: '{key}' needs a number, got {kind}"):
+            validate_expected({"n": {key: operand}}, "params")
+
+    @pytest.mark.parametrize("key", ["len", "len_lte"])
+    @pytest.mark.parametrize("operand", [0, 3])
+    def test_accepts_a_whole_length(self, key: str, operand: int) -> None:
+        validate_expected({"docs": {key: operand}}, "result")
+
+    @pytest.mark.parametrize("key", ["len", "len_lte"])
+    @pytest.mark.parametrize("operand", [-1, 2.5, "3", True, None])
+    def test_hb7_rejects_a_length_that_is_not_a_whole_number(
+        self, key: str, operand: object
+    ) -> None:
+        with pytest.raises(ValueError, match=rf"result\.docs: '{key}' needs a whole number"):
+            validate_expected({"docs": {key: operand}}, "result")
+
+    def test_hb7_a_literal_dict_with_these_keys_is_a_matcher_now(self) -> None:
+        """`{equals: {...}}` is the way to compare such a dict as a literal."""
+        assert not subset_match({"range": {"lt": 5}}, {"range": {"lt": 5}})
+        assert subset_match({"range": {"equals": {"lt": 5}}}, {"range": {"lt": 5}})
+
+    @pytest.mark.parametrize("key", ["lt", "lte", "gt", "gte"])
+    @pytest.mark.parametrize("operand", [float("inf"), float("-inf"), float("nan")])
+    def test_hb7_rejects_a_bound_that_is_not_finite(self, key: str, operand: float) -> None:
+        """`lte: .inf` holds for every number: a check that cannot fail."""
+        with pytest.raises(ValueError, match=rf"params\.n: '{key}' needs a finite number"):
+            validate_expected({"n": {key: operand}}, "params")
+
+
+class TestHugeBounds:
+    def test_hb7_an_int_beyond_float_range_is_a_valid_bound(self) -> None:
+        huge = int("9" * 400)
+
+        validate_expected({"n": {"lte": huge}}, "params")
+        assert subset_match({"n": {"lte": huge}}, {"n": 10**300})
+        assert not subset_match({"n": {"gt": huge}}, {"n": 1.0})
+
+
+class TestOneOf:
+    """HB-7: `in` holds when the value equals one of the listed values."""
+
+    def test_in_is_one_of(self) -> None:
+        assert subset_match({"plan": {"in": ["basic", "pro"]}}, {"plan": "pro"})
+        assert not subset_match({"plan": {"in": ["basic", "pro"]}}, {"plan": "Pro"})
+        assert subset_match({"n": {"in": [1, 2]}}, {"n": 2})
+
+    def test_in_compares_whole_values(self) -> None:
+        assert subset_match({"opts": {"in": [{"size": "L"}]}}, {"opts": {"size": "L"}})
+        assert not subset_match({"opts": {"in": [{"size": "L"}]}}, {"opts": {"size": "L", "x": 1}})
+
+    def test_hb7_in_fails_on_a_missing_value(self) -> None:
+        assert not subset_match({"plan": {"in": ["basic", "pro"]}}, {"other": "pro"})
+
+
+class TestContainsAll:
+    """HB-7: `contains_all` is `contains` for each item of its list."""
+
+    def test_on_a_list_every_item_is_there(self) -> None:
+        expected = {"ids": {"contains_all": ["t-1", "t-7"]}}
+
+        assert subset_match(expected, {"ids": ["t-7", "t-2", "t-1"]})
+        assert not subset_match(expected, {"ids": ["t-7", "t-2"]})
+
+    def test_on_text_every_piece_is_there(self) -> None:
+        expected = {"note": {"contains_all": ["refund", "1042"]}}
+
+        assert subset_match(expected, {"note": "refund for order 1042"})
+        assert not subset_match(expected, {"note": "refund for order 1043"})
+
+    @pytest.mark.parametrize("actual", [None, {"a": "refund"}])
+    def test_hb7_a_value_it_cannot_read_fails(self, actual: object) -> None:
+        assert not subset_match({"note": {"contains_all": ["refund"]}}, {"note": actual})
+
+
+class TestEachItem:
+    """HB-7: `any` and `all` match the items of a list, like a value of params."""
+
+    def test_any_needs_one_item_that_matches(self) -> None:
+        docs = {
+            "documents": [
+                {"id": "t-1", "chunks": [0, 1, 2]},
+                {"id": "t-7", "chunks": [3]},
+            ]
+        }
+
+        assert subset_match({"documents": {"any": {"id": "t-1", "chunks": [0, 1, 2]}}}, docs)
+        assert not subset_match({"documents": {"any": {"id": "t-1", "chunks": [0, 1]}}}, docs)
+        assert subset_match({"documents": {"any": {"id": {"matches": "^t-[0-9]$"}}}}, docs)
+
+    def test_all_needs_every_item_to_match(self) -> None:
+        expected = {"documents": {"all": {"status": "published"}}}
+
+        assert subset_match(
+            expected, {"documents": [{"status": "published"}, {"status": "published", "n": 1}]}
+        )
+        assert not subset_match(
+            expected, {"documents": [{"status": "published"}, {"status": "draft"}]}
+        )
+
+    def test_items_can_be_scalars_and_matchers(self) -> None:
+        assert subset_match({"scores": {"all": {"gte": 0.5}}}, {"scores": [0.5, 0.9]})
+        assert not subset_match({"scores": {"all": {"gte": 0.5}}}, {"scores": [0.5, 0.4]})
+        assert subset_match({"tags": {"any": {"icontains": "drink"}}}, {"tags": ["Cold Drink"]})
+
+    def test_hb7_all_on_an_empty_list_fails(self) -> None:
+        """Every item of nothing matched, and nothing was checked: not evidence."""
+        assert not subset_match({"documents": {"all": {"status": "published"}}}, {"documents": []})
+
+    @pytest.mark.parametrize("key", ["any", "all"])
+    @pytest.mark.parametrize("actual", [None, "published", {"status": "published"}])
+    def test_hb7_a_value_that_is_not_a_list_fails(self, key: str, actual: object) -> None:
+        assert not subset_match(
+            {"documents": {key: {"status": "published"}}}, {"documents": actual}
+        )
+
+    def test_combines_with_a_length(self) -> None:
+        expected = {"documents": {"len_lte": 3, "all": {"status": "published"}}}
+
+        assert subset_match(expected, {"documents": [{"status": "published"}]})
+        assert not subset_match(expected, {"documents": [{"status": "published"}] * 4})
+
+
+class TestListOperands:
+    """HB-7: the operands of in, contains_all, any and all are checked at load time."""
+
+    @pytest.mark.parametrize("key", ["in", "contains_all"])
+    @pytest.mark.parametrize("operand", [[], "pro", None, {"a": 1}])
+    def test_hb7_in_and_contains_all_need_a_non_empty_list(self, key: str, operand: object) -> None:
+        """`in: []` can never hold, and `contains_all: []` always does."""
+        with pytest.raises(ValueError, match=rf"params\.plan: '{key}' needs a non-empty list"):
+            validate_expected({"plan": {key: operand}}, "params")
+
+    @pytest.mark.parametrize("key", ["any", "all"])
+    def test_hb7_a_bad_matcher_inside_any_or_all_is_found(self, key: str) -> None:
+        with pytest.raises(ValueError, match=rf"result\.documents\.{key}\.id: invalid regex"):
+            validate_expected({"documents": {key: {"id": {"matches": "("}}}}, "result")
+
+    @pytest.mark.parametrize("key", ["any", "all"])
+    def test_hb7_a_misspelled_matcher_inside_any_or_all_is_found(self, key: str) -> None:
+        with pytest.raises(ValueError, match="did you mean 'contains'"):
+            validate_expected({"documents": {key: {"id": {"contain": "t-"}}}}, "result")
+
+    def test_well_formed_list_matchers_pass(self) -> None:
+        validate_expected(
+            {
+                "plan": {"in": ["basic", "pro"]},
+                "ids": {"contains_all": ["t-1"]},
+                "documents": {"any": {"id": "t-1"}, "all": {"chunks": {"len_lte": 3}}},
+            },
+            "result",
+        )
+
+
+class TestOperandsThatCannotFail:
+    """Review of #27: an operand that holds on any input is refused at load time."""
+
+    @pytest.mark.parametrize("key", ["any", "all"])
+    def test_hb7_any_or_all_of_an_empty_object_is_refused(self, key: str) -> None:
+        """`all: {}` only says "these are objects": green on any list of objects."""
+        with pytest.raises(ValueError, match=rf"result\.documents: '{key}' needs something"):
+            validate_expected({"documents": {key: {}}}, "result")
+
+    def test_hb7_an_empty_piece_in_contains_all_is_refused(self) -> None:
+        """ "" is in every text, so it adds a check that cannot fail."""
+        with pytest.raises(ValueError, match=r"params\.q: 'contains_all' has an empty text"):
+            validate_expected({"q": {"contains_all": ["refund", ""]}}, "params")
+
+    @pytest.mark.parametrize("key", ["any", "all"])
+    def test_hb7_an_empty_object_deeper_inside_any_or_all_is_refused(self, key: str) -> None:
+        with pytest.raises(ValueError, match=rf"'{key}' needs something"):
+            validate_expected({"documents": {"any": {"tags": {key: {}}}}}, "result")
+
+
+class TestEmptyOperands:
+    """HB-36: params and result refuse what `response` already refuses.
+
+    `""` is in every text and an empty pattern matches every text, so a positive matcher
+    with one holds on anything; a negative one can never hold. `{}` is different: as a
+    value it still says "this argument is there and is an object", which can fail.
+    """
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "contains",
+            "icontains",
+            "matches",
+            "imatches",
+            "not_contains",
+            "not_icontains",
+            "not_matches",
+            "not_imatches",
+        ],
+    )
+    def test_hb36_an_empty_text_operand_is_refused(self, key: str) -> None:
+        with pytest.raises(ValueError, match=rf"params\.q: '{key}' cannot be empty"):
+            validate_expected({"q": {key: ""}}, "params")
+
+    def test_hb36_equals_an_empty_text_is_still_a_check(self) -> None:
+        validate_expected({"q": {"equals": ""}}, "params")
+        assert not subset_match({"q": {"equals": ""}}, {"q": "x"})
+
+    def test_hb36_an_empty_object_loads_and_checks_presence_and_type(self) -> None:
+        """Review of #31: `{order: {}}` is "order is there and is an object"."""
+        validate_expected({"order": {}}, "result")
+        assert subset_match({"order": {}}, {"order": {"id": 1}})
+        assert not subset_match({"order": {}}, {"total": 3})
+        assert not subset_match({"order": {}}, {"order": "1"})
+        assert not subset_match({"order": {}}, {"order": None})
+
+    def test_hb36_an_empty_object_deeper_down_loads_and_checks(self) -> None:
+        validate_expected({"order": {"items": {}}}, "result")
+        assert subset_match({"order": {"items": {}}}, {"order": {"items": {"a": 1}}})
+        assert not subset_match({"order": {"items": {}}}, {"order": {"items": ["a"]}})
+
+    def test_hb36_equals_an_empty_object_is_still_a_check(self) -> None:
+        validate_expected({"order": {"equals": {}}}, "result")
+        assert subset_match({"order": {"equals": {}}}, {"order": {}})
+        assert not subset_match({"order": {"equals": {}}}, {"order": {"id": 1}})
+
+    def test_hb36_an_empty_list_compares_as_a_value(self) -> None:
+        validate_expected({"tags": []}, "params")
+        assert not subset_match({"tags": []}, {"tags": ["a"]})
+
+
+class TestHB38BoolIsNotANumber:
+    """HB-38: in Python True == 1, so `retries: 0` held on `false` and `confirm: true` on `1`.
+
+    A model that sends 1 where the tool asks for a boolean made the mistake the test
+    exists to catch: a boolean and a number are never equal, at any depth.
+    """
+
+    @pytest.mark.parametrize(
+        ("expected", "actual"),
+        [
+            (0, False),
+            (1, True),
+            (True, 1),
+            (False, 0),
+            (1.0, True),
+            ([1, 0], [True, False]),
+            ({"a": 1}, {"a": True}),
+            ([{"a": 0}], [{"a": False}]),
+        ],
+    )
+    def test_hb38_a_plain_value(self, expected: object, actual: object) -> None:
+        assert subset_match({"x": expected}, {"x": actual}) is False
+
+    @pytest.mark.parametrize(
+        ("matcher", "actual"),
+        [
+            ({"equals": 0}, False),
+            ({"equals": True}, 1),
+            ({"equals": [1]}, [True]),
+            ({"in": [0, 1]}, False),
+            ({"in": [True]}, 1),
+            ({"contains": 1}, [True, False]),
+            ({"contains": False}, [0]),
+            ({"contains_all": [1]}, [True]),
+        ],
+    )
+    def test_hb38_a_matcher(self, matcher: dict[str, object], actual: object) -> None:
+        assert subset_match({"x": matcher}, {"x": actual}) is False
+
+    def test_hb38_not_contains_a_number_holds_on_a_list_of_booleans(self) -> None:
+        assert subset_match({"x": {"not_contains": 1}}, {"x": [True]}) is True
+
+    @pytest.mark.parametrize(
+        ("expected", "actual"),
+        [
+            (0, 0),
+            (1, 1.0),
+            (True, True),
+            (False, False),
+            ([1, True], [1.0, True]),
+            ({"a": False}, {"a": False, "b": 1}),
+        ],
+    )
+    def test_hb38_same_kinds_still_match(self, expected: object, actual: object) -> None:
+        assert subset_match({"x": expected}, {"x": actual}) is True
+
+    def test_hb38_matchers_on_same_kinds_still_hold(self) -> None:
+        assert subset_match({"x": {"in": [0, 1]}}, {"x": 1}) is True
+        assert subset_match({"x": {"equals": False}}, {"x": False}) is True
+        assert subset_match({"x": {"contains": True}}, {"x": [False, True]}) is True
+        assert subset_match({"x": {"contains_all": [1, 2]}}, {"x": [2, 1]}) is True
+
+
+class TestHB46ABooleanHasNoText:
+    """Review of #71: the text matchers read True as "True", so `contains: "Tr"` held on
+    `true`, and `not_contains`/`not_matches` held on any boolean without checking text.
+    A boolean has no text form, as None has none: positive and negative checks fail.
+    """
+
+    @pytest.mark.parametrize(
+        "matcher",
+        [
+            {"contains": "Tr"},
+            {"icontains": "true"},
+            {"matches": "^True$"},
+            {"imatches": "^true$"},
+            {"not_contains": "x"},
+            {"not_icontains": "x"},
+            {"not_matches": "^x$"},
+            {"not_imatches": "^x$"},
+        ],
+    )
+    def test_hb46_a_text_matcher_on_a_boolean_fails(self, matcher: dict[str, object]) -> None:
+        assert subset_match({"x": matcher}, {"x": True}) is False
+        assert subset_match({"x": matcher}, {"x": False}) is False
+
+    def test_hb46_a_boolean_operand_is_not_text(self) -> None:
+        # `contains: true` held on the text "True" (and on "untrue").
+        assert subset_match({"x": {"contains": True}}, {"x": "True"}) is False
+        assert subset_match({"x": {"not_contains": True}}, {"x": "no"}) is False
+
+    def test_hb46_numbers_and_text_still_read_as_text(self) -> None:
+        assert subset_match({"x": {"contains": "42"}}, {"x": 1042}) is True
+        assert subset_match({"x": {"matches": r"^\d+\.5$"}}, {"x": 2.5}) is True
+        assert subset_match({"x": {"not_contains": "x"}}, {"x": "abc"}) is True
+        assert subset_match({"x": {"contains": True}}, {"x": [False, True]}) is True

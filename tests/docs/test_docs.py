@@ -22,6 +22,7 @@ import pytest
 
 from highbar.engine.parser import parse_spec
 from tests.docs.blocks import Block, blocks, spec_for
+from tests.fixtures.quickstart import move_to_a_free_port
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = [
@@ -140,6 +141,8 @@ def _run_commands(commands: tuple[tuple[str, ...], ...], scenario: str) -> str:
                 + result.stdout
                 + result.stderr
             )
+            if command[1:2] == ("init",):
+                move_to_a_free_port(cwd)  # several suites run at once on the node (HB-40)
         assert result is not None
         return result.stdout
 

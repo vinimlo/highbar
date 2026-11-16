@@ -39,6 +39,14 @@ The agent must create `highbar.Highbar()` after `HIGHBAR_TRACES_URL` is in its e
 
 `agent.traces` is relative to where you run highbar, not to the spec. Compare the path in the message with the file the agent writes. If they match, the file was deleted or rotated away while the agent ran: highbar's SDK writes it again only with its next record. Create it empty (`: > var/traces.jsonl`), or empty it instead of deleting it.
 
+**The attached agent's trace file is a directory.**
+
+```text
+  ✗ specs/support.highbar.yaml: agent.traces …/support/var/traces.jsonl is a directory, not a file, so no test can see what the agent does. Docker makes one when a bind mount names a file that does not exist yet: remove it, create the file and start the agent again
+```
+
+A bind mount such as `-v ./var/traces.jsonl:/app/traces.jsonl`, or a compose `volumes:` line, with no file at `./var/traces.jsonl` yet, makes an empty directory there. Stop the agent's container, remove the directory, create the file (`: > var/traces.jsonl`) and start it again. A trace file highbar cannot read for another reason, such as its permissions, is named the same way, with the reason.
+
 **The spec is invalid.** The message names the key and the likely fix: `unknown key 'orderd' — did you mean 'ordered'?`. Run `highbar validate` to check every spec without running anything.
 
 ## A test is `error`, not `failed`
@@ -49,6 +57,14 @@ The agent must create `highbar.Highbar()` after `HIGHBAR_TRACES_URL` is in its e
 - **`cannot tell which test made get_order`**: a call with no test id would decide the result. The call was made outside the request's context, typically in a thread the agent started. Start it with `contextvars.copy_context().run(...)`, or pass the tag to `hb.record()`.
 - **`HTTP 307 … redirected to …`**, **`no response in 60s (agent.timeout)`**, **an empty reply**: the request did not get an answer to check. Fix the endpoint, or raise `agent.timeout`.
 - **`session.setup …`**: the session hook failed, and the message is the hook's own.
+
+## The run stops after errors in a row (exit code 4)
+
+```console
+  ✗ 5 executions in a row failed with HTTP 500 from http://localhost:8000/chat (last: 'refund policy'); the infrastructure failed, not the agent, so the run stopped. Exits with 4.
+```
+
+Every one of the last executions got no reply to check, for the same cause, from the same endpoint: the agent, or what it depends on, is down. The tests above the line show each error in full, the body of the reply included, which usually says why. Check the agent's log (`.highbar/logs/` when highbar started it), fix what is down, and run again. To run every execution anyway, pass [`--max-errors 0`](/reference/cli#max-errors).
 
 ## A warning about calls without a test context
 
@@ -64,7 +80,15 @@ When the agent tags some records and not others, typically a call made in a thre
   ! some tool calls carry none of agent.correlate's keys (conversation_id), so they count for no test, and a test whose result they would change is an error; give their context conversation_id (agent.correlate): hb.turn(conversation_id=...) around the handling of each message, or a `context` field from another writer; a thread the agent starts itself needs contextvars.copy_context() to keep the tag
 ```
 
-Both warnings name the keys of `agent.correlate`. See [connecting your agent](/guides/connecting-your-agent#tag-each-message-with-its-test).
+A `turn` with usage gets the same warning when nothing around it is tagged, and the same fix applies. Its usage counts for the test whose window it falls in, but it may have been spent by the test before, so that test is an `error` when its budget holds only without it:
+
+```text
+  ! some `turn` records with usage carry no test context, so each counts for the test whose window it falls in, and the test before it, which may have spent it, is an error if its budget holds only without it; tag them with the test id: highbar.asgi.Middleware, or hb.turn(test=<the X-Highbar-Test header>); a thread the agent starts itself needs contextvars.copy_context() to keep the tag
+```
+
+Nothing has to be late for this: an agent that tags nothing gets that `error` whenever two neighbouring tests, or two runs of a test, together pass the limit. Once its records are tagged, each counts for the test that spent it.
+
+These warnings name the keys of `agent.correlate`. See [connecting your agent](/guides/connecting-your-agent#tag-each-message-with-its-test).
 
 ## A call recorded after the test's window closed
 

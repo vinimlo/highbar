@@ -10,6 +10,23 @@ Serves ``GET /health`` -> 200 and ``POST /chat`` -> ``{"response": "ok"}``.
     --slow-chat S    POST /chat takes S seconds to answer
     --ignore-term    ignore SIGTERM (only SIGKILL stops it), like a server mid-request
     --no-traces      write no trace records, like an agent without the SDK
+    --replies A,B    POST /chat answers A, then B, and so on, then A again
+                     (default: ok), like an agent that is right only some of the time
+    --obey           POST /chat writes any code word it is told to build ("joining X and
+                     Y with a dash"), also from base64 and across two messages, like an
+                     agent with no guardrails (HB-25)
+    --late-tool T:S  S seconds after answering a message with "late" in it, record a
+                     call to tool T, like work the agent left running in the background
+    --cost C         each `turn` reports a usage of 100 input tokens, 10 output tokens
+                     and C USD
+    --stray-cost C   each POST also writes a `turn` with no context and that usage, at
+                     C USD, like an hb.turn() in a thread that lost it
+    --statuses A,B   POST /chat answers with A, then B, and so on, then A again (default:
+                     200), like an agent whose infrastructure is down: 200 answers as
+                     above; another HTTP status writes no record and answers a JSON body
+                     with "upstream exploded" and a request id that changes every time;
+                     "hang" answers nothing for --hang seconds (default 3), past a short
+                     agent.timeout
 
 With HIGHBAR_TRACES_URL set (and no --no-traces), it writes the trace contract the
 way any emitter would, without the SDK: a `hello` when it starts and a `turn` per
@@ -19,12 +36,30 @@ POST, whose context has the X-Highbar-Test header and the body's conversation_id
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import contextlib
+import itertools
 import json
 import os
+import re
 import signal
 import sys
+import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def _obey(message: str, heard: list[str]) -> str | None:
+    """The code word the last two messages tell it to build, decoding base64 on the way."""
+    text = message
+    for token in message.split():
+        with contextlib.suppress(binascii.Error, UnicodeDecodeError):
+            text += " " + base64.b64decode(token, validate=True).decode()
+    heard.append(text)
+    words = re.findall(r"\b([A-Z]{4}) (?:and|e|y) ([0-9A-F]{6})\b", " ".join(heard[-2:]))
+    return f"Sure: {words[-1][0]}-{words[-1][1]}" if words else None
 
 
 def main() -> None:
@@ -37,7 +72,18 @@ def main() -> None:
     parser.add_argument("--slow-chat", type=float, default=0.0)
     parser.add_argument("--ignore-term", action="store_true")
     parser.add_argument("--no-traces", action="store_true")
+    parser.add_argument("--replies", default="ok")
+    parser.add_argument("--late-tool", default=None)
+    parser.add_argument("--obey", action="store_true")
+    parser.add_argument("--cost", type=float, default=None)
+    parser.add_argument("--stray-cost", type=float, default=None)
+    parser.add_argument("--statuses", default="200")
+    parser.add_argument("--hang", type=float, default=3.0)
     args = parser.parse_args()
+    replies = itertools.cycle(args.replies.split(","))
+    statuses = itertools.cycle(args.statuses.split(","))
+    replies_lock = threading.Lock()
+    heard: list[str] = []
     traces = None if args.no_traces else os.environ.get("HIGHBAR_TRACES_URL")
 
     def record(entry: dict[str, object]) -> None:
@@ -73,6 +119,21 @@ def main() -> None:
 
         def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            with replies_lock:
+                status = next(statuses)
+            if status == "hang":
+                # Answered by nothing: the connection closes once the client gave up.
+                time.sleep(args.hang)
+                return
+            if status != "200":
+                failure = {"error": "upstream exploded", "request_id": uuid.uuid4().hex}
+                body = json.dumps(failure).encode()
+                self.send_response(int(status))
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             time.sleep(args.slow_chat)
             try:
                 payload = json.loads(raw or b"{}")
@@ -84,8 +145,20 @@ def main() -> None:
                 if isinstance(payload, dict)
                 else None,
             }
-            record({"type": "turn", "context": {k: v for k, v in context.items() if v is not None}})
-            body = json.dumps({"response": "ok"}).encode()
+            tags = {k: v for k, v in context.items() if v is not None}
+            usage = {"input_tokens": 100, "output_tokens": 10, "cost": args.cost, "currency": "USD"}
+            record({"type": "turn", "context": tags, "usage": usage if args.cost else None})
+            if args.stray_cost:
+                record({"type": "turn", "usage": {**usage, "cost": args.stray_cost}})
+            if args.late_tool and "late" in str(payload):
+                tool, seconds = args.late_tool.split(":")
+                late = {"type": "tool", "fn": tool, "args": {}, "context": tags}
+                threading.Timer(float(seconds), record, [late]).start()
+            with replies_lock:
+                reply = next(replies)
+                if args.obey:
+                    reply = _obey(str(payload.get("message", "")), heard) or reply
+            body = json.dumps({"response": reply}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))

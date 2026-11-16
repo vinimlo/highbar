@@ -12,7 +12,7 @@ hb = highbar.Highbar()
 
 The object that writes the trace file.
 
-- `traces`: the file to append to. Without it, `HIGHBAR_TRACES_URL` is used, which highbar sets for an agent it starts. With neither, the SDK records nothing.
+- `traces`: the file to append to. Without it, `HIGHBAR_TRACES_URL` is used, which highbar sets for an agent it starts. With neither, the SDK records nothing. `{pid}` in the path is the id of the process that writes, so a server and its workers each write a file of their own, which `agent.traces` reads through a glob. When Python itself ends the process (the end of its main module, `sys.exit`, or Ctrl-C), the SDK writes a `bye` record in its file, and highbar stops counting the tools it declared there. A process stopped by SIGTERM (`kill`, `docker stop`, `docker compose down`, uvicorn included) writes none, so the `bye` is only an extra: clear the folder before each start of the agent, as [the guide](/guides/attach-mode#an-agent-with-several-processes) says.
 - `hb.enabled`: whether a trace file is set.
 - `hb.traces`: the file in use, or `None`.
 
@@ -33,13 +33,13 @@ Records each call as a `tool` record: the arguments bound to their names (defaul
 
 Decorating a function also declares it: the SDK writes a `tools` record with every tool it records, which highbar checks a spec's tool names against. When the trace file is emptied or replaced while the agent runs, the SDK writes its `hello` and the tools again.
 
-## `hb.record(fn, args=None, *, result=None, error=None, started_at=None, ended_at=None, **context)`
+## `hb.record(fn, args=None, *, result=..., error=None, started_at=None, ended_at=None, **context)`
 
 ```python
 hb.record("search_products", {"query": "dress"}, result=rows, conversation_id=cid)
 ```
 
-Records a call made where no function can be decorated, such as a dispatch funnel. Keyword arguments beyond the named ones go into the record's `context`, on top of the current message's context. A failure the tool returned as data belongs in `error`: highbar never reads `result` to decide whether a call failed. Times default to now.
+Records a call made where no function can be decorated, such as a dispatch funnel. Keyword arguments beyond the named ones go into the record's `context`, on top of the current message's context. A failure the tool returned as data belongs in `error`: highbar never reads `result` to decide whether a call failed. Without `result=` the record has no `result`, and a `returns` check on that call is not taken as "it returned null": the test is an `error` unless something else already failed it. `result=None` says the tool returned null. Times default to now.
 
 ## `hb.declare(*names)`
 
@@ -55,9 +55,10 @@ Declares tools that `hb.record()` writes, which no decorator announces. highbar 
 with hb.turn(test=request.headers.get("x-highbar-test"), message=text) as turn:
     reply = agent.respond(text)
     turn.response = reply
+    turn.usage = {"model": "gpt-4o-mini", "input_tokens": 1000, "output_tokens": 200}
 ```
 
-Marks the handling of one message. Tool calls inside the block carry its context, and a `turn` record is written when the block ends, even if it raises. Set `turn.response` to record the reply.
+Marks the handling of one message. Tool calls inside the block carry its context, and a `turn` record is written when the block ends, even if it raises. Set `turn.response` to record the reply, and `turn.usage` to record what the message consumed, with the fields of the [trace contract](/reference/trace-contract#usage-tokens-and-cost). A `Decimal` in it is written as a number. Next to `highbar.asgi.Middleware`, which has no way to know it, `usage` goes in an `hb.turn()` inside the handler, and highbar adds the records of the message up.
 
 ## `highbar.asgi.Middleware`
 

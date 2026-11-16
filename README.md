@@ -27,7 +27,7 @@ highbar run
 <!-- output: quickstart -->
 ```text
 
-  Highbar v0.1.0
+  Highbar v0.2.0
   Running specs/quickstart.highbar.yaml
 
   Orders
@@ -105,7 +105,7 @@ Set `GUARDRAILS = False` in `agent.py` and run again. The agent now deletes the 
 <!-- output: quickstart-broken -->
 ```text
 
-  Highbar v0.1.0
+  Highbar v0.2.0
   Running specs/quickstart.highbar.yaml
 
   Orders
@@ -132,6 +132,8 @@ The run exits with 1. Exit codes are what a CI job reads:
 | 0 | Every test passed |
 | 1 | A test failed (the agent did something else) or errored (highbar could not verify it) |
 | 2 | Nothing could run: an invalid spec, an agent that did not start, a port already in use |
+| 3 | The run spent more than `--max-cost`, and stopped at the end of a test |
+| 4 | `--max-errors` executions in a row (5 by default) got no reply for the same cause, such as HTTP 500 from the same endpoint: the infrastructure failed, and the run stopped there |
 
 ## Connect your own agent
 
@@ -191,7 +193,7 @@ agent:
   correlate: {conversation_id: "{{session.conversation_id}}"}
 ```
 
-`${AGENT_TOKEN}` comes from the environment, and a value of 6 characters or more never shows in the output. Each test opens its own conversation, and trace records are matched to the test by `conversation_id`, so records of other conversations on the same agent are left out.
+`${AGENT_TOKEN}` comes from the environment, and in a header (or a body, a session hook, a URL's password or query) its value never shows in the output; in `start` or a URL's host or path it does ([which values are masked](https://vinimlo.github.io/highbar/guides/attach-mode)). Each test opens its own conversation, and trace records are matched to the test by `conversation_id`, so records of other conversations on the same agent are left out.
 
 ## Gate a merge
 

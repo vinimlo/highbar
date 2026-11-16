@@ -8,17 +8,53 @@ from types import ModuleType
 
 import pytest
 
+from highbar.engine.usage import read_prices
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _script() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "check", ROOT / "scripts" / "check_release_tag.py"
-    )
+def _script(name: str = "check_release_tag") -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / f"{name}.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_the_price_script_writes_a_table_highbar_reads() -> None:
+    models = {
+        "data": [
+            {
+                "id": "z/late",
+                "name": "dropped",
+                "pricing": {"prompt": "1", "completion": "2", "request": "0"},
+            },
+            {
+                "id": "a/early",
+                "pricing": {"prompt": "3", "completion": "4", "input_cache_read": "1"},
+            },
+        ]
+    }
+
+    table = _script("update_prices").prices_from(models)
+
+    assert table["currency"] == "USD"
+    assert [model["id"] for model in table["data"]] == ["a/early", "z/late"]
+    assert table["data"][1]["pricing"] == {"prompt": "1", "completion": "2"}
+    assert len(read_prices(table)) == 2
+
+
+def test_the_price_script_leaves_out_a_model_with_no_fixed_price() -> None:
+    models = {
+        "data": [
+            {"id": "a/fixed", "pricing": {"prompt": "1", "completion": "2"}},
+            {"id": "a/router", "pricing": {"prompt": "-1", "completion": "-1"}},
+        ]
+    }
+
+    table = _script("update_prices").prices_from(models)
+
+    assert [model["id"] for model in table["data"]] == ["a/fixed"]
 
 
 def _pyproject(tmp_path: Path, version: str) -> Path:

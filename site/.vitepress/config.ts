@@ -41,6 +41,7 @@ export default defineConfig({
           { text: 'Guardrails', link: '/guides/guardrails' },
           { text: 'Variations', link: '/guides/variations' },
           { text: 'Repetition and CI gates', link: '/guides/repetition' },
+          { text: 'Comparing two configurations', link: '/guides/comparing' },
           { text: 'Troubleshooting', link: '/guides/troubleshooting' },
         ],
       },
@@ -49,6 +50,7 @@ export default defineConfig({
         items: [
           { text: 'CLI', link: '/reference/cli' },
           { text: 'Spec format', link: '/reference/spec-format' },
+          { text: 'Report', link: '/reference/report' },
           { text: 'Trace contract v1', link: '/reference/trace-contract' },
           { text: 'Python SDK', link: '/reference/python-sdk' },
           { text: 'Python API', link: '/reference/python-api' },

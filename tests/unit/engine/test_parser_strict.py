@@ -21,6 +21,11 @@ agent:
 """
 
 
+# The reasons a URL urlsplit refuses is not one (HB-41): a bracket in its host part,
+# or a character that NFKC turns into a / ? # @ or :, which it refuses there.
+BRACKETS = r'endpoint is not a valid URL: a "\[" or "\]" goes only around an IPv6 host'
+NORMALIZED = r"endpoint is not a valid URL: a character in its host or password reads as"
+
 # The smallest test that checks something: no tool may be called.
 GUARDRAIL = '- trigger: "hi"\n  expect: {function_calls: []}\n'
 
@@ -101,7 +106,28 @@ class TestUnknownKeys:
         )
 
         with pytest.raises(
-            SpecError, match=r"unknown key 'zzz' \(allowed: expect, min_pass, name, runs, "
+            SpecError,
+            match=(
+                r"unknown key 'zzz' \(allowed: expect, expect_status, history, id, "
+                r"min_pass, name, runs, "
+            ),
+        ):
+            parse_spec(path)
+
+    def test_misspelled_key_in_defaults(self, tmp_path: Path) -> None:
+        path = _spec(tmp_path, "defaults: {runs: 3, min_pas: 0.66}\n" + _one_test(GUARDRAIL))
+
+        with pytest.raises(
+            SpecError, match=r": defaults: unknown key 'min_pas' — did you mean 'min_pass'\?$"
+        ):
+            parse_spec(path)
+
+    def test_unknown_key_in_defaults_lists_the_allowed_ones(self, tmp_path: Path) -> None:
+        path = _spec(tmp_path, "defaults: {zzz: 1}\n" + _one_test(GUARDRAIL))
+
+        with pytest.raises(
+            SpecError,
+            match=r": defaults: unknown key 'zzz' \(allowed: budget, min_pass, runs, session\)$",
         ):
             parse_spec(path)
 
@@ -155,6 +181,11 @@ class TestWrongTypes:
         [
             ("localhost:18733/chat", r"endpoint must be an http:// or https:// URL"),
             ("http://localhost:99999/chat", r"endpoint has an invalid port"),
+            # HB-41: urlsplit raised ValueError, and highbar exited 1 with a traceback.
+            ("http://[::1:8000/chat", BRACKETS),
+            ("http://::1]:8000/chat", BRACKETS),
+            ("http://[not-an-ip]:8000/chat", BRACKETS),
+            ("http://ho\uff0fst:8000/chat", NORMALIZED),
         ],
     )
     def test_endpoint_must_be_an_http_url(
@@ -543,8 +574,28 @@ class TestResponseMatchers:
             with pytest.raises(SpecError, match=rf"{where}.*invalid regex"):
                 parse_spec(path)
 
+    @pytest.mark.parametrize("key", ["imatches", "not_imatches"])
+    def test_invalid_regex_ignoring_case_is_a_spec_error(self, tmp_path: Path, key: str) -> None:
+        for expect, where in [
+            (f'{{response: {{{key}: "("}}}}', f"response.{key}"),
+            (f'{{function_calls: [{{name: a, params: {{q: {{{key}: "("}}}}}}]}}', "params.q"),
+        ]:
+            path = _spec(tmp_path, _one_test(f'- trigger: "hi"\n  expect: {expect}\n'))
+            with pytest.raises(SpecError, match=rf"{where}.*invalid regex"):
+                parse_spec(path)
+
     @pytest.mark.parametrize(
-        "key", ["contains", "icontains", "not_contains", "not_icontains", "matches", "not_matches"]
+        "key",
+        [
+            "contains",
+            "icontains",
+            "not_contains",
+            "not_icontains",
+            "matches",
+            "not_matches",
+            "imatches",
+            "not_imatches",
+        ],
     )
     def test_response_keeps_rejecting_empty_operands_and_templates(
         self, tmp_path: Path, key: str
@@ -601,3 +652,122 @@ def test_i4_a_turn_whose_only_check_is_forbid_asserts_something(tmp_path: Path) 
     (test,) = parse_spec(path).suites[0].tests
 
     assert test.requires_observation
+
+
+class TestStableKey:
+    """A test's key joins two reports, so it has to name one test (spec D15)."""
+
+    def test_j9_duplicate_key_in_a_suite_is_a_spec_error(self, tmp_path: Path) -> None:
+        path = _spec(
+            tmp_path,
+            _one_test("""\
+                - name: A
+                  trigger: "one"
+                  expect: {function_calls: []}
+                - name: A
+                  trigger: "two"
+                  expect: {function_calls: []}
+                """),
+        )
+
+        with pytest.raises(SpecError) as e:
+            parse_spec(path)
+
+        assert "suites[0].tests[1]" in str(e.value)
+        assert "'S/A'" in str(e.value)
+        assert "suites[0].tests[0]" in str(e.value)
+        assert " id " in str(e.value)
+
+    def test_j9_duplicate_explicit_id_across_suites_is_a_spec_error(self, tmp_path: Path) -> None:
+        path = _spec(
+            tmp_path,
+            """\
+            suites:
+              - name: S
+                tests:
+                  - id: same
+                    trigger: "one"
+                    expect: {function_calls: []}
+              - name: T
+                tests:
+                  - id: same
+                    trigger: "two"
+                    expect: {function_calls: []}
+            """,
+        )
+
+        with pytest.raises(SpecError, match=r"suites\[1\]\.tests\[0\].*'same'"):
+            parse_spec(path)
+
+    def test_j9_two_unnamed_multi_turn_tests_need_an_id(self, tmp_path: Path) -> None:
+        conversation = '- turns:\n    - trigger: "hi"\n      expect: {function_calls: []}\n'
+        path = _spec(tmp_path, _one_test(conversation * 2))
+
+        with pytest.raises(SpecError, match=r"multi-turn \(1 turns\)"):
+            parse_spec(path)
+
+    def test_j9_an_id_tells_two_tests_of_the_same_name_apart(self, tmp_path: Path) -> None:
+        path = _spec(
+            tmp_path,
+            _one_test("""\
+                - id: first
+                  name: A
+                  trigger: "one"
+                  expect: {function_calls: []}
+                - id: second
+                  name: A
+                  trigger: "two"
+                  expect: {function_calls: []}
+                """),
+        )
+
+        (suite,) = parse_spec(path).suites
+        assert [test.id for test in suite.tests] == ["first", "second"]
+
+    def test_j9_same_name_in_two_suites_is_fine(self, tmp_path: Path) -> None:
+        path = _spec(
+            tmp_path,
+            """\
+            suites:
+              - name: S
+                tests:
+                  - name: A
+                    trigger: "one"
+                    expect: {function_calls: []}
+              - name: T
+                tests:
+                  - name: A
+                    trigger: "two"
+                    expect: {function_calls: []}
+            """,
+        )
+
+        assert len(parse_spec(path).suites) == 2
+
+    @pytest.mark.parametrize("value", ['""', "12", "[a]"])
+    def test_test_id_must_be_a_non_empty_string(self, tmp_path: Path, value: str) -> None:
+        path = _spec(
+            tmp_path,
+            _one_test(f"""\
+                - id: {value}
+                  trigger: "one"
+                  expect: {{function_calls: []}}
+                """),
+        )
+
+        with pytest.raises(SpecError, match=r"suites\[0\]\.tests\[0\].*id"):
+            parse_spec(path)
+
+    def test_id_works_on_a_multi_turn_test(self, tmp_path: Path) -> None:
+        path = _spec(
+            tmp_path,
+            _one_test("""\
+                - id: chat
+                  turns:
+                    - trigger: "hi"
+                      expect: {function_calls: []}
+                """),
+        )
+
+        (suite,) = parse_spec(path).suites
+        assert suite.tests[0].id == "chat"

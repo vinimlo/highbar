@@ -25,7 +25,7 @@ suites:
 ```
 
 - `agent` says how to reach the agent. With `start`, highbar starts it; without, it attaches to one already running. See [core concepts](/getting-started/concepts#the-agent-started-or-attached) and [attach mode](/guides/attach-mode).
-- `defaults.runs` is how many times each test runs unless it says otherwise. See [repetition](/guides/repetition).
+- `defaults.runs` is how many times each test runs unless it says otherwise, and `defaults.min_pass` how many of those runs must pass. See [repetition](/guides/repetition).
 - `suites` group tests under a name, which the output uses as a heading.
 
 ## A test

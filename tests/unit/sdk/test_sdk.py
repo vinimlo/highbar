@@ -9,14 +9,20 @@ import inspect
 import json
 import logging
 import os
+import subprocess
+import sys
+import textwrap
 import threading
 from collections.abc import Iterator
+from decimal import Decimal
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
 
 from highbar import Highbar
+from highbar.adapters.file_collector import FileTraceCollector
 
 ENV = "HIGHBAR_TRACES_URL"
 
@@ -283,6 +289,90 @@ class TestTurn:
 
         (tool,) = _of(traces, "tool")
         assert tool["context"] == {"test": "t1", "conversation_id": 9}
+
+    def test_ac2_a_turn_carries_the_usage_set_on_it(self, traces: Path) -> None:
+        hb = Highbar()
+        usage = {"model": "gpt-4o-mini", "input_tokens": 1000, "output_tokens": 200}
+
+        with hb.turn(test="t1") as turn:
+            turn.usage = usage
+
+        (record,) = _of(traces, "turn")
+        assert record["usage"] == usage
+
+    def test_ac1_a_turn_without_usage_has_no_such_field(self, traces: Path) -> None:
+        hb = Highbar()
+
+        with hb.turn(test="t1"):
+            pass
+
+        (record,) = _of(traces, "turn")
+        assert "usage" not in record
+
+    def test_a_usage_that_cannot_be_written_does_not_reach_the_agent(self, traces: Path) -> None:
+        hb = Highbar()
+
+        with hb.turn(test="t1") as turn:
+            turn.usage = {"cost": object()}
+
+        (record,) = _of(traces, "turn")
+        assert "object" in record["usage"]["cost"]
+
+    def test_a_mapping_that_is_not_a_dict_is_written_as_an_object(self, traces: Path) -> None:
+        hb = Highbar()
+        usage = {"input_tokens": 5, "output_tokens": 1}
+
+        with hb.turn(test="t1") as turn:
+            turn.usage = MappingProxyType(usage)
+
+        (record,) = _of(traces, "turn")
+        assert record["usage"] == usage
+
+    def test_hb31_a_decimal_in_usage_is_written_as_a_number(self, traces: Path) -> None:
+        """Cost is often kept as a Decimal; as text it would read as missing, and the
+        budget on it would end in `error`."""
+        hb = Highbar()
+
+        with hb.turn(test="t1") as turn:
+            turn.usage = {
+                "input_tokens": Decimal("1000"),
+                "cost": Decimal("0.0125"),
+                "currency": "USD",
+            }
+
+        (record,) = _of(traces, "turn")
+        assert record["usage"] == {"input_tokens": 1000, "cost": 0.0125, "currency": "USD"}
+        assert type(record["usage"]["input_tokens"]) is int
+        window = FileTraceCollector(str(traces)).collect(since=0)
+        usage = window.turns[0].usage
+        assert usage is not None
+        assert (usage.input_tokens, usage.cost, usage.currency) == (1000, 0.0125, "USD")
+
+    @pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "sNaN"])
+    def test_hb31_a_decimal_that_is_no_number_does_not_reach_the_agent(
+        self, traces: Path, value: str
+    ) -> None:
+        hb = Highbar()
+
+        with hb.turn(test="t1") as turn:
+            turn.usage = {"cost": Decimal(value), "currency": "USD"}
+
+        (record,) = _of(traces, "turn")
+        window = FileTraceCollector(str(traces)).collect(since=0)
+        assert "cost" in record["usage"]
+        assert window.turns[0].usage is not None
+        assert window.turns[0].usage.cost is None
+
+    @pytest.mark.parametrize("usage", [5, "lots", object()], ids=["number", "text", "object"])
+    def test_a_usage_that_is_no_mapping_does_not_reach_the_agent(
+        self, traces: Path, usage: Any
+    ) -> None:
+        hb = Highbar()
+
+        with hb.turn(test="t1") as turn:
+            turn.usage = usage
+
+        assert "usage" in _of(traces, "turn")[0]
 
     def test_turn_is_written_even_when_the_handler_raises(self, traces: Path) -> None:
         hb = Highbar()
@@ -603,3 +693,92 @@ class TestInventoryFollowsTheFile:
         get_order("1")
         names = [json.loads(line) for line in traces.read_text().splitlines()]
         assert ["1", "get_order"] in [r.get("names") for r in names]
+
+
+class TestOneFilePerProcess:
+    """HB-15 v1: ``{pid}`` in the path gives each process a file of its own."""
+
+    def test_hb15_pid_in_the_path_gives_each_process_its_own_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(ENV, str(tmp_path / "traces-{pid}.jsonl"))
+        pid = [101]
+        monkeypatch.setattr(os, "getpid", lambda: pid[0])
+        hb = Highbar()
+
+        @hb.tool
+        def get_order(order_id: str) -> str:
+            return order_id
+
+        get_order("1042")
+        pid[0] = 202  # a worker forked after the module was imported
+        get_order("1043")
+
+        server, worker = tmp_path / "traces-101.jsonl", tmp_path / "traces-202.jsonl"
+        assert [r["args"] for r in _of(server, "tool")] == [{"order_id": "1042"}]
+        assert [r["args"] for r in _of(worker, "tool")] == [{"order_id": "1043"}]
+        # Each file starts as a new one: its process's hello, then what it records.
+        assert [r["pid"] for r in _of(worker, "hello")] == [202]
+        assert _of(worker, "tools")[0]["names"] == ["get_order"]
+        assert not (tmp_path / "traces-{pid}.jsonl").exists()
+
+    def _run(self, tmp_path: Path, code: str) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, ENV: str(tmp_path / "traces-{pid}.jsonl")}
+        return subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(code)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_hb15_a_process_says_bye_when_it_exits(self, tmp_path: Path) -> None:
+        """highbar stops counting the tools a process declared once it ended (#52)."""
+        done = self._run(
+            tmp_path,
+            """\
+            from highbar import Highbar
+            hb = Highbar()
+
+            @hb.tool
+            def refund(order_id: str) -> str:
+                return order_id
+
+            refund("1042")
+            """,
+        )
+
+        assert done.returncode == 0, done.stderr
+        (traces,) = tmp_path.glob("traces-*.jsonl")
+        (hello,) = _of(traces, "hello")
+        assert [r["pid"] for r in _of(traces, "bye")] == [hello["pid"]]
+        assert FileTraceCollector(traces).declared() is None
+
+    @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
+    def test_hb15_a_forked_child_says_bye_only_in_its_own_file(self, tmp_path: Path) -> None:
+        """A child inherits its parent's hello: its own end must not end its parent's."""
+        done = self._run(
+            tmp_path,
+            """\
+            import os, sys
+            from highbar import Highbar
+            hb = Highbar()
+
+            @hb.tool
+            def get_order(order_id: str) -> str:
+                return order_id
+
+            child = os.fork()
+            if child == 0:
+                get_order("1042")
+                sys.exit(0)
+            os.waitpid(child, 0)
+            print(os.getpid(), child)
+            """,
+        )
+
+        assert done.returncode == 0, done.stderr
+        parent, child = done.stdout.split()
+        for pid in (parent, child):
+            traces = tmp_path / f"traces-{pid}.jsonl"
+            assert [r["pid"] for r in _of(traces, "bye")] == [int(pid)], pid
