@@ -16,6 +16,7 @@ Runs the tests of a spec file, or of every `*.highbar.yaml` under a directory. W
 | `--report json=FILE` | Also write the results to FILE. See the [report](/reference/report). `junit=FILE` writes them as JUnit XML, for CI tools that read it, and `markdown=FILE` as a summary for a CI job's page (`$GITHUB_STEP_SUMMARY`). Give it once per file to write more than one. |
 | `--max-cost AMOUNT` | A ceiling on what the whole run spends. Over it, the run stops at the end of the test in progress and exits with 3. |
 | `--max-errors N` | Stop the run once N executions in a row fail for the same cause of the agent's infrastructure, and exit with 4. 5 by default; 0 never stops. |
+| `--jobs N` | Run up to N tests at once (N ≥ 1, 1 by default). Every trace record must then carry `agent.correlate`. See [below](#jobs). |
 
 All specs are parsed and validated before any agent starts. With several specs, each one prints its own summary, and a total follows at the end. When the turns report [usage](/reference/trace-contract#usage-tokens-and-cost), a summary ends with its tokens and cost, and says `incomplete`, with what is missing, when they are only part of the sum:
 
@@ -53,6 +54,33 @@ Anything else an execution ends in starts the count over: a pass, a failure, `no
 What ran stays as it ran: the executions before the stop keep their `error`, in the terminal and in the [report](/reference/report). The test in progress is reported with the executions it had, as an `error` that says how many of its executions ran, whatever those executions were. The tests and specs after it do not run, and the agent highbar started is stopped. When the last of the N is the last execution of the last test, nothing was left out: the run still exits with 4, and the report's `complete` is `true`.
 
 The message never shows the body of a reply, and a value from `${VAR}` in the endpoint is masked, as in every other message. `--max-errors 0` turns the stop off and runs every execution. When both stops apply, the first to come is the one reported: repeated errors stop the run in the middle of a test, and `--max-cost` is checked at its end.
+
+### `--jobs`
+
+With `--jobs N`, up to N tests are in flight at once, started in spec order. Most of a test's time is the agent thinking, so N in flight divides the wall time by close to N. A test's phrasings, runs and turns still run one after the other, in one place: `{{previous.*}}`, `min_pass` and a conversation's turns depend on that order. Only the send and the wait for `settle_time` run side by side; the reading of the trace file and every verdict happen one at a time.
+
+With several tests in flight, the window a record falls in says nothing about whose it is, so records are counted by their correlation alone:
+
+- a record tagged for a test counts for that test, whichever read found it, and one that comes after its test's window closed is a late record, judged as with `--jobs 1`;
+- a record with no test context counts for no test. A test that checks what the agent recorded and has no record of its own is an `error`: `not observed: with --jobs, every record must carry agent.correlate (untagged records cannot be told apart)`. With `--jobs 1`, a window with nothing tagged counts for its test; with `--jobs N` it never does. An untagged record also leaves unverified every test in flight whose result it would change.
+- a trace line that cannot be read leaves unverified every test in flight when it was read, since it may be any of theirs.
+
+So tag every record before using `--jobs`: `highbar.asgi.Middleware`, or `hb.turn(test=...)` around each message (see [connecting your agent](/guides/connecting-your-agent#tag-each-message-with-its-test)).
+
+The results reach the terminal and the [report](/reference/report) in spec order, as with `--jobs 1`, each once the tests before it are done. A warning can come before the result of the test it is about.
+
+Session hooks run in the test's own place, so up to N setups and teardowns can run at once, and the setup of one test can come before the teardown of another. A command or HTTP hook runs as N copies. Python hooks are called one at a time, but whatever they keep between calls must not assume one test at a time, and must be thread-safe. `agent.run`'s setup and teardown still run once, before and after all the tests.
+
+The stops start no more tests:
+
+- `--max-cost` is checked as each test ends. The tests already in flight finish, so a run can go past the ceiling by what up to N−1 tests spend. The message says how many tests were in flight and how much the run spent over the ceiling:
+
+  ```console
+    ✗ --max-cost 0.2: the run spent 0.25 USD by the end of 't1', so it started no more tests; the 2 tests in flight then finished, and the run spent 0.75 USD in all, 0.55 USD over the ceiling; raise the ceiling to run the rest
+  ```
+
+- `--max-errors` counts executions in the order they end. Once it stops the run, the tests in flight stop after their current execution, as the test in progress does with `--jobs 1`, and only the first stop's message is kept.
+- Ctrl-C (or SIGTERM) waits for the messages in flight, within `agent.timeout`, then stops the agent and runs `agent.run`'s teardown as with `--jobs 1`. The tests that ended are in the report; the ones it cut are not.
 
 ## `highbar validate [SPEC_PATH]`
 
