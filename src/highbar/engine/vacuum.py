@@ -75,6 +75,15 @@ def _agents(tools: tuple[str, ...], every_text: list[str], test: Test) -> dict[s
         "echo": lambda message: _Doing(reply=message),
         "every tool": lambda _message: _Doing(reply="", calls=tools),
     }
+    if len(tools) > 1:
+        # The spec's order is one order: a test that checks the order by name alone is
+        # held by one of the two (review of #76).
+        backwards = tools[::-1]
+        agents["every tool, reversed"] = lambda _message: _Doing(reply="", calls=backwards)
+    for tool in tools:
+        # Calling every tool breaks `exclusive`; one tool alone, with no arguments,
+        # holds a test that checks only that tool's name (review of #76).
+        agents[f"only {tool}"] = lambda _message, tool=tool: _Doing(reply="", calls=(tool,))
     # "every option" names each text the spec looks for, this test's among them. It
     # says something only when it also names one this test does not ask for: alone,
     # the test's own text is just the right answer (review of #76).

@@ -109,7 +109,7 @@ def test_hb47_a_bare_call_check_passes_on_calling_every_tool(tmp_path: Path) -> 
                 params: {query: {icontains: "dress"}}
         """,
     )
-    assert found["searches"] == ("every tool",)
+    assert found["searches"] == ("every tool", "only search")
     assert found["searches for a dress"] == ()
 
 
@@ -276,3 +276,53 @@ def test_hb47_every_option_names_only_the_answers_of_the_tests_suite(tmp_path: P
     )
     found = {f.test: f.passes_on for f in probe_spec(parse_spec(str(spec)))}
     assert found == {"in transit": (), "refuses": ()}
+
+
+def test_hb47_an_order_by_name_only_is_vacuous_whichever_order_the_spec_names(
+    tmp_path: Path,
+) -> None:
+    # Review of #76: "every tool" calls in spec order, so a name-only `ordered` test
+    # that expects the other order was missed.
+    found = _probe(
+        tmp_path,
+        """
+        - name: forbids a
+          trigger: "x"
+          expect:
+            forbid: [a]
+            response: {contains: "x"}
+        - name: b then a
+          trigger: "y"
+          expect:
+            ordered: true
+            function_calls:
+              - name: b
+              - name: a
+        """,
+    )
+    # The spec names a first, so "every tool" calls a then b; the test wants b then a.
+    assert "every tool, reversed" in found["b then a"]
+
+
+def test_hb47_an_exclusive_call_by_name_only_is_vacuous(tmp_path: Path) -> None:
+    # Review of #76: "every tool" breaks `exclusive`, so a name-only exclusive test was
+    # missed. An agent that calls one tool alone, with no arguments, holds it.
+    found = _probe(
+        tmp_path,
+        """
+        - name: searches only
+          trigger: "find a dress"
+          expect:
+            exclusive: true
+            function_calls:
+              - name: search
+        - name: books
+          trigger: "book it"
+          expect:
+            function_calls:
+              - name: book
+                params: {id: "7"}
+        """,
+    )
+    assert found["searches only"] == ("only search",)
+    assert found["books"] == ()
