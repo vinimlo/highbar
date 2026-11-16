@@ -633,6 +633,9 @@ class TurnOutcome:
     tools: tuple[ToolOutcome, ...] = ()
     usage: Usage | None = None
     budget: Budget | None = None
+    # agent.llm_proxy (HB-30): what the agent's `turn` records said, when the proxy's
+    # count took its place as ``usage``. Shown, not added.
+    agent_usage: Usage | None = None
 
 
 @dataclass(frozen=True)

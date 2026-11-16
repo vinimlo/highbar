@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Protocol
 
 from highbar.adapters import file_collector, subprocess_adapter
 from highbar.adapters.file_collector import TraceFormatError
@@ -74,9 +74,30 @@ from highbar.engine.usage import (
     amount,
     check_budget,
     has_cost,
+    merged,
     over_limit,
     priced,
     turn_usage,
+)
+
+# agent.llm_proxy (HB-30): the `source` of the records highbar's proxy writes.
+PROXY = "proxy"
+
+BYPASS_WARNING = (
+    "'{test}': the agent's `turn` reports {agent}, more than the {proxy} the LLM proxy saw "
+    "for it: a model call went around the proxy, from a client that does not read "
+    "OPENAI_BASE_URL or ANTHROPIC_BASE_URL. The larger count holds"
+)
+
+NOT_READ_WARNING = (
+    "a call through the LLM proxy is not a model call, so it is not read and counts for no "
+    "budget: {reason}"
+)
+
+NO_PROXY_CALL_WARNING = (
+    "agent.llm_proxy is on, and no model call of this run went through it, so the usage "
+    "counted is what the agent's `turn` records say; check that its model client reads "
+    "OPENAI_BASE_URL or ANTHROPIC_BASE_URL"
 )
 
 # A window with no tagged record: its untagged calls are all there is, and count.
@@ -157,6 +178,14 @@ class _TurnLog:
     untagged: list[Usage] = field(default_factory=list[Usage])  # read next to it, no context
     suspected: list[Usage] = field(default_factory=list[Usage])  # counted for the next test
     budget: Budget | None = None
+    # agent.llm_proxy (HB-30): the proxy's count of each model call of the turn, which is
+    # its usage once there is one (``switched``), and what the agent's own records said,
+    # shown and not added. ``unread``: why a call's usage was not read.
+    proxy: list[Usage] = field(default_factory=list[Usage])
+    agent: list[Usage] = field(default_factory=list[Usage])
+    switched: bool = False
+    unread: list[str] = field(default_factory=list[str])
+    bypass_told: bool = False
 
     @property
     def usage(self) -> Usage | None:
@@ -216,6 +245,7 @@ class _Execution:
     cause: InfraCause | None = None
     # With --jobs, from its first message until it ends: other reads keep its records here.
     held: _Held | None = None
+    name: str = ""  # the test's, for a warning about it
 
     def close(self, result: TestResult) -> TestResult:
         self.errors, self.duration_ms = list(result.errors), result.duration_ms
@@ -263,6 +293,21 @@ class _Masking:
             error=redact_value(trace.error, self._secrets),
             context=redact_value(trace.context, self._secrets),
         )
+
+
+def _more(agent: Usage, seen: Usage) -> bool:
+    """The agent's own count has tokens the proxy's has not: a call went around it."""
+    return any(
+        mine is not None and theirs is not None and mine > theirs
+        for mine, theirs in (
+            (agent.input_tokens, seen.input_tokens),
+            (agent.output_tokens, seen.output_tokens),
+        )
+    )
+
+
+def _tokens(usage: Usage) -> str:
+    return f"{usage.input_tokens} input and {usage.output_tokens} output tokens"
 
 
 def _cost_of(usages: Iterable[Usage | None]) -> dict[str, float]:
@@ -500,6 +545,15 @@ def _turn_label(
     return truncate(trigger, 80)
 
 
+class ProxyState(Protocol):
+    """What the runner reads of highbar's LLM proxy (HB-30)."""
+
+    @property
+    def write_errors(self) -> int:
+        """Records the trace file refused: model calls no budget saw."""
+        ...
+
+
 class _PerTest(threading.local):
     """What the test a thread runs now is: one per worker with --jobs (HB-8)."""
 
@@ -553,8 +607,12 @@ class TestRunner:
         streak: ErrorStreak | None = None,
         jobs: int = 1,
         more_after: bool = False,
+        proxy: ProxyState | None = None,
     ) -> None:
         self._adapter = adapter
+        # agent.llm_proxy (HB-30): what the proxy counted is the usage of a turn it saw.
+        self._proxy = proxy
+        self._proxy_calls = 0  # model calls it recorded in this run
         self._client = client
         self._collector = collector
         self._assertions = assertions
@@ -734,12 +792,15 @@ class TestRunner:
                 # one that checks only the reply still spent what a late `turn` reports.
                 time.sleep(self._settle_time)
                 self._read_after_last_test()
+                self._judge_proxy_losses()
                 self._report_late(self._findings)
                 # That read can add to what the run spent: it may have ended over its ceiling.
                 if self._stopped is None:
                     self._check_ceiling(self._reported[self._test_index - 1].name, last=True)
             self._warn_undeclared()
             self._warn_unmetered()
+            if self._proxy is not None and self._executions and not self._proxy_calls:
+                self._warn(NO_PROXY_CALL_WARNING)
         finally:
             try:
                 self._adapter.stop()
@@ -1065,6 +1126,7 @@ class TestRunner:
                 ),
                 usage=self._masked_usage(turn.usage),
                 budget=turn.budget,
+                agent_usage=(self._masked_usage(turn_usage(turn.agent)) if turn.switched else None),
             )
             for turn in execution.turns
         )
@@ -1305,6 +1367,8 @@ class TestRunner:
         ]
         self._judge_late_usage([t for t in window.turns if t not in stray], current=None)
         self._judge_late_records(window.llms, window.retrievals, current=None)
+        # A model call after the last window is the last test's, or the one it names.
+        self._late_proxy(window.llms, current=None, fallback=last)
         self._suspect_usage(last, self._read_usage(stray), last.correlate)
         if unreadable is not None and last.passed:
             # No test comes after the last one: the line may be its late call or usage.
@@ -1540,7 +1604,7 @@ class TestRunner:
     ) -> None:
         """Records beyond tool calls, tagged with an earlier execution, count for it (E1)."""
         late: dict[int, tuple[_Execution, int]] = {}
-        for call in llms:
+        for call in (call for call in llms if call.source != PROXY):
             owner = self._owner(call.context, current)
             if owner is not None:
                 owner.llms = [*owner.llms, call]
@@ -1578,7 +1642,13 @@ class TestRunner:
                 continue
             records = self._read_usage([turn])
             if records:
-                owner.turns[-1].records.extend(records)
+                log = owner.turns[-1]
+                if log.switched:
+                    # The proxy's count holds; the agent's may still show a bypass.
+                    log.agent.extend(records)
+                    self._use_proxy(log, owner)
+                else:
+                    log.records.extend(records)
                 changed[id(owner)] = owner
         for execution in changed.values():
             check = self._budgets_of(execution)
@@ -1992,8 +2062,8 @@ class TestRunner:
                 "tagged for no test of the run has no cost, so the run may have spent more"
             )
 
-    def _priced(self, usage: Usage) -> Usage:
-        result, warning = priced(usage)
+    def _priced(self, usage: Usage, *, undated: bool = False) -> Usage:
+        result, warning = priced(usage, undated=undated)
         if warning is not None and warning not in self._warned:
             self._warned.add(warning)
             self._warn(warning)
@@ -2006,6 +2076,206 @@ class TestRunner:
             for turn in turns
             if turn.usage is not None or turn.usage_unreadable
         ]
+
+    # agent.llm_proxy (HB-30). Tests run one at a time with it (P9), so a model call with
+    # no test context is the one in flight's: the window it was read in.
+
+    def _take_proxy(self, window: Window, execution: _Execution, log: _TurnLog) -> None:
+        """The proxy's records of ``window``: this turn's model calls, and late ones."""
+        if self._proxy is None:
+            return
+        late: list[LlmCall] = []
+        for call in window.llms:
+            if call.source != PROXY:
+                continue
+            if call.call != "model":
+                self._not_read(call)
+            elif attribute(call.context, execution.correlate) is Attribution.OTHER:
+                late.append(call)
+            else:
+                self._add_proxy(log, call)
+        self._late_proxy(late, current=execution)
+
+    def _not_read(self, call: LlmCall) -> None:
+        """A call that is not a model call: shown as not read, and in no count (P5)."""
+        message = NOT_READ_WARNING.format(reason=call.unread or "the proxy does not read it")
+        if message not in self._warned:
+            self._warned.add(message)
+            self._warn(message)
+
+    def _add_proxy(self, log: _TurnLog, call: LlmCall) -> None:
+        self._proxy_calls += 1
+        log.proxy.append(self._proxy_usage(call))
+        if call.read is not True:
+            log.unread.append(call.unread or "its usage was not read")
+
+    def _proxy_usage(self, call: LlmCall) -> Usage:
+        """One model call as the proxy read it, priced (P4, P6). Unread, nothing is known
+        of its tokens or its cost: never zero."""
+        if call.read is not True:
+            return Usage(model=call.model, provider=call.provider, llm_calls=1)
+        usage = Usage(
+            model=call.model,
+            provider=call.provider,
+            input_tokens=call.input_tokens,
+            output_tokens=call.output_tokens,
+            cached_input_tokens=call.cache_tokens,
+            cost=call.cost,
+            currency=call.currency if call.cost is not None else None,
+            llm_calls=1,
+        )
+        return self._priced(usage, undated=True)
+
+    def _use_proxy(self, log: _TurnLog, execution: _Execution) -> None:
+        """The turn's usage is the proxy's count (P3); the agent's is shown. More tokens
+        in the agent's than the proxy saw is a call around it: the larger count holds."""
+        if not log.switched:
+            log.agent = list(log.records)
+            log.switched = True
+        log.untagged = []
+        log.records = list(log.proxy)
+        agent = turn_usage(log.agent)
+        seen = merged(log.proxy)
+        if agent is None or not _more(agent, seen):
+            return
+        if not log.bypass_told:
+            log.bypass_told = True
+            self._warn(
+                BYPASS_WARNING.format(
+                    test=self._mask(execution.name),
+                    agent=_tokens(agent),
+                    proxy=_tokens(seen),
+                )
+            )
+        log.records = [self._larger(seen, agent)]
+
+    def _larger(self, seen: Usage, agent: Usage) -> Usage:
+        """Each count at the larger of the two; unknown where the proxy's is unknown."""
+
+        def pick(proxy: int | None, other: int | None) -> int | None:
+            return None if proxy is None else max(proxy, other or 0)
+
+        count = Usage(
+            model=seen.model or agent.model,
+            provider=seen.provider if seen.model else agent.provider,
+            input_tokens=pick(seen.input_tokens, agent.input_tokens),
+            output_tokens=pick(seen.output_tokens, agent.output_tokens),
+            cached_input_tokens=seen.cached_input_tokens,
+            llm_calls=seen.llm_calls,
+        )
+        table, _ = priced(count, undated=True)
+        costs = [
+            (usage.cost, usage.currency)
+            for usage in (table, seen, agent)
+            if usage.cost is not None and usage.currency is not None
+        ]
+        if not costs:
+            return count
+        currency = costs[0][1]
+        cost = max(cost for cost, unit in costs if unit == currency)
+        return replace(count, cost=cost, currency=currency)
+
+    def _late_proxy(
+        self,
+        calls: list[LlmCall],
+        current: _Execution | None,
+        fallback: _Execution | None = None,
+    ) -> None:
+        """Model calls read after their window count for the test they name, or with no
+        name for ``fallback``, and its budgets hold again, as late usage does."""
+        if self._proxy is None:
+            return
+        changed: dict[int, _Execution] = {}
+        for call in calls:
+            if call.source != PROXY:
+                continue
+            if call.call != "model":
+                self._not_read(call)
+                continue
+            owner = self._owner(call.context, current)
+            if owner is None and fallback is not None:
+                untagged = attribute(call.context, fallback.correlate) is Attribution.UNATTRIBUTED
+                owner = fallback if untagged else None
+            if owner is None or not owner.turns:
+                if self._managed:
+                    self._proxy_calls += 1
+                    self._strays.append(self._proxy_usage(call))
+                continue
+            log = owner.turns[-1]
+            self._add_proxy(log, call)
+            self._use_proxy(log, owner)
+            changed[id(owner)] = owner
+        for execution in changed.values():
+            check = self._budgets_of(execution)
+            problems = [
+                *check.exceeded,
+                *self._proxy_problems(execution.turns[-1], execution),
+                *check.unverified,
+            ]
+            if execution.passed and problems:
+                execution.passed = False
+                self._findings.append(
+                    _Finding(
+                        execution,
+                        Status.FAILED if check.exceeded else Status.ERROR,
+                        "a model call through the LLM proxy was recorded after the test's "
+                        f"window closed (settle_time {self._settle_time * 1000:.0f} ms): "
+                        f"{'; '.join(problems)}. Raise agent.settle_time to read it in time",
+                    )
+                )
+
+    def _metered(self, execution: _Execution) -> bool:
+        """A budget or --max-cost counts what ``execution`` spent."""
+        return (
+            self._max_cost is not None
+            or execution.budget is not None
+            or any(turn.budget is not None for turn in execution.turns)
+        )
+
+    def _proxy_problems(self, log: _TurnLog, execution: _Execution) -> list[str]:
+        """Why what the proxy counted for this turn is not the whole of it (P5, P7)."""
+        if self._proxy is None or not self._metered(execution):
+            return []
+        problems: list[str] = []
+        if log.unread:
+            counts = [
+                what
+                for what, on in (
+                    ("its budget", execution.budget is not None or log.budget is not None),
+                    ("--max-cost", self._max_cost is not None),
+                )
+                if on
+            ]
+            calls = "1 model call" if len(log.unread) == 1 else f"{len(log.unread)} model calls"
+            problems.append(
+                f"the LLM proxy could not read the usage of {calls} of this test "
+                f"({'; '.join(dict.fromkeys(log.unread))}), so {' and '.join(counts)} cannot "
+                "count it, and it is not taken as zero"
+            )
+        if (lost := self._proxy_lost()) is not None:
+            problems.append(lost)
+        return problems
+
+    def _proxy_lost(self) -> str | None:
+        """P7: a record the trace file refused is a model call no count saw."""
+        if self._proxy is None or not self._proxy.write_errors:
+            return None
+        errors = self._proxy.write_errors
+        records = "1 record" if errors == 1 else f"{errors} records"
+        return (
+            f"the LLM proxy could not write {records} to the trace file, so model calls of "
+            "this run are in no count: no budget or --max-cost of it can be checked"
+        )
+
+    def _judge_proxy_losses(self) -> None:
+        """At the end: a record lost at any point leaves every metered test unverified."""
+        lost = self._proxy_lost()
+        if lost is None:
+            return
+        for execution in self._executions:
+            if execution.passed and self._metered(execution):
+                execution.passed = False
+                self._findings.append(_Finding(execution, Status.ERROR, lost))
 
     def _budget_check(self, budget: Budget | None, usage: Usage | None) -> BudgetCheck:
         """The turn's own limit, against the turn's own usage."""
@@ -2238,6 +2508,7 @@ class TestRunner:
             started_at=start,
             execution_id=context.test_id,
             budget=budget,
+            name=name,
         )
         self._executions.append(execution)
         self._local.execution = execution
@@ -2483,6 +2754,8 @@ class TestRunner:
             duration = (time.time() - start) * 1000
             return TestResult(status=Status.ERROR, errors=[error], duration_ms=duration)
 
+        # The proxy's records count before anything can end this turn: they are spend.
+        self._take_proxy(window, execution, log)
         classified = classify(window, execution.correlate)
         # What other reads shared with this one: only what has none of its keys either.
         shared = classify(shared or Window(), execution.correlate).unattributed
@@ -2497,7 +2770,9 @@ class TestRunner:
         # With --jobs, nothing counts on faith: several tests are in flight (HB-8).
         if not classified.correlated and not self._parallel:
             stray = self._read_usage(window.turns)
-            self._suspect_window(previous, stray, execution.correlate)
+            if not log.proxy:
+                # With the proxy's records, the agent's usage here is shown, not added.
+                self._suspect_window(previous, stray, execution.correlate)
             if observes and not self._managed:
                 # Attach mode: the agent may serve other traffic, and there is no
                 # `hello` from a fresh file to rely on.
@@ -2525,7 +2800,8 @@ class TestRunner:
             )
             self._suspect(previous, untagged)
             log.untagged = self._read_usage(classified.unattributed.turns)
-            self._suspect_usage(previous, log.untagged, execution.correlate)
+            if not log.proxy:
+                self._suspect_usage(previous, log.untagged, execution.correlate)
             # Shared, it is already in the run's spend once, from the read that took it in.
             log.untagged += self._read_usage(shared.turns)
             untagged = [*untagged, *shared.tools]
@@ -2570,6 +2846,10 @@ class TestRunner:
                 "write a `result` in the tool's line"
             )
 
+        # expect.llm reads the agent's own records: the proxy's feed usage only (P8).
+        llms = [call for call in llms if call.source != PROXY]
+        if log.proxy:
+            self._use_proxy(log, execution)
         budget = self._budget_check(expect.budget, log.usage)
         if (unseen := self._unobservable(expect)) is not None:
             # A name highbar cannot see leaves the test unverified, unless the part of
@@ -2583,11 +2863,13 @@ class TestRunner:
             errors = [*errors, *budget.exceeded]
 
         # The same for a budget: without usage nothing is known about it, and that only
-        # leaves the test unverified when nothing else already failed it.
-        if budget.unverified:
+        # leaves the test unverified when nothing else already failed it. So does a model
+        # call the proxy saw and could not read, or a record it could not write (HB-30).
+        not_known = [*self._proxy_problems(log, execution), *budget.unverified]
+        if not_known:
             if not errors:
-                return unverified("; ".join(budget.unverified))
-            errors = [*errors, *budget.unverified]
+                return unverified("; ".join(not_known))
+            errors = [*errors, *not_known]
 
         failures, unseen = _record_checks(expect, llms, retrievals)
         errors = [*errors, *failures]
