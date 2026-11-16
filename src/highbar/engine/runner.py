@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from typing import Any, Protocol
 
 from highbar.adapters import file_collector, subprocess_adapter
@@ -77,6 +78,7 @@ from highbar.engine.usage import (
     merged,
     over_limit,
     priced,
+    table_currency,
     turn_usage,
 )
 
@@ -303,6 +305,39 @@ def _more(agent: Usage, seen: Usage) -> bool:
             (agent.input_tokens, seen.input_tokens),
             (agent.output_tokens, seen.output_tokens),
         )
+    )
+
+
+def _floor(records: list[Usage], agent: Usage | None) -> Usage | None:
+    """What the agent says the turn cost beyond what the proxy's records know, as a record
+    of its own: zero tokens, and that much cost (review of #97, finding 1).
+
+    The proxy cannot price every call (a deployment name, a model of one's own, one newer
+    than the table), and spend is at least what the agent reported: over a ceiling or a
+    max_cost, that is enough to stop or fail, as without the proxy. The proxy's records
+    without a cost keep the sum incomplete, so under a limit it is still unverified. A
+    cost of 0, or one below what the proxy knows, adds nothing: it never lowers a count.
+    """
+    if agent is None or agent.cost is None or agent.currency is None:
+        return None
+    known = [
+        (record.cost, record.currency)
+        for record in records
+        if record.cost is not None and record.currency is not None
+    ]
+    if any(currency != agent.currency for _, currency in known):
+        return None  # costs in two currencies are not compared
+    excess = Decimal(str(agent.cost)) - sum((Decimal(str(cost)) for cost, _ in known), Decimal(0))
+    if excess <= 0:
+        return None
+    seen = merged(records)
+    return Usage(
+        model=seen.model,
+        provider=seen.provider,
+        input_tokens=0,
+        output_tokens=0,
+        cost=float(excess),
+        currency=agent.currency,
     )
 
 
@@ -2114,6 +2149,17 @@ class TestRunner:
         of its tokens or its cost: never zero."""
         if call.read is not True:
             return Usage(model=call.model, provider=call.provider, llm_calls=1)
+        if call.input_tokens == 0 and call.output_tokens == 0 and call.cost is None:
+            # A request the provider rejected: no tokens, no cost, whatever the model.
+            return Usage(
+                model=call.model,
+                provider=call.provider,
+                input_tokens=0,
+                output_tokens=0,
+                cost=0.0,
+                currency=table_currency(),
+                llm_calls=1,
+            )
         usage = Usage(
             model=call.model,
             provider=call.provider,
@@ -2136,8 +2182,13 @@ class TestRunner:
         log.records = list(log.proxy)
         agent = turn_usage(log.agent)
         seen = merged(log.proxy)
-        if agent is None or not _more(agent, seen):
-            return
+        if agent is not None and _more(agent, seen):
+            self._bypassed(log, execution, agent, seen)
+        floor = _floor(log.records, agent)
+        if floor is not None:
+            log.records = [*log.records, floor]
+
+    def _bypassed(self, log: _TurnLog, execution: _Execution, agent: Usage, seen: Usage) -> None:
         if not log.bypass_told:
             log.bypass_told = True
             self._warn(
@@ -2164,9 +2215,10 @@ class TestRunner:
             llm_calls=seen.llm_calls,
         )
         table, _ = priced(count, undated=True)
+        # The agent's own cost is a lower bound, added after (_floor): never the price.
         costs = [
             (usage.cost, usage.currency)
-            for usage in (table, seen, agent)
+            for usage in (table, seen)
             if usage.cost is not None and usage.currency is not None
         ]
         if not costs:

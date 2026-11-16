@@ -63,7 +63,8 @@ def _asks_for_usage(body: bytes) -> bool:
 
 class FakeUpstream:
     def __init__(self) -> None:
-        self.answers: dict[str, Answer] = {}
+        # A list is answered in order, its last answer from then on: a 429, then a 200.
+        self.answers: dict[str, Answer | list[Answer]] = {}
         self.received: list[Received] = []
         upstream = self
 
@@ -79,7 +80,11 @@ class FakeUpstream:
                 upstream.received.append(
                     Received(self.command, self.path, dict(self.headers.items()), body)
                 )
-                answer = upstream.answers.get(self.path.split("?")[0], Answer(status=404))
+                queued = upstream.answers.get(self.path.split("?")[0], Answer(status=404))
+                if isinstance(queued, list):
+                    answer = queued.pop(0) if len(queued) > 1 else queued[0]
+                else:
+                    answer = queued
                 self.send_response(answer.status)
                 for name, value in answer.headers.items():
                     self.send_header(name, value)
@@ -577,17 +582,63 @@ def test_hb30_an_upstream_of_unknown_protocol_is_passed_through_unread(
     assert call.read is False and call.input_tokens is None
 
 
-def test_hb30_an_upstream_error_is_recorded_unread_with_its_status(
+def test_hb30_a_server_error_is_recorded_unread_with_its_status(
     upstream: FakeUpstream, proxy: LlmProxy, trace: Path
 ) -> None:
-    error = _json({"error": {"message": "rate limited"}})
-    upstream.answers["/v1/chat/completions"] = Answer(error, status=429)
+    # A 5xx may have run the model before it failed: what it used is not known.
+    error = _json({"error": {"message": "the server had an error"}})
+    upstream.answers["/v1/chat/completions"] = Answer(error, status=500)
 
     reply = _post(f"{proxy.base_url('openai')}/chat/completions", CHAT_REQUEST)
 
-    assert reply.status_code == 429 and reply.content == error
+    assert reply.status_code == 500 and reply.content == error
     (call,) = _calls(trace)
-    assert call.read is False and call.error == "HTTP 429"
+    assert call.read is False and call.error == "HTTP 500"
+    assert call.input_tokens is None and call.output_tokens is None
+
+
+def test_hb30_r2_a_429_then_a_200_is_a_call_that_used_nothing_and_one_that_was_read(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    # The SDKs retry a 429 on their own. A rejected request is not billed: it used nothing.
+    limited = _json({"error": {"message": "rate limited", "type": "rate_limit"}})
+    upstream.answers["/v1/chat/completions"] = [
+        Answer(limited, status=429),
+        Answer(_json(CHAT_REPLY)),
+    ]
+
+    first = _post(f"{proxy.base_url('openai')}/chat/completions", CHAT_REQUEST)
+    second = _post(f"{proxy.base_url('openai')}/chat/completions", CHAT_REQUEST)
+
+    assert (first.status_code, second.status_code) == (429, 200)
+    rejected, answered = _calls(trace)
+    assert rejected.call == "model" and rejected.read is True
+    assert (rejected.input_tokens, rejected.output_tokens) == (0, 0)
+    assert rejected.error == "HTTP 429" and rejected.unread is None
+    assert answered.read is True and answered.input_tokens == 1000
+
+
+def test_hb30_r2_a_401_used_nothing(upstream: FakeUpstream, proxy: LlmProxy, trace: Path) -> None:
+    upstream.answers["/v1/messages"] = Answer(_json({"type": "error"}), status=401)
+
+    _post(f"{proxy.base_url('anthropic')}/v1/messages", ANTHROPIC_REQUEST)
+
+    (call,) = _calls(trace)
+    assert call.read is True and (call.input_tokens, call.output_tokens) == (0, 0)
+    assert call.error == "HTTP 401"
+
+
+def test_hb30_r2_a_4xx_that_carries_usage_is_read(
+    upstream: FakeUpstream, proxy: LlmProxy, trace: Path
+) -> None:
+    body = {**CHAT_REPLY, "usage": {"prompt_tokens": 12, "completion_tokens": 0}}
+    upstream.answers["/v1/chat/completions"] = Answer(_json(body), status=400)
+
+    _post(f"{proxy.base_url('openai')}/chat/completions", CHAT_REQUEST)
+
+    (call,) = _calls(trace)
+    assert call.read is True and (call.input_tokens, call.output_tokens) == (12, 0)
+    assert call.error == "HTTP 400"
 
 
 def test_hb30_an_unreachable_upstream_is_a_502_and_an_unread_call(trace: Path) -> None:

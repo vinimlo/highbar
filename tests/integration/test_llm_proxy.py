@@ -235,3 +235,68 @@ def test_hb30_no_key_and_no_prompt_reach_the_trace_the_logs_or_the_report(
     for place, text in texts.items():
         assert KEY not in text, place
         assert SYSTEM not in text, place
+
+
+LOCAL_REPLY = {
+    **REPLY,
+    "model": "my-local-model",  # not in the price table
+    "usage": {"prompt_tokens": 1000, "completion_tokens": 20},
+}
+COSTS_1_USD = json.dumps(
+    {
+        "model": "my-local-model",
+        "input_tokens": 1000,
+        "output_tokens": 20,
+        "cost": 1.0,
+        "currency": "USD",
+    }
+)
+
+
+@pytest.mark.parametrize("proxy", [False, True])
+def test_hb30_r1_max_cost_stops_on_the_agents_cost_of_a_model_with_no_price(
+    tmp_path: Path, upstream: FakeUpstream, proxy: bool
+) -> None:
+    """Review of #97, finding 1: with the proxy, this run went on, exit 0, 'incomplete'."""
+    upstream.answers["/v1/chat/completions"] = Answer(_json(LOCAL_REPLY))
+    spec = _spec(tmp_path, proxy=proxy, budget="{max_input_tokens: 1000000}")
+
+    result, report = _run(
+        tmp_path, spec, upstream, "--max-cost", "0.5", PROXIED_TURN_USAGE=COSTS_1_USD
+    )
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "the run spent 1.0 USD" in report["stopped"]["message"]
+
+
+@pytest.mark.parametrize("proxy", [False, True])
+def test_hb30_r1_a_max_cost_budget_fails_on_the_agents_cost_of_a_model_with_no_price(
+    tmp_path: Path, upstream: FakeUpstream, proxy: bool
+) -> None:
+    """Review of #97, finding 1: with the proxy, this budget went from failed to error."""
+    upstream.answers["/v1/chat/completions"] = Answer(_json(LOCAL_REPLY))
+    spec = _spec(tmp_path, proxy=proxy, budget="{max_cost: 0.5}")
+
+    result, report = _run(tmp_path, spec, upstream, PROXIED_TURN_USAGE=COSTS_1_USD)
+
+    test = _test(report)
+    assert test["status"] == "failed", result.stdout + result.stderr
+    assert "cost 1.0 USD, over max_cost 0.5" in " ".join(test["errors"])
+
+
+@pytest.mark.parametrize("proxy", [False, True])
+def test_hb30_r2_a_429_the_agent_retried_is_not_an_error(
+    tmp_path: Path, upstream: FakeUpstream, proxy: bool
+) -> None:
+    """Review of #97, finding 2: with the proxy, the retried 429 made the test an error."""
+    limited = _json({"error": {"message": "rate limited", "type": "rate_limit"}})
+    reply = {**REPLY, "usage": {"prompt_tokens": 1000, "completion_tokens": 20}}
+    upstream.answers["/v1/chat/completions"] = [Answer(limited, status=429), Answer(_json(reply))]
+    usage = json.dumps({"model": "gpt-4o-mini", "input_tokens": 1000, "output_tokens": 20})
+    spec = _spec(tmp_path, proxy=proxy, budget="{max_input_tokens: 5000}")
+
+    result, report = _run(tmp_path, spec, upstream, PROXIED_TURN_USAGE=usage)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _test(report)["status"] == "passed"
+    assert len(upstream.received) == 2  # the 429 and its retry

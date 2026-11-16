@@ -5,13 +5,15 @@ OPENAI_BASE_URL, as the OpenAI SDKs do, then writes a `turn` record with the usa
 believes it spent (PROXIED_TURN_USAGE, JSON) and answers with the model's text.
 
 PROXIED_STREAM=1 streams the call; PROXIED_LIST=1 lists the models first; PROXIED_SYSTEM
-is a system prompt, which no output of highbar may show.
+is a system prompt, which no output of highbar may show. A 429 is retried once, as the
+OpenAI and Anthropic SDKs retry it.
 """
 
 import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -54,8 +56,14 @@ def call_model(message: str) -> str:
     request = urllib.request.Request(
         f"{BASE}/chat/completions", data=json.dumps(body).encode(), headers=headers
     )
-    with OPENER.open(request, timeout=10) as reply:
-        data = reply.read().decode()
+    try:
+        with OPENER.open(request, timeout=10) as reply:
+            data = reply.read().decode()
+    except urllib.error.HTTPError as error:
+        if error.code != 429:
+            raise
+        with OPENER.open(request, timeout=10) as reply:
+            data = reply.read().decode()
     if not stream:
         return json.loads(data)["choices"][0]["message"]["content"]
     text = ""

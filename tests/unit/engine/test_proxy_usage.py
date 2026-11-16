@@ -53,6 +53,7 @@ def _model_call(
     unread: str | None = None,
     cost: float | None = None,
     test_id: str | None = None,
+    error: str | None = None,
 ) -> LlmCall:
     return LlmCall(
         ts=1.0,
@@ -67,6 +68,7 @@ def _model_call(
         call="model",
         cost=cost,
         currency="USD" if cost is not None else None,
+        error=error,
     )
 
 
@@ -316,3 +318,99 @@ class TestExpectLlmReadsTheAgentsRecords:
         summary = _run([Case(name="o", trigger="t", expect=expect)], agent, proxy=_Proxy())
 
         assert summary.tests[0].status is Status.ERROR, summary.tests[0].errors
+
+
+LOCAL = "my-local-model"  # not in the price table: an Azure deployment, a model of one's own
+
+
+def _costing(cost: float, model: str = LOCAL) -> Usage:
+    return Usage(model=model, input_tokens=1000, output_tokens=20, cost=cost, currency="USD")
+
+
+def _plain(name: str = "orders") -> Case:
+    return Case(name=name, trigger="t", expect=Expect(response=SAYS_OK))
+
+
+class TestR1TheAgentsCostIsALowerBound:
+    """Review of #97, finding 1: a call the proxy cannot price kept the agent's known cost
+    out of --max-cost and max_cost, and a run that stopped without the proxy went on."""
+
+    def test_hb30_r1_max_cost_stops_on_the_agents_cost_when_the_proxy_cannot_price(
+        self,
+    ) -> None:
+        agent = _agent(([_model_call(model=LOCAL, provider=None)], _costing(1.0)))
+
+        summary = _run([_plain(), _plain("next")], agent, proxy=_Proxy(), max_cost=0.5)
+
+        assert summary.stopped is not None and "1.0 USD" in summary.stopped
+        assert summary.total == 1
+
+    def test_hb30_r1_a_max_cost_budget_fails_on_the_agents_cost(self) -> None:
+        agent = _agent(([_model_call(model=LOCAL, provider=None)], _costing(1.0)))
+
+        summary = _run([_budgeted(Budget(max_cost=0.5))], agent, proxy=_Proxy())
+
+        (test,) = summary.tests
+        assert test.status is Status.FAILED, test.errors
+        assert "cost 1.0 USD, over max_cost 0.5" in "; ".join(test.errors)
+
+    def test_hb30_r1_under_the_budget_it_is_a_lower_bound_so_still_error(self) -> None:
+        agent = _agent(([_model_call(model=LOCAL, provider=None)], _costing(0.1)))
+
+        summary = _run([_budgeted(Budget(max_cost=0.5))], agent, proxy=_Proxy())
+
+        (test,) = summary.tests
+        assert test.status is Status.ERROR, test.errors
+
+    def test_hb30_r1_the_larger_of_two_known_costs_holds(self) -> None:
+        # The same tokens: no call went around the proxy, and the agent says it cost more.
+        call = _model_call(1000, 20, model="openai/gpt-4o-mini", provider=None, cost=0.1)
+        agent = _agent(([call], _costing(1.0, model="openai/gpt-4o-mini")))
+
+        summary = _run([_budgeted(Budget(max_cost=0.5))], agent, proxy=_Proxy())
+
+        (test,) = summary.tests
+        assert test.status is Status.FAILED, test.errors
+        assert "cost 1.0 USD" in "; ".join(test.errors)
+
+    def test_hb30_r1_a_cost_0_never_lowers_a_known_count(self) -> None:
+        call = _model_call(1000, 20, model="openai/gpt-4o-mini", provider=None, cost=0.25)
+        agent = _agent(([call], _costing(0.0, model="openai/gpt-4o-mini")))
+
+        summary = _run([_budgeted(Budget(max_cost=0.1))], agent, proxy=_Proxy())
+
+        (test,) = summary.tests
+        assert test.status is Status.FAILED, test.errors
+        assert "cost 0.25 USD" in "; ".join(test.errors)
+
+    def test_hb30_r1_a_cost_0_never_makes_an_unpriced_call_known(self) -> None:
+        agent = _agent(([_model_call(model=LOCAL, provider=None)], _costing(0.0)))
+
+        summary = _run([_budgeted(Budget(max_cost=0.5))], agent, proxy=_Proxy())
+
+        assert summary.tests[0].status is Status.ERROR, summary.tests[0].errors
+
+    def test_hb30_r1_around_the_proxy_a_cost_0_does_not_price_the_larger_count(self) -> None:
+        # A bypass on a model with no price: the agent's 0 is no cost of the larger count.
+        bypass = Usage(model=LOCAL, input_tokens=5000, output_tokens=20, cost=0.0, currency="USD")
+        agent = _agent(([_model_call(10, model=LOCAL, provider=None)], bypass))
+
+        summary = _run([_budgeted(Budget(max_cost=0.5))], agent, proxy=_Proxy())
+
+        assert summary.tests[0].status is Status.ERROR, summary.tests[0].errors
+
+
+class TestR2ARejectedCallUsedNothing:
+    """Review of #97, finding 2: a 429 the SDK retried made the test an error."""
+
+    def test_hb30_r2_a_4xx_read_as_zero_neither_errors_nor_adds(self) -> None:
+        rejected = _model_call(0, 0, model=LOCAL, provider=None, error="HTTP 429")
+        answered = _model_call(100, 10, model="openai/gpt-4o-mini", provider=None, cost=0.1)
+        agent = _agent(([rejected, answered], TEN))
+
+        summary = _run([_budgeted(Budget(max_cost=0.5))], agent, proxy=_Proxy())
+
+        (test,) = summary.tests
+        assert test.status is Status.PASSED, test.errors
+        usage = test.phrasings[0].executions[0].turns[0].usage
+        assert usage is not None and usage.cost == 0.1 and usage.llm_calls == 2

@@ -101,6 +101,11 @@ def _table() -> tuple[str, dict[str, Price]]:
     return table["currency"], read_prices(table)
 
 
+def table_currency() -> str:
+    """The currency of highbar's price table."""
+    return _table()[0]
+
+
 def find_price(usage: Usage, prices: Mapping[str, Price]) -> Price | None:
     """The price of ``usage.model``, by exact name: a near one may cost something else.
 
