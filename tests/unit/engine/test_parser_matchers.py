@@ -274,3 +274,25 @@ def test_review_78_contains_a_number_on_an_error_still_loads(tmp_path: Path) -> 
     # contains reads its operand as text, so 404 is "404": it can hold.
     test = parse_spec(_spec_with_error(tmp_path, "{contains: 404}")).suites[0].tests[0]
     assert test.expect.function_calls[0].error == {"contains": 404}  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        ("{not_contains: {a: 1}}", "is not text"),
+        ("{contains: [1, 2]}", "is not text"),
+        ("{icontains: {a: 1}}", "is not text"),
+        ('{equals: ""}', "an empty error is no error"),
+    ],
+)
+def test_review_79_an_error_operand_that_can_never_hold_does_not_load(
+    tmp_path: Path, error: str, message: str
+) -> None:
+    # A list or object reads as its Python repr, and an empty error reads as none.
+    with pytest.raises(SpecError, match=message):
+        parse_spec(_spec_with_error(tmp_path, error))
+
+
+@pytest.mark.parametrize("error", ['{contains: "Timeout"}', "{contains: 404}", '{matches: "^4"}'])
+def test_review_79_text_and_numbers_still_load(tmp_path: Path, error: str) -> None:
+    parse_spec(_spec_with_error(tmp_path, error))
