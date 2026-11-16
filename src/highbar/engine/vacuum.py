@@ -45,11 +45,16 @@ TrivialAgent = Callable[[str], _Doing]
 
 
 def probe_spec(spec: Spec) -> list[Finding]:
-    """Every test but the negative controls (``expect_status``), in spec order."""
+    """Every test but the negative controls (``expect_status``), in spec order.
+
+    "every option" names every text the replies of the test's suite look for.
+    """
     tools = _tool_names(spec)
-    every_text = _texts_looked_for(_expects(spec))
     findings: list[Finding] = []
     for suite in spec.suites:
+        # The options a reply could list are the answers to related questions, which a
+        # suite groups: a guardrail's "can't" is not beaten by an order's "in transit".
+        every_text = _texts_looked_for(turn.expect for test in suite.tests for turn in _turns(test))
         for test in suite.tests:
             if test.expect_status is not None:
                 continue  # a test meant to fail is a control, not a claim

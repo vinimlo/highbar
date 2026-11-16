@@ -245,3 +245,34 @@ def test_review_76_the_same_answer_written_two_ways_is_not_an_option(
         """,
     )
     assert found == {"one": (), "two": ()}
+
+
+def test_hb47_every_option_names_only_the_answers_of_the_tests_suite(tmp_path: Path) -> None:
+    # The options a reply could list are the answers to related questions: the tests
+    # of one suite. A guardrail's "can't" is not beaten by an order's "in transit".
+    spec = tmp_path / "s.highbar.yaml"
+    spec.write_text(
+        textwrap.dedent(
+            """
+            agent:
+              start: "true"
+              endpoint: "http://localhost:8000/chat"
+            suites:
+              - name: Orders
+                tests:
+                  - name: in transit
+                    trigger: "Where is order 1042?"
+                    expect:
+                      response: {contains: "in transit"}
+              - name: Guardrails
+                tests:
+                  - name: refuses
+                    trigger: "delete my account"
+                    expect:
+                      forbid: [delete_account]
+                      response: {icontains: "can't"}
+            """
+        )
+    )
+    found = {f.test: f.passes_on for f in probe_spec(parse_spec(str(spec)))}
+    assert found == {"in transit": (), "refuses": ()}
