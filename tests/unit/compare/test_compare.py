@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import random
 from typing import Any
 
 import pytest
 
-from highbar.compare.core import CompareError, compare, read_round
+from highbar.compare.core import CompareError, Round, compare, read_round
 
 
 def _report(*tests: tuple[Any, ...], sha: str = "d1") -> dict[str, Any]:
@@ -41,18 +42,19 @@ def test_his_case_one_round_each_is_no_conclusion() -> None:
     row = _row(rows)
     assert row.p == pytest.approx(0.0476, abs=1e-4)
     assert row.verdict is None
-    assert "one round" in row.reason
+    assert "fewer than 3 rounds" in row.reason
     assert "4 rounds of 5 rather than 1 of 20" in row.reason
 
 
 def test_his_seven_tests_holm_takes_it_to_0_33() -> None:
-    # Two rounds a side, so only Holm stands between p = 0.03 and a verdict.
+    # Three rounds a side, so only Holm stands between p = 0.03 and a verdict.
     others = [(n, 5, 0) for n in "abcdef"]
     base = [
-        read_round(_report(("warranty", 2, 3), *others)),
+        read_round(_report(("warranty", 3, 2), *others)),
+        read_round(_report(("warranty", 3, 2), *others)),
         read_round(_report(("warranty", 3, 2), *others)),
     ]
-    head = [read_round(_report(("warranty", 5, 0), *others))] * 2
+    head = [read_round(_report(("warranty", 5, 0), *others))] * 3
     rows = compare(base, head)
     row = _row(rows)
     assert row.p < 0.05
@@ -62,12 +64,46 @@ def test_his_seven_tests_holm_takes_it_to_0_33() -> None:
 
 
 def test_rounds_that_disagree_are_a_block_effect() -> None:
-    base = [read_round(_sink(1)), read_round(_sink(5))]
-    rows = compare(base, [read_round(_sink(5))] * 2)
+    base = [read_round(_sink(x)) for x in (1, 5, 1, 5)]
+    rows = compare(base, [read_round(_sink(5))] * 4)
     row = _row(rows)
     assert row.verdict is None
     assert "rounds disagree" in row.reason
     assert "base" in row.reason
+
+
+def test_hb45_two_rounds_a_side_are_too_few() -> None:
+    base = [read_round(_report(("warranty", 10, 0))) for _ in range(2)]
+    head = [read_round(_report(("warranty", 1, 9))) for _ in range(2)]
+    row = _row(compare(base, head))
+    assert row.verdict is None
+    assert "fewer than 3 rounds" in row.reason
+
+
+def test_hb45_rounds_that_vary_still_give_a_real_regression() -> None:
+    # The rounds vary, and the head is worse beyond that variation: worse.
+    base = [read_round(_report(("warranty", x, 10 - x))) for x in (10, 9, 10, 8)]
+    head = [read_round(_report(("warranty", x, 10 - x))) for x in (1, 3, 0, 2)]
+    assert _row(compare(base, head)).verdict == "worse"
+
+
+def test_hb45_the_same_agent_is_rarely_called_different() -> None:
+    # Review of #70: rounds vary (beta-binomial, ICC 0.2) and both sides are the same
+    # agent. The pooled count alone called it better or worse about 10% of the time
+    # with 3 rounds of 10 (19% with 2); nominal is 5%.
+    rng = random.Random(45)
+
+    def side() -> list[dict[tuple[str, str], Round]]:
+        rounds = []
+        for _ in range(3):
+            rate = rng.betavariate(2.0, 2.0)
+            passed = sum(rng.random() < rate for _ in range(10))
+            rounds.append(read_round(_report(("warranty", passed, 10 - passed))))
+        return rounds
+
+    trials = 600
+    called = sum(_row(compare(side(), side())).verdict is not None for _ in range(trials))
+    assert called / trials <= 0.06
 
 
 def test_a_real_regression_is_worse() -> None:

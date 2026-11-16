@@ -8,11 +8,12 @@ for i in 1 2 3 4; do HIGHBAR_FLAG=on  highbar run --runs 5 --report json=runs/on
 highbar compare --base runs/off --head runs/on
 ```
 
-Each report is one round. `compare` pairs the tests by id across every report and says, for each test, how many executions passed on each side, with a 95% interval and Fisher's exact test. It says `better` or `worse` only when all of these hold:
+Each report is one round. `compare` pairs the tests by id across every report and says, for each test, how many executions passed on each side, with a 95% interval. It says `better` or `worse` only when both of these hold:
 
 - the p-value, adjusted with Holm across every test compared, is under 0.05. Seven tests are seven comparisons: a raw p of 0.048 on one of them is what chance gives about once in three such runs;
-- each side has at least 2 rounds;
-- the rounds of each side agree with each other. When an agent's choice sticks within a round (1 of 5 in one round, 5 of 5 in the next), its executions are not independent, and the rounds disagree: no verdict.
+- each side has at least 3 rounds.
+
+The p-value is the larger of two tests. Fisher's exact test on the counts holds when every execution is independent. When an agent's choice sticks within a round (1 of 5 in one round, 5 of 5 in the next), the executions are not independent and only the rounds repeat, so Welch's test on the rounds' pass rates holds instead. Taking the larger holds either way. With the same agent on both sides and rounds that vary, the counts alone called a difference up to 19% of the time; this rule, under 5%. When the rounds of a side disagree and there is no verdict, the output says so.
 
 Otherwise it shows the numbers and why there is no verdict. Four rounds of 5 tell more than one round of 20, because only they measure how much a round varies.
 
