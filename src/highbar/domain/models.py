@@ -54,6 +54,9 @@ class Trace:
     ended_at: float
     error: str | None = None
     context: dict[str, Any] = field(default_factory=dict[str, Any])
+    # False when the record had no `result` key: what the tool returned was not seen,
+    # which is not the same as having returned null (review of #74, HB-37).
+    has_result: bool = True
 
     @property
     def duration_ms(self) -> float:

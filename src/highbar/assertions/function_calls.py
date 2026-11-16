@@ -9,10 +9,16 @@ declares ``error``.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import Any
 
 from highbar.assertions._match import subset_match, value_match
 from highbar.domain.models import AssertionResult, Expect, FunctionCallExpect, Trace
+
+# Whether a call whose return was not recorded is taken to fit `returns`. Never on its
+# own: the runner asks a second time with it on, and a test that only passes that way
+# is unverified, not passed (review of #74).
+_assume_unrecorded: ContextVar[bool] = ContextVar("assume_unrecorded", default=False)
 
 
 def satisfies(expected: FunctionCallExpect, call: Trace) -> bool:
@@ -21,15 +27,45 @@ def satisfies(expected: FunctionCallExpect, call: Trace) -> bool:
         call.fn in expected.accepted_names
         and subset_match(expected.params, call.args)
         and subset_match(expected.result, call.result)
-        and (expected.returns is None or value_match(expected.returns, call.result))
+        and _returns_match(expected.returns, call)
         and _error_matches(expected.error, call.error)
     )
 
 
+def _returns_match(expected: Any, call: Trace) -> bool:
+    if expected is None:
+        return True
+    if not call.has_result:
+        return _assume_unrecorded.get()
+    return value_match(expected, call.result)
+
+
+def unrecorded_returns(traces: list[Trace], expect: Expect) -> list[str]:
+    """The tools a `returns` entry names whose return some call did not record."""
+    names = {
+        n for e in expect.function_calls or [] if e.returns is not None for n in e.accepted_names
+    }
+    return sorted({t.fn for t in traces if t.fn in names and not t.has_result})
+
+
 class FunctionCallsAssertion:
-    """Evaluates whether expected function calls were made."""
+    """Evaluates whether expected function calls were made.
+
+    ``assume_unrecorded``: a call whose return was not recorded fits any `returns`.
+    Only the runner's second look uses it, to tell a test that could not be checked.
+    """
+
+    def __init__(self, *, assume_unrecorded: bool = False) -> None:
+        self._assume_unrecorded = assume_unrecorded
 
     def evaluate(self, traces: list[Trace], response: str, expect: Expect) -> list[AssertionResult]:
+        token = _assume_unrecorded.set(self._assume_unrecorded)
+        try:
+            return self._evaluate(traces, expect)
+        finally:
+            _assume_unrecorded.reset(token)
+
+    def _evaluate(self, traces: list[Trace], expect: Expect) -> list[AssertionResult]:
         results = [
             _failed(f"forbidden tool '{name}' was called")
             for name in expect.forbid
@@ -190,8 +226,9 @@ def _unmet(
         errors.append((f"params: expected {e.params}", f"{call.args}"))
     if e.result and not subset_match(e.result, call.result):
         errors.append((f"result: expected {e.result}", f"{call.result}"))
-    if e.returns is not None and not value_match(e.returns, call.result):
-        errors.append((f"returns: expected {e.returns}", f"{call.result}"))
+    if not _returns_match(e.returns, call):
+        got = f"{call.result}" if call.has_result else "no recorded return"
+        errors.append((f"returns: expected {e.returns}", got))
     if not _error_matches(e.error, call.error):
         errors.append((f"error: expected {_expected_error(e.error)}", f"{call.error or 'none'}"))
     head = "was called but didn't match: "
