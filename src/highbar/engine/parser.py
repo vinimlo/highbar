@@ -1345,9 +1345,9 @@ def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
                 f"{where}.error.{key}: a boolean is not text, and an error is; "
                 f'write the text it must hold, such as {{{key}: "Timeout"}}'
             )
-        if isinstance(operand, dict | list):
-            # A list or an object would be compared as its Python repr: never what an
-            # error says (review of #79).
+        if operand is None or isinstance(operand, dict | list):
+            # A null, a list or an object would be compared as its Python repr ("None",
+            # "[1, 2]"): never what an error says (reviews of #79 and #81).
             raise SpecError(
                 f"{where}.error.{key}: {operand!r} is not text, and an error is; "
                 f'write the text it must hold, such as {{{key}: "Timeout"}}'

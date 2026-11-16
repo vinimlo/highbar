@@ -296,3 +296,10 @@ def test_review_79_an_error_operand_that_can_never_hold_does_not_load(
 @pytest.mark.parametrize("error", ['{contains: "Timeout"}', "{contains: 404}", '{matches: "^4"}'])
 def test_review_79_text_and_numbers_still_load(tmp_path: Path, error: str) -> None:
     parse_spec(_spec_with_error(tmp_path, error))
+
+
+@pytest.mark.parametrize("error", ["{not_contains: }", "{contains: null}", "{icontains: ~}"])
+def test_review_81_a_null_operand_on_an_error_does_not_load(tmp_path: Path, error: str) -> None:
+    # A null operand reads as "None": not_contains null holds on any error without it.
+    with pytest.raises(SpecError, match="is not text"):
+        parse_spec(_spec_with_error(tmp_path, error))
