@@ -46,6 +46,7 @@ By default highbar sends `POST {"message": "<trigger>"}`. Any other shape is con
 | `{{test.name}}` | the test's name, or its trigger |
 | `{{test.args.<path>}}` | a value of the test's own `session.args` |
 | `{{session.<path>}}` | a value the session's setup returned |
+| `{{run.<path>}}` | a value the run's setup returned ([below](#before-and-after-the-run)) |
 :::
 
 A trigger can name a session value too, as a customer gives their own id: <code v-pre>trigger: "I am customer {{session.customer_id}}"</code>. A key that is not there makes that test an `error`, and nothing is sent. So does a value that is `null`, in a trigger and in the request: the setup most likely did not produce it, and the agent would get the text `null`. A test whose trigger names one cannot have `variations`, because a paraphrase can drop the placeholder or change it.
@@ -96,10 +97,27 @@ agent:
     teardown: "python -m flags off new_router --token ${FLAGS_TOKEN}"
 ```
 
-- Each is a command, `{python: "module:function"}` or `{http: {url, method, headers, body}}`, like a session hook. They belong to no test, so they take no placeholder, and a Python one is called with no argument. `${NAME}` in them is masked, as in `session`.
+- Each is a command, `{python: "module:function"}` or `{http: {url, method, headers, body}}`, like a session hook. They belong to no test, so they take no test's placeholder, and a Python one is called with no argument. `${NAME}` in them is masked, as in `session`.
+- What the `setup` returns is <code v-pre>{{run.&lt;path&gt;}}</code>, read by the request, `correlate`, the session hooks and the run's `teardown` as they read <code v-pre>{{session.*}}</code>; a Python session hook finds them in `ctx.run`. So the `teardown` can put back what was there before, which only the `setup` knew (example below). A spec that reads <code v-pre>{{run.&lt;path&gt;}}</code> needs a `setup` that returns a JSON object, as a session's does: the last non-empty line a command prints, the mapping a Python function returns, an HTTP reply; one that returns anything else stops the run before the agent starts. A key that is not there, or that is `null`, makes each test that reads it an `error`, and nothing is sent; in the `teardown`, it is the teardown's failure. A trigger, `agent.start` and `agent.traces` do not read it: each would use it as written, so the spec is refused. A Python session hook reads `ctx.run` whatever the spec's text says; when the `setup` returned no JSON object, reading it is that hook's error, never an empty mapping. A Python `teardown` is still called with no argument: it keeps what its `setup` knew in its own module.
 - A `setup` that fails stops the run before the agent starts, with exit code 2. Nothing is sent, and its `teardown` does not run.
 - Once the `setup` finished, the `teardown` runs on every way out: at the end, when `--max-cost` stops the run, when the agent does not start, on Ctrl-C and on SIGTERM. A `teardown` that fails is a warning above the summary: the results stand, and what it was to put back may still be as the run left it.
 - Each has `agent.timeout` to finish. With several specs, each spec runs its own, around its own agent.
+
+A `setup` that prints the flag's state before the run, so the `teardown` restores it, whatever it was, and the sessions open on the variant it turned on:
+
+```yaml agent
+agent:
+  endpoint: "http://localhost:8000/api/chat"
+  run:
+    # prints {"previous": "off", "variant": "new_router"} as its last line
+    setup: "python -m flags on new_router --print-state --token ${FLAGS_TOKEN}"
+    teardown: "python -m flags set new_router {{run.previous}} --token ${FLAGS_TOKEN}"
+  session:
+    setup: "python scripts/open_conversation.py --variant {{run.variant}}"
+  request:
+    body: {message: "{{message}}", conversation_id: "{{session.conversation_id}}"}
+  correlate: {conversation_id: "{{session.conversation_id}}"}
+```
 
 ## A session per test
 

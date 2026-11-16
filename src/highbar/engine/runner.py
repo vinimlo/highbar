@@ -480,6 +480,8 @@ class TestRunner:
         # The session.args of the test that runs now (HB-9), for each of its executions.
         self._args: Mapping[str, Any] = {}
         self._history: Sequence[Mapping[str, str]] = ()
+        # What agent.run.setup returned (HB-10): {{run.*}} in every request and session.
+        self._run_values: Mapping[str, Any] = {}
         # What each failure message says apart from the agent's reply (HB-27): a
         # phrasing's runs that fail the same condition with other replies are one line.
         self._conditions: dict[str, str] = {}
@@ -504,8 +506,9 @@ class TestRunner:
 
         # agent.run (HB-10): its setup before the agent starts, and its teardown on every
         # way out once the setup finished, an agent that does not start included.
+        self._run_values = {}
         if self._session is not None:
-            self._session.before_run()
+            self._run_values = self._session.before_run()
         try:
             self._adapter.start()
         except BaseException:
@@ -1446,6 +1449,7 @@ class TestRunner:
             spec_path=self._spec_path,
             args=self._args,
             history=self._history,
+            run=self._run_values,
         )
         execution = _Execution(
             self._test_index,
@@ -1498,6 +1502,7 @@ class TestRunner:
             session=session,
             args=context.args,
             history=context.history,
+            run=context.run,
         )
         all_traces: list[Trace] = []
         all_errors: list[str] = []
