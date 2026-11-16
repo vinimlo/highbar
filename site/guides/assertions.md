@@ -139,6 +139,27 @@ expect:
 
 Each condition that fails gets its own line in the output, ending with what the agent said, cut at 300 characters.
 
+## Calls to the model: `llm`
+
+An agent that falls back from one model to another, or that must end every prompt with its own system message, says so in an [`llm` record](/reference/trace-contract#llm-one-call-to-the-model) per call. `expect.llm` checks them:
+
+```yaml test
+trigger: "what is the deadline?"
+expect:
+  llm:
+    model: deepseek-flash
+    fallback: true
+    last_role: system
+    max_calls: 3
+```
+
+- `model`: the model of the call that answered, the last one without an `error`. A name, or a text matcher like `{matches: "^gpt-4o"}`. A call that answered without a `model` fails the check.
+- `fallback`: whether some call stood in for another model (`fallback_from`), was a retry (`attempt` over 1), or came after a call that failed, whatever its fields say.
+- `last_role`: the role of the last message sent, in every call. A failure names the call.
+- `max_calls`: how many calls, failed ones included.
+
+A test with no `llm` record of its own is an `error`, never a pass: `fallback: false` would otherwise pass on an agent that records nothing. When another check already failed the test, it stays `failed`, and the missing records are named too.
+
 ## A check of your own: `check`
 
 Some outcomes are in neither the reply nor a tool call: a list the agent must have cleared, a row it must have written. `check` names a Python function that looks for them:
