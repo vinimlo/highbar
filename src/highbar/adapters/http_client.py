@@ -44,12 +44,14 @@ class HTTPClient:
         response_path: str | None = None,
         timeout_ms: int = 60000,
         transport: httpx.BaseTransport | None = None,
+        body_is_reply: bool = True,
     ) -> None:
         self._endpoint = endpoint
         self._request = request or RequestConfig()
         self._response_path = response_path
         self._timeout_ms = timeout_ms
         self._transport = transport
+        self._body_is_reply = body_is_reply
 
     def send(self, message: str, *, values: Values) -> str:
         """Send ``message`` and return the reply text. Raises ``AgentResponseError``.
@@ -102,6 +104,10 @@ class HTTPClient:
             )
         if not reply.is_success:
             raise AgentResponseError(f"HTTP {status} from {self._endpoint}: {truncate(text)}")
+        if not self._body_is_reply:
+            # agent.reply: turn (HB-14). The runner takes the reply from the turn record,
+            # and never checks this "".
+            return ""
         if not raw.strip():
             # Checked as "", it would pass every not_contains and every guardrail on text.
             raise AgentResponseError(f"the agent replied with an empty body (HTTP {status})")
