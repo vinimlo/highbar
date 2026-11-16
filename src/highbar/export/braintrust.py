@@ -122,7 +122,8 @@ def build_events(report: dict[str, Any]) -> list[dict[str, Any]]:
             for p, phrasing in enumerate(_items(test, "phrasings"), 1):
                 for e, execution in enumerate(_items(phrasing, "executions"), 1):
                     observed = _status(execution.get("status"), "an execution's status")
-                    status = against_expected(observed, expected)[0]
+                    status, mismatch = against_expected(observed, expected)
+                    errors = [*(as_list(execution.get("errors")) or []), *filter(None, [mismatch])]
                     event_id = hashlib.sha256(
                         json.dumps([*run, key, test.get("id"), p, e]).encode()
                     ).hexdigest()[:32]
@@ -140,7 +141,7 @@ def build_events(report: dict[str, Any]) -> list[dict[str, Any]]:
                         "observed_status": str(observed),
                         "expect_status": str(expected) if expected is not None else None,
                         "test_status": test.get("status"),
-                        "errors": execution.get("errors") or [],
+                        "errors": errors,
                         **common,
                     }
                     turns = [as_dict(t) or {} for t in as_list(execution.get("turns")) or []]

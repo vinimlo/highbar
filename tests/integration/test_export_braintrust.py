@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from highbar.cli.main import app
+from highbar.domain.models import Status
 from tests.fixtures.braintrust import (
     EXPERIMENT_ID,
     INSERT,
@@ -23,6 +25,7 @@ from tests.fixtures.braintrust import (
     STARTED,
     FakeBraintrust,
     fake_braintrust,
+    tests,
     write_report,
 )
 
@@ -173,6 +176,25 @@ class TestContent:
         assert meta["status"] == "passed"
         assert meta["observed_status"] == "failed"
         assert meta["expect_status"] == "failed"
+
+    def test_a_negative_control_that_passed_scores_0_and_says_why(
+        self, tmp_path: Path, fake: FakeBraintrust, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("BRAINTRUST_API_KEY", KEY)
+        control = tests()[-1]
+        execution = replace(control.phrasings[0].executions[0], status=Status.PASSED, errors=())
+        phrasing = replace(control.phrasings[0], executions=(execution,))
+        path = tmp_path / "xpass.json"
+        write_report(path, outcomes=(replace(control, phrasings=(phrasing,)),))
+
+        result = _export(path, fake)
+
+        assert result.exit_code == 0, result.output
+        [event] = fake.inserted
+        assert event["scores"] == {"highbar": 0}
+        assert event["metadata"]["status"] == "failed"
+        assert "negative control no longer catches" in event["metadata"]["errors"][0]
 
     def test_tokens_and_cost_are_metrics_when_known(
         self, report: Path, fake: FakeBraintrust
