@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
+
+The second release. It breaks a few specs that 0.1.0 loaded or passed: read "Upgrading from 0.1.0" at the end of this section before you move.
 
 ### Added
 
@@ -64,11 +66,17 @@
 
 ### Upgrading from 0.1.0
 
-- An empty text in a matcher of `params`, `result` or `error` (`contains: ""`, `matches: ""`, and their `i` and `not_` forms) no longer loads: the positive ones held on any value, the negative ones on none. `response` already refused them. Write `{equals: ""}` to compare with an empty text.
+- An empty text in a matcher of `params`, `result` or `error` (`contains: ""`, `matches: ""`, and their `i` and `not_` forms) no longer loads: the positive ones held on any value, the negative ones on none. `response` already refused them. Write `{equals: ""}` to compare with an empty text in `params` or `result`. On `error`, an empty error is no error: write `error: false`.
 - `0` and `1` no longer match `false` and `true` (or the reverse) in `params` and `result`. A test that passed only because of that now fails: write the boolean the tool takes.
+- A boolean has no text form in the text matchers of `params` and `result`: `contains: "Tr"` and `imatches: "^true$"` no longer hold on `true`, `not_contains` and `not_matches` no longer hold on a boolean, and `contains: true` no longer holds on the text "untrue".
+- A matcher of `error` takes text. A boolean, `null`, a list or an object no longer loads in any of them, and `equals` needs a text that is not empty: `{equals: 404}` becomes `{equals: "404"}`, and `{equals: true}` becomes `error: true`.
 - An object in a value of `params` or `result` whose keys are all among `lt`, `lte`, `gt`, `gte`, `len`, `len_lte`, `in`, `contains_all`, `any` and `all` (with the older matcher names) is now a matcher, not a literal to compare. To compare such an object as it is, wrap it: `{equals: {lt: 5}}`. The keys right under `params` and `result` are always argument names, so an argument called `gt`, `len` or `in` is compared as before.
 - A run whose agent's infrastructure keeps failing no longer goes to the end. In 0.1.0, an endpoint that answered HTTP 500 to every message turned every execution of the run into an `error`, one after the other, for as long as they took, and the run exited with 1. Now 5 executions in a row with the same cause stop it, and it exits with 4. A CI job that tells the exit codes apart gets 4 where it got 1. To run every execution as before, pass `--max-errors 0`. `highbar.run()` does not stop this way.
 - A spec with two tests of the same key no longer parses. The key is `<suite>/<name>`, and a test without a name uses its trigger, or its number of turns for a multi-turn test. So this reaches two such tests in one suite, in two suites with the same name, and in two suites without a name. Give one an `id` or a different `name`. The key is what tells them apart in a report, and numbering them would tie it to their position.
+- A run that `--max-errors` stops exits with the new code 4, and one that `--max-cost` stops with 3. A CI script that reads the exit code should treat them as failures; `--max-errors 0` turns the stop off.
+- A `${VAR}` value is now shown in `agent.start`, `agent.traces`, `agent.correlate` and a URL's host, port and path. A token passed on `start` or in a URL's path appears in the output: pass it in the environment or in a header.
+- Every run waits `agent.settle_time` (500 ms by default) after its last test, also when its spec checks only replies.
+
 ## 0.1.0
 
 The first final release. The code is the code of 0.1.0rc3, which has been running a production agent's evals since 2026-10-27: only the version changed.
