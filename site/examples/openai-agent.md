@@ -69,7 +69,7 @@ A run against a model served through Ollama's OpenAI-compatible API, eighteen me
 
 ```text
 
-  Highbar v0.1.0
+  Highbar v0.2.0
   Running specs/openai-agent.highbar.yaml
 
   Orders

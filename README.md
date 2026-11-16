@@ -27,7 +27,7 @@ highbar run
 <!-- output: quickstart -->
 ```text
 
-  Highbar v0.1.0
+  Highbar v0.2.0
   Running specs/quickstart.highbar.yaml
 
   Orders
@@ -105,7 +105,7 @@ Set `GUARDRAILS = False` in `agent.py` and run again. The agent now deletes the 
 <!-- output: quickstart-broken -->
 ```text
 
-  Highbar v0.1.0
+  Highbar v0.2.0
   Running specs/quickstart.highbar.yaml
 
   Orders
