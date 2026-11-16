@@ -42,6 +42,67 @@ def holm(p_values: Sequence[float]) -> list[float]:
     return adjusted
 
 
+def welch_p(base: Sequence[float], head: Sequence[float]) -> float:
+    """Welch's two-sided t-test on the rounds' pass rates: each round is one value.
+
+    Executions in a round are not independent when the agent's choice sticks within it,
+    so the rounds are what repeats (HB-45). With no spread on either side, equal means
+    give 1 and different means give 0: the rounds cannot tell, and the pooled count
+    is left to decide.
+    """
+    if len(base) < 2 or len(head) < 2:
+        return 1.0
+    mean_b, mean_h = sum(base) / len(base), sum(head) / len(head)
+    var_b = sum((x - mean_b) ** 2 for x in base) / (len(base) - 1)
+    var_h = sum((x - mean_h) ** 2 for x in head) / (len(head) - 1)
+    part_b, part_h = var_b / len(base), var_h / len(head)
+    spread = part_b + part_h
+    if spread < 1e-12:  # rates of whole counts: below this it is rounding, not spread
+        return 1.0 if math.isclose(mean_b, mean_h) else 0.0
+    t = (mean_h - mean_b) / math.sqrt(spread)
+    df = spread**2 / (part_b**2 / (len(base) - 1) + part_h**2 / (len(head) - 1))
+    return t_two_sided(t, df)
+
+
+def t_two_sided(t: float, df: float) -> float:
+    """P(|T| >= |t|) for Student's t with ``df`` degrees of freedom."""
+    return _beta_regularized(df / (df + t * t), df / 2, 0.5)
+
+
+def _beta_regularized(x: float, a: float, b: float) -> float:
+    """The regularized incomplete beta I_x(a, b), by its continued fraction."""
+    if x <= 0:
+        return 0.0
+    if x >= 1:
+        return 1.0
+    front = math.exp(
+        math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x)
+    )
+    if x < (a + 1) / (a + b + 2):
+        return front * _beta_fraction(x, a, b) / a
+    return 1 - front * _beta_fraction(1 - x, b, a) / b
+
+
+def _beta_fraction(x: float, a: float, b: float) -> float:
+    tiny = 1e-300
+    c, d = 1.0, 1 - (a + b) * x / (a + 1)
+    d = 1 / (tiny if abs(d) < tiny else d)
+    h = d
+    for m in range(1, 10_000):
+        for numerator in (
+            m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m)),
+            -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1)),
+        ):
+            d = 1 + numerator * d
+            d = 1 / (tiny if abs(d) < tiny else d)
+            c = 1 + numerator / c
+            c = tiny if abs(c) < tiny else c
+            h *= d * c
+        if abs(d * c - 1) < 1e-15:
+            break
+    return h
+
+
 def rounds_disagree_p(rounds: Sequence[tuple[int, int]]) -> float:
     """The p-value that the rounds share one pass rate (rounds × pass/fail).
 

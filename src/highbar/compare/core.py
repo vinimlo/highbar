@@ -1,6 +1,6 @@
 """Pair two groups of `--report json=` runs by test, and say what holds (HB-5).
 
-Each report is one round. Rounds stay apart: the block check needs them, and
+Each report is one round. Rounds stay apart: the rounds' test needs them, and
 pooling 1 round of 20 hides the variation that 4 rounds of 5 measure.
 """
 
@@ -11,14 +11,18 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from highbar._narrow import as_dict, as_list
-from highbar.compare.stats import fisher_exact, holm, rounds_disagree_p, wilson
+from highbar.compare.stats import fisher_exact, holm, rounds_disagree_p, welch_p, wilson
 
 ALPHA = 0.05
 """For the Holm-adjusted p of a verdict, and for the rounds-disagree check."""
 
-ONE_ROUND = (
-    "one round on a side: no conclusion; run 4 rounds of 5 rather than 1 of 20, "
-    "since only that measures the variation between rounds"
+MIN_ROUNDS = 3
+"""Rounds a side before a verdict. With 2, the rounds' test has one or two degrees of
+freedom and finds almost nothing, so "no difference" would say more than it knows."""
+
+FEW_ROUNDS = (
+    f"fewer than {MIN_ROUNDS} rounds on a side: no conclusion; run 4 rounds of 5 rather "
+    "than 1 of 20, since only that measures the variation between rounds"
 )
 
 Verdict = Literal["better", "worse"]
@@ -61,6 +65,11 @@ class Side:
         """Every execution. An `error` counts as not passed, as `min_pass` counts it:
         left out, a side whose executions stop answering would look no worse."""
         return sum(r.passed + r.failed + r.errors for r in self.rounds)
+
+    @property
+    def measured_rounds(self) -> int:
+        """Rounds with at least one execution of the test: an empty one measured nothing."""
+        return sum(1 for r in self.rounds if r.passed + r.failed + r.errors)
 
     @property
     def rate(self) -> float:
@@ -111,6 +120,8 @@ class Row:
     reason: str = ""
     base_errors_decide: bool = False
     """The difference holds only with base's `error` executions counted as failures."""
+    p_counted: float | None = None
+    """With base's errors as failures, when that differs from `p`."""
 
 
 def read_round(body: Any) -> dict[tuple[str, str], Round]:
@@ -173,17 +184,40 @@ def _compared(spec: str, test: str, base: Side, head: Side) -> Row:
     """The test's p. An `error` counts against the side it happened on, but it never makes
     the head look better: for a better head, the p is also taken with base's errors as
     passes, and the larger one stands (a base that errored everywhere is not beaten)."""
-    p = fisher_exact(base.passed, base.executions, head.passed, head.executions)
-    decide = False
-    if base.errors and head.rate > base.rate:
-        generous = base.passed + base.errors
-        if generous / base.executions >= head.rate:
-            p_generous = 1.0
-        else:
-            p_generous = fisher_exact(generous, base.executions, head.passed, head.executions)
-        decide = p < ALPHA <= p_generous
-        p = max(p, p_generous)
-    return Row(spec, test, base, head, p=p, base_errors_decide=decide)
+    head_rounds = [(r.passed, r.passed + r.failed + r.errors) for r in head.rounds]
+    p = _p([(r.passed, r.passed + r.failed + r.errors) for r in base.rounds], head_rounds)
+    if not (base.errors and head.rate > base.rate):
+        return Row(spec, test, base, head, p=p)
+    generous = [(r.passed + r.errors, r.passed + r.failed + r.errors) for r in base.rounds]
+    if sum(x for x, _ in generous) / base.executions >= head.rate:
+        p_generous = 1.0
+    else:
+        p_generous = _p(generous, head_rounds)
+    if p_generous <= p:
+        return Row(spec, test, base, head, p=p)
+    decide = p < ALPHA <= p_generous
+    return Row(spec, test, base, head, p=p_generous, base_errors_decide=decide, p_counted=p)
+
+
+def _p(base: list[tuple[int, int]], head: list[tuple[int, int]]) -> float:
+    """The larger of Fisher on the pooled counts and Welch on the rounds' rates (HB-45).
+
+    Fisher holds when executions are independent; when the agent's choice sticks within
+    a round they are not, and only the rounds repeat, which Welch measures. The larger p
+    holds either way: with the same agent on both sides and rounds that vary, the pooled
+    count alone called a difference up to 19% of the time, this rule under 5%.
+    """
+    fisher = fisher_exact(
+        sum(x for x, _ in base),
+        sum(n for _, n in base),
+        sum(x for x, _ in head),
+        sum(n for _, n in head),
+    )
+    base_rates, head_rates = [x / n for x, n in base if n], [x / n for x, n in head if n]
+    if min(len(base_rates), len(head_rates)) < 2:
+        # No spread to measure: shown as it is, and MIN_ROUNDS withholds the verdict.
+        return fisher
+    return max(fisher, welch_p(base_rates, head_rates))
 
 
 def _judge(row: Row, p_holm: float) -> Row:
@@ -194,14 +228,19 @@ def _judge(row: Row, p_holm: float) -> Row:
     split = [name for name, side in (("base", base), ("head", head)) if side.disagree_p < ALPHA]
     if base.executions == 0 or head.executions == 0:
         reason = "no execution verified on a side: no conclusion"
-    elif min(len(base.rounds), len(head.rounds)) < 2:
-        reason = ONE_ROUND
-    elif split:
-        reason = f"rounds disagree on {' and '.join(split)}: block effect, no conclusion"
+    elif min(base.measured_rounds, head.measured_rounds) < MIN_ROUNDS:
+        reason = FEW_ROUNDS
     elif row.base_errors_decide:
         reason = (
-            f"the difference rests on the {base.errors} error executions on base: "
-            "an error never makes the head look better, so no conclusion"
+            f"the difference rests on the {base.errors} error executions on base "
+            f"(p = {row.p_counted:.3g} with them as failures): an error never makes the "
+            "head look better, so no conclusion"
+        )
+    elif p_holm >= ALPHA and split:
+        # Not a gate: the rounds' own test already widens with them. It says why.
+        reason = (
+            f"rounds disagree on {' and '.join(split)}: the difference is within how much "
+            f"a round varies (p = {row.p:.3g}, Holm p = {p_holm:.3g}), no conclusion"
         )
     elif p_holm >= ALPHA:
         reason = f"no difference beyond chance (p = {row.p:.3g}, Holm p = {p_holm:.3g})"
@@ -213,7 +252,16 @@ def _judge(row: Row, p_holm: float) -> Row:
         if errors:
             reason += f"; {errors} error executions counted as not passed"
     return Row(
-        row.spec, row.test, base, head, row.p, p_holm, verdict, reason, row.base_errors_decide
+        row.spec,
+        row.test,
+        base,
+        head,
+        row.p,
+        p_holm,
+        verdict,
+        reason,
+        row.base_errors_decide,
+        row.p_counted,
     )
 
 

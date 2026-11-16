@@ -20,6 +20,7 @@ expect:
 - **`name`** is a tool name, or a list of names when any of them will do: `name: [search, search_products]`.
 - **`params`** must be contained in the call's arguments: keys you leave out are not checked, and nested objects are compared the same way.
 - **`result`** works like `params`, on what the tool returned.
+- **`returns`** is the whole return value, for a tool that returns a list or a text, which `result`'s key names cannot reach: `returns: {len_lte: 3}`, `returns: {icontains: "done"}`, `returns: [a, b]`. It takes any expected value, a matcher included; an object is matched as `result` is. For a `null` return, write `returns: {equals: null}`.
 - **Other calls are allowed** unless the test says `exclusive: true`.
 
 A value in `params` or `result` is compared as is, or with a matcher:
@@ -37,7 +38,7 @@ expect:
 
 | Matcher | Holds when the value |
 |---|---|
-| `equals` | is exactly the operand. Use it to compare a whole object, or an object that looks like a matcher. |
+| `equals` | is exactly the operand. Use it to compare a whole object, or an object that looks like a matcher. A boolean is never a number: `0` is not `false`, and `1` is not `true`. |
 | `contains`, `icontains` | contains the text (`icontains` ignores case). For a list: has the item. |
 | `not_contains`, `not_icontains` | does not contain it. |
 | `matches`, `not_matches` | matches the regular expression somewhere (Python's `re.search`), or does not. **Case-sensitive:** `matches: "eleven years"` fails on "Eleven years" at the start of a sentence. |

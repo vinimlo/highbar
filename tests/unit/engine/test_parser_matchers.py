@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from highbar.engine.parser import parse_spec
+from highbar.engine.schema import SpecError
 
 
 def _spec_with_params(tmp_path: Path, params: str) -> str:
@@ -222,3 +223,91 @@ class TestEmptyOperandsAtLoad:
     def test_hb36_params_with_no_keys_still_load(self, tmp_path: Path) -> None:
         """The top of params is argument names: none at all is a call with any arguments."""
         parse_spec(_spec_with_params(tmp_path, "{}"))
+
+
+def _spec_with_error(tmp_path: Path, error: str) -> str:
+    spec = tmp_path / "test.highbar.yaml"
+    spec.write_text(
+        textwrap.dedent(
+            f"""
+            agent:
+              start: "true"
+              endpoint: "http://localhost:8000/chat"
+            suites:
+              - name: Products
+                tests:
+                  - trigger: "do you have coke?"
+                    expect:
+                      function_calls:
+                        - name: search_products
+                          error: {error}
+            """
+        )
+    )
+    return str(spec)
+
+
+@pytest.mark.parametrize(
+    "error", ["{contains: true}", "{not_contains: false}", "{icontains: true}"]
+)
+def test_review_73_a_boolean_operand_on_an_error_does_not_load(tmp_path: Path, error: str) -> None:
+    # An error is text, which a boolean never is (HB-46): the check could never pass.
+    with pytest.raises(SpecError, match="a boolean is not text"):
+        parse_spec(_spec_with_error(tmp_path, error))
+
+
+def test_review_73_a_text_operand_on_an_error_still_loads(tmp_path: Path) -> None:
+    call = parse_spec(_spec_with_error(tmp_path, '{contains: "Timeout"}')).suites[0].tests[0]
+    assert call.expect.function_calls[0].error == {"contains": "Timeout"}  # type: ignore[index]
+
+
+@pytest.mark.parametrize("error", ["{equals: 1}", "{equals: [a]}", "{equals: {a: 1}}"])
+def test_review_78_an_error_equals_that_is_not_text_does_not_load(
+    tmp_path: Path, error: str
+) -> None:
+    # An error is text: equals anything else could never hold.
+    with pytest.raises(SpecError, match="is not text"):
+        parse_spec(_spec_with_error(tmp_path, error))
+
+
+def test_review_78_contains_a_number_on_an_error_still_loads(tmp_path: Path) -> None:
+    # contains reads its operand as text, so 404 is "404": it can hold.
+    test = parse_spec(_spec_with_error(tmp_path, "{contains: 404}")).suites[0].tests[0]
+    assert test.expect.function_calls[0].error == {"contains": 404}  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        ("{not_contains: {a: 1}}", "is not text"),
+        ("{contains: [1, 2]}", "is not text"),
+        ("{icontains: {a: 1}}", "is not text"),
+        ('{equals: ""}', "an empty error is no error"),
+    ],
+)
+def test_review_79_an_error_operand_that_can_never_hold_does_not_load(
+    tmp_path: Path, error: str, message: str
+) -> None:
+    # A list or object reads as its Python repr, and an empty error reads as none.
+    with pytest.raises(SpecError, match=message):
+        parse_spec(_spec_with_error(tmp_path, error))
+
+
+@pytest.mark.parametrize("error", ['{contains: "Timeout"}', "{contains: 404}", '{matches: "^4"}'])
+def test_review_79_text_and_numbers_still_load(tmp_path: Path, error: str) -> None:
+    parse_spec(_spec_with_error(tmp_path, error))
+
+
+@pytest.mark.parametrize("error", ["{not_contains: }", "{contains: null}", "{icontains: ~}"])
+def test_review_81_a_null_operand_on_an_error_does_not_load(tmp_path: Path, error: str) -> None:
+    # A null operand reads as "None": not_contains null holds on any error without it.
+    with pytest.raises(SpecError, match="is not text"):
+        parse_spec(_spec_with_error(tmp_path, error))
+
+
+def test_review_82_a_null_operand_is_named_as_the_yaml_author_wrote_it(tmp_path: Path) -> None:
+    # Review of #82: the author wrote null or nothing, so "None" names Python, not YAML.
+    with pytest.raises(SpecError) as raised:
+        parse_spec(_spec_with_error(tmp_path, "{not_contains: }"))
+    assert "an empty value (null)" in str(raised.value)
+    assert "None" not in str(raised.value)

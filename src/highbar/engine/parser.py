@@ -1322,8 +1322,31 @@ def _parse_function_call(raw: Any, where: str) -> FunctionCallExpect:
         name=_parse_call_name(raw["name"], where),
         params=raw.get("params"),
         result=raw.get("result"),
+        returns=_parse_returns(raw, where),
         error=_parse_call_error(raw.get("error", False), where),
     )
+
+
+def _parse_returns(raw: dict[str, Any], where: str) -> Any:
+    """The whole return value, as any expected value (HB-37). None: not checked."""
+    if "returns" not in raw:
+        return None
+    value = raw["returns"]
+    if value is None:
+        raise SpecError(
+            f"{where}.returns: returns: null checks nothing; "
+            "to expect a null return, write {equals: null}"
+        )
+    if _has_template(value):
+        raise SpecError(
+            f"{where}.returns: templates are only resolved in triggers; "
+            "here '{{...}}' would be compared as literal text"
+        )
+    try:
+        validate_expected(value, f"{where}.returns")
+    except ValueError as e:
+        raise SpecError(str(e)) from None
+    return value
 
 
 def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
@@ -1338,6 +1361,33 @@ def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
             f"{where}.error: error must be true, false or a matcher such as "
             '{contains: "Timeout"}; a bare text would be ambiguous between equals and contains'
         )
+    for key, operand in matcher.items():
+        if isinstance(operand, bool):
+            # A boolean is never text (HB-46): this check could never pass.
+            raise SpecError(
+                f"{where}.error.{key}: a boolean is not text, and an error is; "
+                f'write the text it must hold, such as {{{key}: "Timeout"}}'
+            )
+        if operand is None or isinstance(operand, dict | list):
+            # A null, a list or an object would be compared as its Python repr ("None",
+            # "[1, 2]"): never what an error says (reviews of #79 and #81).
+            # Named as the YAML author wrote it: null, or nothing after the colon.
+            shown = "an empty value (null)" if operand is None else f"{operand!r}"
+            raise SpecError(
+                f"{where}.error.{key}: {shown} is not text, and an error is; "
+                f'write the text it must hold, such as {{{key}: "Timeout"}}'
+            )
+        if key == "equals" and operand == "":
+            raise SpecError(
+                f"{where}.error.equals: an empty error is no error, so this never holds; "
+                "write error: false for a call that must not fail"
+            )
+        if key == "equals" and not isinstance(operand, str):
+            # equals compares as is, and an error is text: 1 never equals "1".
+            raise SpecError(
+                f"{where}.error.equals: {operand!r} is not text, and an error is; "
+                'write it as text, such as {equals: "1"}'
+            )
     try:
         validate_expected(matcher, f"{where}.error")
     except ValueError as e:

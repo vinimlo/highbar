@@ -13,6 +13,7 @@ from highbar.adapters import file_collector, subprocess_adapter
 from highbar.adapters.file_collector import TraceFormatError
 from highbar.adapters.http_client import AgentResponseError, HTTPClient, InfraCause
 from highbar.adapters.subprocess_adapter import SubprocessAdapter
+from highbar.assertions.function_calls import FunctionCallsAssertion, unrecorded_returns
 from highbar.assertions.llm import check_llm
 from highbar.assertions.records import RecordNotObserved
 from highbar.assertions.response import truncate
@@ -246,6 +247,10 @@ def _amounts(costs: Mapping[str, float]) -> str:
 
 def _same_correlation(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     return bool(a) and a.keys() == b.keys() and all(same_value(a[k], b[k]) for k in a)
+
+
+def _quoted(names: list[str]) -> str:
+    return " and ".join(f"'{name}'" for name in names)
 
 
 def _names(tools: list[Trace]) -> str:
@@ -1213,10 +1218,20 @@ class TestRunner:
         execution.passed = False
         return replace(result, status=Status.FAILED, errors=[*result.errors, *failures])
 
-    def _check(self, tools: list[Trace], response: str, expect: Expect) -> list[str]:
+    def _check(
+        self, tools: list[Trace], response: str, expect: Expect, *, assume_unrecorded: bool = False
+    ) -> list[str]:
+        assertions = self._assertions
+        if assume_unrecorded:
+            assertions = [
+                FunctionCallsAssertion(assume_unrecorded=True)
+                if isinstance(a, FunctionCallsAssertion)
+                else a
+                for a in assertions
+            ]
         failed = [
             r
-            for assertion in self._assertions
+            for assertion in assertions
             for r in assertion.evaluate(tools, response, expect)
             if not r.passed
         ]
@@ -1883,6 +1898,17 @@ class TestRunner:
                         "makes off the request needs contextvars.copy_context() to keep the "
                         "tag; hb.record() can also be given it"
                     )
+
+        # A call whose return was not recorded: `returns` could not be checked on it.
+        # A test that passes once those returns are taken to fit was not checked,
+        # which is not the same as failed (review of #74).
+        unseen_returns = unrecorded_returns(traces, expect) if errors else []
+        if unseen_returns and not self._check(traces, response, expect, assume_unrecorded=True):
+            return unverified(
+                f"the return of {_quoted(unseen_returns)} was not recorded, so "
+                "`returns` was not checked: give hb.record(...) the result=, or "
+                "write a `result` in the tool's line"
+            )
 
         budget = self._budget_check(expect.budget, log.usage)
         if (unseen := self._unobservable(expect)) is not None:

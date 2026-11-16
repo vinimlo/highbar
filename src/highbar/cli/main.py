@@ -528,6 +528,62 @@ def compare(
 
 
 @app.command()
+def redteam(
+    spec_path: Annotated[str, typer.Argument(help="The spec whose agent the attacks target.")],
+    allow: Annotated[
+        list[str] | None,
+        typer.Option("--allow", help="A tool an attack may make the agent call. Repeatable."),
+    ] = None,
+    secret: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--secret",
+            help="Text no reply may hold, such as a line of the system prompt. "
+            "Written into the file, and shown when a test fails. Repeatable.",
+        ),
+    ] = None,
+    lang: Annotated[
+        list[str] | None,
+        typer.Option("--lang", help="Only these languages: en, pt, es. Repeatable."),
+    ] = None,
+    out: Annotated[
+        str | None,
+        typer.Option("--out", help="Where to write it. Default: next to the spec."),
+    ] = None,
+    force: Annotated[
+        bool, typer.Option("--force", help="Write over an attack file already there.")
+    ] = False,
+) -> None:
+    """Write a spec of attacks on the agent's guardrails; run it with `highbar run`."""
+    from highbar.redteam import AttackFileExists, write_attacks
+
+    try:
+        target = write_attacks(
+            Path(spec_path),
+            allow=allow or (),
+            secrets=secret or (),
+            languages=lang,
+            out=Path(out) if out else None,
+            force=force,
+        )
+    except (SpecError, OSError, ValueError) as exc:
+        if isinstance(exc, AttackFileExists):
+            message = (
+                f"{exc} is already there, and may hold your edits: "
+                "pass --force to write it again, or --out for another file."
+            )
+        else:
+            message = str(exc)
+        console.print(f"[red]{escape(message)}[/red]", soft_wrap=True)
+        raise typer.Exit(EXIT_UNRUNNABLE) from exc
+    count = len(parse_spec(str(target)).suites[0].tests)
+    console.print(f"  Wrote {count} attacks to {escape(str(target))}.", soft_wrap=True)
+    console.print(
+        f"  Run them with: [bold]highbar run {escape(str(target))}[/bold]", soft_wrap=True
+    )
+
+
+@app.command()
 def validate(
     spec_path: str = typer.Argument(
         default="",
@@ -542,6 +598,55 @@ def validate(
 
     specs = _parse_all(paths, report_valid=True, runs=None)
     raise typer.Exit(EXIT_UNRUNNABLE if specs is None else EXIT_OK)
+
+
+@app.command()
+def vacuum(
+    spec_path: str = typer.Argument(
+        default="",
+        help="Spec file or directory. If omitted, all specs in specs/",
+    ),
+) -> None:
+    """Find tests that an agent doing nothing useful would pass (no agent runs)."""
+    from highbar.engine.vacuum import probe_spec
+
+    paths = _discover_specs(spec_path)
+    if not paths:
+        console.print("[red]No spec files found.[/red]")
+        raise typer.Exit(EXIT_UNRUNNABLE)
+    specs = _parse_all(paths)
+    if specs is None:
+        raise typer.Exit(EXIT_UNRUNNABLE)
+
+    judged = vacuous = 0
+    for path, spec in specs:
+        console.print(f"\n  [bold]{escape(path)}[/bold]")
+        for finding in probe_spec(spec):
+            name = escape(f"{finding.suite} › {finding.test}")
+            if finding.not_judged:
+                console.print(
+                    f"    [dim]· {name}  not judged: {finding.not_judged} is beyond "
+                    "a trivial agent[/dim]",
+                    soft_wrap=True,
+                )
+                continue
+            judged += 1
+            if finding.passes_on:
+                vacuous += 1
+                console.print(
+                    f"    [red]✗[/red] {name}  passes on: {', '.join(finding.passes_on)}",
+                    soft_wrap=True,
+                )
+            else:
+                console.print(f"    [green]✓[/green] {name}", soft_wrap=True)
+    console.print(f"\n  {vacuous} vacuous of {judged}", soft_wrap=True)
+    if vacuous:
+        console.print(
+            "  A vacuous test is green on an agent that does nothing useful: add the "
+            "call it must make, the arguments, or what the reply must not say.",
+            soft_wrap=True,
+        )
+    raise typer.Exit(EXIT_FAILED if vacuous else EXIT_OK)
 
 
 def _sharing_secrets(specs: list[tuple[str, Spec]]) -> list[tuple[str, Spec]]:
