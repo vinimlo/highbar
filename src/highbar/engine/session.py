@@ -485,35 +485,42 @@ class SessionHooks:
         late = f"{what} did not finish in {seconds:g}s (agent.timeout)"
         # httpx's timeout bounds each read, not the whole reply: the deadline bounds it.
         deadline = time.monotonic() + seconds
-        try:
-            with (
-                httpx.Client(timeout=seconds, transport=self._transport) as client,
-                client.stream(hook.method, url, headers=headers, **content) as reply,
-            ):
-                raw = bytearray()
-                for chunk in reply.iter_bytes():
-                    raw += chunk
-                    if len(raw) > MAX_HOOK_REPLY_BYTES:
-                        raise SessionError(
-                            f"{what}: the reply from {url} is larger than "
-                            f"{MAX_HOOK_REPLY_BYTES // 1_000_000} MB"
-                        )
-                    if time.monotonic() > deadline:
-                        raise SessionError(late)
-        except httpx.TimeoutException:
-            raise SessionError(late) from None
-        except httpx.ConnectError as e:
-            raise SessionError(f"{what}: cannot reach {url}: {e}") from None
-        except httpx.LocalProtocolError:
-            # The library quotes the offending value whole: say which problem, never it.
-            raise SessionError(
-                f"{what}: the request to {url} could not be sent: a header value "
-                "is not valid; the value is not shown"
-            ) from None
-        except (httpx.HTTPError, httpx.InvalidURL) as e:
-            raise SessionError(f"{what}: {hook.method} {url} failed: {e}") from None
 
-        text = bytes(raw).decode(reply.charset_encoding or "utf-8", errors="replace")
+        def exchange() -> tuple[httpx.Response, bytes]:
+            try:
+                with (
+                    httpx.Client(timeout=seconds, transport=self._transport) as client,
+                    client.stream(hook.method, url, headers=headers, **content) as reply,
+                ):
+                    raw = bytearray()
+                    for chunk in reply.iter_bytes():
+                        raw += chunk
+                        if len(raw) > MAX_HOOK_REPLY_BYTES:
+                            raise SessionError(
+                                f"{what}: the reply from {url} is larger than "
+                                f"{MAX_HOOK_REPLY_BYTES // 1_000_000} MB"
+                            )
+                        if time.monotonic() > deadline:
+                            raise SessionError(late)
+            except httpx.TimeoutException:
+                raise SessionError(late) from None
+            except httpx.ConnectError as e:
+                raise SessionError(f"{what}: cannot reach {url}: {e}") from None
+            except httpx.LocalProtocolError:
+                # The library quotes the offending value whole: say which problem, never it.
+                raise SessionError(
+                    f"{what}: the request to {url} could not be sent: a header value "
+                    "is not valid; the value is not shown"
+                ) from None
+            except (httpx.HTTPError, httpx.InvalidURL) as e:
+                raise SessionError(f"{what}: {hook.method} {url} failed: {e}") from None
+
+            return reply, bytes(raw)
+
+        # The status line and headers come before the first chunk of the body, where the
+        # deadline is checked: the whole exchange is waited for until then (HB-39).
+        reply, raw = _within(exchange, seconds, late)
+        text = raw.decode(reply.charset_encoding or "utf-8", errors="replace")
         status = reply.status_code
         if 300 <= status < 400:
             where = reply.headers.get("Location", "an unnamed location")
@@ -526,6 +533,31 @@ class SessionHooks:
                 f"{what}: {hook.method} {url} returned HTTP {status}: {truncate(text, 200)}"
             )
         return text
+
+
+def _within[T](task: Callable[[], T], seconds: float, late: str) -> T:
+    """``task`` in a thread of its own, waited for ``seconds`` at most (HB-39).
+
+    httpx's timeout holds for each read, so a server that sends its status line and
+    headers a byte at a time never trips it. Past the deadline the thread is left to end
+    on its own, as a Python hook abandoned at its timeout is, and ``late`` is the failure.
+    """
+    outcome: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            outcome["result"] = task()
+        except BaseException as e:  # handed to the caller, in the caller's thread
+            outcome["error"] = e
+
+    thread = threading.Thread(target=run, name="highbar-http-hook", daemon=True)
+    thread.start()
+    thread.join(seconds)
+    if thread.is_alive():
+        raise SessionError(late)
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["result"]
 
 
 # How many of a failed hook's last lines its message shows.
