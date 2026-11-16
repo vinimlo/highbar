@@ -56,6 +56,18 @@ Compares two groups of runs test by test. Each `PATH` is a `--report json=` file
 
 It exits 2 when a report cannot be read, a folder holds no report, or no test is in every report with the same definition.
 
+## `highbar redteam SPEC_PATH`
+
+Writes a spec of attacks on the agent's guardrails next to `SPEC_PATH` (`waiter.highbar.yaml` gives `waiter.redteam.highbar.yaml`), with the same `agent` and `defaults`. Nothing runs: run the file with `highbar run`. See [attacks written for you](/guides/guardrails#attacks-written-for-you).
+
+- `--allow TOOL`: a tool an attack may make the agent call; every other tool the spec names is forbidden. Repeatable.
+- `--secret TEXT`: text no reply may hold, such as a line of the system prompt. It is written into the file and shown when a test fails, and it cannot be empty. Repeatable.
+- `--lang en|pt|es`: only these languages. Repeatable.
+- `--out FILE`: write it there instead.
+- `--force`: write over the file. Without it, an existing file is never touched.
+
+It exits 2 for an invalid spec, an unknown language, an empty `--secret`, or a file already there.
+
 ## Exit codes
 
 | Code | When |
