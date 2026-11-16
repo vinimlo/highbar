@@ -61,3 +61,31 @@ def test_hb10_a_signal_during_the_teardown_of_a_finished_run_waits_for_it(
 
     assert cli.returncode == code
     assert _events(project) == ["setup", "agent.start", "teardown start", "teardown done"]
+
+
+@pytest.mark.timeout(40)
+def test_hb44_a_ctrl_c_during_the_teardown_says_why_highbar_waits(project: _Project) -> None:
+    spec = _spec(project, PASSES)
+    (project.root / "slow.py").write_text(SLOW_TEARDOWN, encoding="utf-8")
+    path = project.root / spec
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            f"{sys.executable} hook.py teardown", f"{sys.executable} slow.py"
+        ),
+        encoding="utf-8",
+    )
+
+    cli = _start(project, spec)
+    try:
+        deadline = time.monotonic() + 20
+        while "teardown start" not in _events(project):
+            assert cli.poll() is None and time.monotonic() < deadline, _events(project)
+            time.sleep(0.05)
+        cli.send_signal(signal.SIGINT)
+        output, _ = cli.communicate(timeout=15)
+    finally:
+        if cli.poll() is None:
+            cli.kill()
+
+    assert cli.returncode == 130
+    assert output.count("Waiting for agent.run.teardown to put back what") == 1, output

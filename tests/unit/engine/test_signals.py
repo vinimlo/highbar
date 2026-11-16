@@ -7,7 +7,9 @@ outside Python, which cannot be put back from here, is not replaced at all.
 
 from __future__ import annotations
 
+import os
 import signal
+import sys
 from typing import Any
 
 import pytest
@@ -57,3 +59,55 @@ def test_hb10_a_handler_set_outside_python_is_not_replaced(
 
     assert signal.SIGHUP not in replaced
     assert signal.SIGINT in replaced
+
+
+def test_hb44_the_first_held_signal_says_why_highbar_waits(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """A Ctrl-C that waits in silence reads as a hang, and a kill -9 leaves the flag on."""
+    with pytest.raises(KeyboardInterrupt), holding_signals(notice="Waiting for the teardown"):
+        os.kill(os.getpid(), signal.SIGINT)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    assert capfd.readouterr().err.count("Waiting for the teardown") == 1
+
+
+def test_hb44_without_a_signal_nothing_is_said(capfd: pytest.CaptureFixture[str]) -> None:
+    with holding_signals(notice="Waiting for the teardown"):
+        pass
+
+    assert "Waiting" not in capfd.readouterr().err
+
+
+def test_hb44_a_signal_while_the_line_is_written_does_not_write_it_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review of #66: the second of two signals back to back can land inside the write."""
+    from highbar.engine import signals
+
+    said: list[str] = []
+
+    def say(line: str) -> None:
+        said.append(line)
+        if len(said) == 1:
+            os.kill(os.getpid(), signal.SIGINT)  # lands before the first handler returns
+
+    monkeypatch.setattr(signals, "_say", say)
+
+    with pytest.raises(KeyboardInterrupt), holding_signals(notice="Waiting for the teardown"):
+        os.kill(os.getpid(), signal.SIGINT)
+
+    assert said == ["Waiting for the teardown"]
+
+
+def test_hb44_without_a_stderr_the_line_goes_nowhere(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review of #66: with fd 2 closed at exec, the next file highbar opens can be fd 2:
+    the trace file, a log or a connection must not get the line."""
+    written: list[int] = []
+    monkeypatch.setattr(sys, "__stderr__", None)
+    monkeypatch.setattr(os, "write", lambda fd, data: written.append(fd) or len(data))
+
+    with pytest.raises(KeyboardInterrupt), holding_signals(notice="Waiting for the teardown"):
+        os.kill(os.getpid(), signal.SIGINT)
+
+    assert written == []

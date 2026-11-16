@@ -199,6 +199,7 @@ def _runner(
         secrets=spec.agent.secrets,
         default_runs=default_runs,
         max_cost=max_cost,
+        hook_timeout=spec.agent.timeout / 1000,
         spent=spent,
         spent_untagged=spent_untagged,
     )
