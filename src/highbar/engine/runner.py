@@ -613,7 +613,6 @@ class TestRunner:
         # --jobs (HB-8): one lock for everything but the send and the wait, the tests in
         # spec order, and where the run of them stands.
         self._lock = threading.Lock()
-        self._turn = threading.Condition(self._lock)
         self._plan: list[tuple[int, Suite, Test]] = []
         self._suites: list[Suite] = []
         self._suites_told = 0
@@ -621,7 +620,6 @@ class TestRunner:
         self._in_flight: set[int] = set()
         self._done: dict[int, tuple[str, TestResult]] = {}
         self._flushed = 0
-        self._workers_left = 0
         self._ceiling: _Ceiling | None = None
         self._interrupting = False
         self._crash: BaseException | None = None
@@ -786,13 +784,13 @@ class TestRunner:
             threading.Thread(target=self._work, name=f"highbar-job-{n + 1}", daemon=True)
             for n in range(min(self._jobs, len(self._plan)))
         ]
-        self._workers_left = len(workers)
         try:
             for worker in workers:
                 worker.start()
-            with self._lock:
-                while self._workers_left:
-                    self._turn.wait(0.1)
+            # Joined without the lock: a signal that lands here leaves it as it was.
+            while any(worker.is_alive() for worker in workers):
+                for worker in workers:
+                    worker.join(0.1)
         except BaseException:
             self._stop_workers(workers)
             raise
@@ -821,9 +819,6 @@ class TestRunner:
                 # Told on the main thread, after the other workers end.
                 if self._crash is None:
                     self._crash = e
-            finally:
-                self._workers_left -= 1
-                self._turn.notify_all()
 
     def _dispatch(self) -> int | None:
         """The next test to start, or None: none left, or the run stops."""

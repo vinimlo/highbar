@@ -403,6 +403,9 @@ class TestStops:
             if message == "a":
                 b_started.wait(1)
                 os.kill(os.getpid(), signal.SIGINT)
+                # As a Ctrl-C from the terminal does, it reaches the main thread while
+                # the message is still in flight.
+                time.sleep(0.2)
             else:
                 b_started.set()
                 time.sleep(0.3)
