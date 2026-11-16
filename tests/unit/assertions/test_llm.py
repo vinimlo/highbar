@@ -58,3 +58,22 @@ def test_hb11_max_calls_counts_the_failed_ones_too() -> None:
 
     assert check_llm(calls, LlmExpect(max_calls=2)) == []
     assert check_llm(calls, LlmExpect(max_calls=1)) == ["llm: 2 calls to the model, at most 1"]
+
+
+def test_hb11_a_model_matcher_on_a_call_that_names_no_model_fails() -> None:
+    """Review of #67: `not_contains: mini` passed on a call with no model at all."""
+    calls = [LlmCall(ts=1.0, roles=("system",))]
+
+    assert check_llm(calls, LlmExpect(model={"not_contains": "mini"})) == [
+        "llm: call 1 answered without saying its model, so it cannot be checked"
+    ]
+
+
+def test_hb11_a_failed_call_followed_by_another_is_a_fallback() -> None:
+    """Review of #67: a 429 on model a, then b answers, with neither field set."""
+    calls = [_call("a", error="429 Too Many Requests"), _call("b")]
+
+    assert check_llm(calls, LlmExpect(fallback=True)) == []
+    assert check_llm(calls, LlmExpect(fallback=False)) == [
+        "llm: a fallback happened (call 2 came after call 1 failed), expected none"
+    ]

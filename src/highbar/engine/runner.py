@@ -1765,7 +1765,7 @@ class TestRunner:
             log.turns = list(classified.mine.turns)
             if self._managed and not seen:
                 execution.on_faith = True
-            if expect.check is not None and not (classified.mine.tools or classified.mine.turns):
+            if expect.check is not None and not seen:
                 log.unobserved = self._not_observed(classified, execution.correlate)
             errors = self._check(traces, response, expect)
             if untagged:
