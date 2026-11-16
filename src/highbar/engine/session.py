@@ -177,11 +177,6 @@ class SessionHooks:
         self._secrets = dict(secrets or {})
         self._log = _HookLog(spec_path)
 
-    @property
-    def timeout_s(self) -> float:
-        """agent.timeout, in seconds: the longest any hook may take."""
-        return self._timeout_s
-
     def load(self) -> None:
         """Import the Python hooks, once, before any agent starts. Raises ``SessionError``."""
         hooks = [("session.setup", self._config.setup), ("session.teardown", self._config.teardown)]

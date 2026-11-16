@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import signal
+import sys
 from typing import Any
 
 import pytest
@@ -76,3 +77,37 @@ def test_hb44_without_a_signal_nothing_is_said(capfd: pytest.CaptureFixture[str]
         pass
 
     assert "Waiting" not in capfd.readouterr().err
+
+
+def test_hb44_a_signal_while_the_line_is_written_does_not_write_it_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review of #66: the second of two signals back to back can land inside the write."""
+    from highbar.engine import signals
+
+    said: list[str] = []
+
+    def say(line: str) -> None:
+        said.append(line)
+        if len(said) == 1:
+            os.kill(os.getpid(), signal.SIGINT)  # lands before the first handler returns
+
+    monkeypatch.setattr(signals, "_say", say)
+
+    with pytest.raises(KeyboardInterrupt), holding_signals(notice="Waiting for the teardown"):
+        os.kill(os.getpid(), signal.SIGINT)
+
+    assert said == ["Waiting for the teardown"]
+
+
+def test_hb44_without_a_stderr_the_line_goes_nowhere(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review of #66: with fd 2 closed at exec, the next file highbar opens can be fd 2:
+    the trace file, a log or a connection must not get the line."""
+    written: list[int] = []
+    monkeypatch.setattr(sys, "__stderr__", None)
+    monkeypatch.setattr(os, "write", lambda fd, data: written.append(fd) or len(data))
+
+    with pytest.raises(KeyboardInterrupt), holding_signals(notice="Waiting for the teardown"):
+        os.kill(os.getpid(), signal.SIGINT)
+
+    assert written == []

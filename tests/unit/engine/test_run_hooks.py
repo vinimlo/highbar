@@ -208,8 +208,6 @@ class TestHooks:
 class _RunHooks:
     """Session hooks with a run setup and teardown, writing what happens in order."""
 
-    timeout_s = 60.0
-
     def __init__(
         self, events: list[str], *, fail_setup: bool = False, fail_teardown: bool = False
     ) -> None:
