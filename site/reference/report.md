@@ -13,7 +13,7 @@ jq -r '.specs[].tests[] | [.id, .counts.passed, .counts.failed, .counts.error] |
 ```
 
 ::: warning The file holds what the agent said
-Responses and tool arguments go in whole, so treat it like a trace file from `--keep-traces`. Values from `${VAR}` are masked everywhere, the same way as in the output. A tool's `result` and `context` have no field of their own, but a `result` can still get in: a failed check quotes it in `errors`, and a <code v-pre>{{previous.*}}</code> template puts it in `turns[].trigger`. The session's values appear where `agent.correlate` uses them.
+Responses and tool arguments go in whole, so treat it like a trace file from `--keep-traces`. Values from `${VAR}` where a secret goes (a header, a body, a session hook, a URL's query) are masked everywhere, the same way as in the output. A tool's `result` and `context` have no field of their own, but a `result` can still get in: a failed check quotes it in `errors`, and a <code v-pre>{{previous.*}}</code> template puts it in `turns[].trigger`. The session's values appear where `agent.correlate` uses them.
 :::
 
 ## What the file says about the run
@@ -37,6 +37,7 @@ The file is written before the first message and again on every way out of the r
 
 - A path that cannot be written stops the run with exit code 2 before anything is sent.
 - A run that was killed leaves `exit_code: null`.
+- A run whose [`agent.run`](/guides/attach-mode#before-and-after-the-run) setup failed has `stopped.reason: "run_setup_failed"`, exit code 2 and no tests: nothing was sent.
 - An interrupted run keeps the tests that finished, and the test in progress is left out.
 - A run stopped by `--max-cost` keeps every test that ran, with `stopped.reason: "budget_exceeded"`. The test in progress had time to finish, and the ones after it are not in the file. When the ceiling is passed only at the last test, or by what was read after it, no test was left out, and `complete` is `true`. `stopped.message` says how much of the spend had no test context: that part of an agent highbar started counts for the ceiling and is in no `totals`.
 - A run stopped by [`--max-errors`](/reference/cli#max-errors) has `stopped.reason: "repeated_errors"`, `exit_code: 4`, and the line it printed in `stopped.message`, without the body of any reply. Its executions keep the status they had. The test it stopped in is in the file with the executions that ran, as an `error` whose `errors` say how many of its executions ran, and its spec's `complete` is `false`; the tests after it are not in the file. When the last error was the last execution of the last test, nothing was left out, and `complete` is `true`.
@@ -111,8 +112,9 @@ The one exception is a command line that highbar cannot read: an unknown option,
 | Field | |
 |---|---|
 | `id` | The test's [`id`](/reference/spec-format#tests) in the spec, or `<suite>/<name>`. Unique in a spec. |
-| `definition_sha256` | Of the trigger, the turns, the expectation and the number of variations. `name`, `id`, `runs` and `min_pass` stay out, and so does an option left at its default, so a new one changes the hash of no test that does not use it. A budget changes what counts as right, so it is part of the expectation: one from `defaults.budget` hashes the same as one written in the test. |
-| `status`, `errors` | The final ones, late calls included. |
+| `definition_sha256` | Of the trigger, the turns, the expectation, the number of variations and `expect_status`. `name`, `id`, `runs` and `min_pass` stay out, and so does an option left at its default, so a new one changes the hash of no test that does not use it. A budget changes what counts as right, so it is part of the expectation: one from `defaults.budget` hashes the same as one written in the test. |
+| `status`, `errors` | The final ones, late calls included. With `expect_status`, `status` is judged against it: `passed` when the test ended exactly there. The phrasings and executions keep what happened. |
+| `expect_status` | `failed` or `error`, the state this negative control must end in, or `null`. See [a test that must fail](/guides/assertions#a-test-that-must-fail-expect-status). |
 | `runs`, `min_pass` | As they applied to this test, with fractions resolved. |
 | `counts` | How the executions ended. There is no rate: an `error` is neither a pass nor a failure, so whoever computes one has to decide what to do with it. |
 | `phrasings[].kind` | `trigger`, `variation`, or `conversation` for a multi-turn test, whose `text` is `null`. A test that stopped before running, such as one without its variations, has no phrasings. |

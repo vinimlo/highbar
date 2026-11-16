@@ -75,8 +75,14 @@ class TerminalReporter:
         if result.counts is not None:
             passed, runs, min_pass = result.counts
             test_name += f" {passed}/{runs}" + (f" (min {min_pass})" if min_pass != runs else "")
+        if result.expected is not None:
+            test_name += f" (expected {result.expected})"
         color, mark = _MARKS[result.status]
         self._console.print(f"    [{color}]{mark}[/{color}] {test_name}  [dim]{duration}[/dim]")
+        if result.expected is not None and result.status is Status.PASSED:
+            # A negative control that ended as it should: what made it fail is the
+            # expected part, and it stays in the report.
+            return
         for error in result.errors:
             self._console.print(f"      [{color}]→ {escape(error)}[/{color}]")
 

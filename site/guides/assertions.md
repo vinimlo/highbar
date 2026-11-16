@@ -139,6 +139,77 @@ expect:
 
 Each condition that fails gets its own line in the output, ending with what the agent said, cut at 300 characters.
 
+## Calls to the model: `llm`
+
+An agent that falls back from one model to another, or that must end every prompt with its own system message, says so in an [`llm` record](/reference/trace-contract#llm-one-call-to-the-model) per call. `expect.llm` checks them:
+
+```yaml test
+trigger: "what is the deadline?"
+expect:
+  llm:
+    model: deepseek-flash
+    fallback: true
+    last_role: system
+    max_calls: 3
+```
+
+- `model`: the model of the call that answered, the last one without an `error`. A name, or a text matcher like `{matches: "^gpt-4o"}`. A call that answered without a `model` fails the check.
+- `fallback`: whether some call stood in for another model (`fallback_from`), was a retry (`attempt` over 1), or came after a call that failed, whatever its fields say.
+- `last_role`: the role of the last message sent, in every call. A failure names the call.
+- `max_calls`: how many calls, failed ones included.
+
+A test with no `llm` record of its own is an `error`, never a pass: `fallback: false` would otherwise pass on an agent that records nothing. When another check already failed the test, it stays `failed`, and the missing records are named too.
+
+## What entered the prompt: `retrieval`
+
+A reply that is right can still be right by luck: with two near-identical manuals in the prompt, an agent can quote the right deadline in one round and the wrong one in the next. An agent that records what it put in the prompt, in a [`retrieval` record](/reference/trace-contract#retrieval-what-entered-the-prompt), lets the test check that directly:
+
+```yaml test
+trigger: "and the deadline?"
+expect:
+  retrieval:
+    includes: [tr-7, {id: tr-2, source: sticky}]
+    excludes: [Draft]
+    max_items: 3
+    max_tokens: 2000
+    chunks_in_order: true
+```
+
+- `includes`: documents, by id or title, that went into a prompt of this test. With `source`, they must have come that way: `expanded`, `retrieved` or `sticky`.
+- `excludes`: documents that must not have gone in.
+- `max_items`, `max_tokens`: for each prompt, one record each. Without a `tokens` of its own, a record's documents' `tokens` add up; when they cannot, the check fails and says so.
+- `chunks_in_order`: each document's chunks went in ascending.
+
+A test with no `retrieval` record of its own is an `error`, never a pass, as with [`llm`](#calls-to-the-model-llm).
+
+## A check of your own: `check`
+
+Some outcomes are in neither the reply nor a tool call: a list the agent must have cleared, a row it must have written. `check` names a Python function that looks for them:
+
+```yaml test
+trigger: "End the session"
+expect:
+  response: {icontains: "bye"}
+  check: {python: "evals.checks:no_open_trainings"}
+```
+
+```python
+# evals/checks.py
+from myapp.trainings import open_trainings
+
+
+def no_open_trainings(ctx):
+    left = open_trainings(conversation=ctx.session["conversation_id"])
+    return [f"{len(left)} trainings still open after the session ended"] if left else []
+```
+
+- It runs after highbar's own checks of the turn, once per execution. It is imported from the directory you run highbar in before any agent starts, and called in the thread the session hooks run in, with `agent.timeout` to return.
+- `ctx` has `test_id`, `test_name`, `spec_path`, `message` (the trigger as sent), `response`, `session`, `args` and `history`. It also has `tools` and `turns`, the trace records highbar counted as this turn's. A record written after the turn's window is not in them.
+- `tools` and `turns` are there only when highbar observed the turn: a record of its own, or an untagged window its own tool checks would read. Otherwise reading them leaves the turn `error`, even when the function catches it, since an empty list would say the agent called nothing. With no `agent.traces` in an attached spec, nothing is observed.
+- It returns a list of failure messages. An empty list is a pass, and each message becomes a line of the test's failure. Anything else leaves the turn `error`, unless highbar's own checks already failed it: an exception, a timeout, or `None` from a function that forgot its `return`.
+- In a multi-turn test, each turn's `expect` has its own. `check` alone is enough for a test to assert something, and it needs no trace record: a test that checks only a state of its own observes nothing.
+- No model is called, so the same state gives the same answer. The function's name is part of what the test measures (`definition_sha256`).
+
 ## What a failure says
 
 The message gives the most basic reason first:
@@ -152,3 +223,24 @@ The message gives the most basic reason first:
 | called them in another order | `calls matched but out of order: expected get_order, cancel_order; got cancel_order, get_order` |
 | made a call nobody expected (`exclusive`) | `unexpected calls: delete_account` |
 | called a forbidden tool | `forbidden tool 'delete_account' was called` |
+
+## A test that must fail: `expect_status`
+
+A negative control proves the plumbing: a tool that fails must fail the test, and a test highbar cannot verify, like a budget on usage the agent does not report, must end in `error`. Without a way to say so, the run is red when the control works, and it gets checked by hand. `expect_status` says which state the test must end in:
+
+```yaml test
+name: "a broken get_order fails the test"
+trigger: "Where is order 1042?"
+expect:
+  function_calls:
+    - name: get_order
+expect_status: failed
+```
+
+- The test passes when it ends exactly in that state, `failed` or `error`. The terminal marks it `✓ a broken get_order fails the test (expected failed)`, on one line.
+- It fails when it passes, with `passed, but expect_status is failed: this negative control no longer catches what it was written for`. It also fails when it ends in the other state (`ended error, but expect_status is failed`): a control that expects a failure and could not verify anything proves nothing.
+- The state is the test's, after `runs` and `min_pass`, and after late calls: a late call that fails a control makes it pass, and the run says so in a warning.
+- `error` is any state highbar could not verify, an agent that timed out included.
+- A run that cannot observe the agent at all stops before its first message, with exit code 2, and no control is judged. That is a managed agent (`agent.start`) whose SDK never writes its `hello`, or an attached agent whose `agent.traces` file does not exist. The check runs only when a test of the spec needs a record. An attached agent whose trace file exists but stays empty does not stop the run: each test that needs a record ends in `error`, so a control expecting `error` passes.
+- In the [report](/reference/report#each-test), `status` is the judged one and `expect_status` says what was expected. The phrasings and executions keep what happened, and so do `errors`.
+

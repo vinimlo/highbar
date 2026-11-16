@@ -28,7 +28,7 @@ An agent highbar started is stopped before `run` returns or raises.
 | `passed`, `failed`, `errored` | Tests in each state. |
 | `duration_ms` | Wall time of the run. |
 | `variations` | Paraphrases that ran, each counted once. |
-| `tests` | Each test in its final state: the fields of the [report](/reference/report#each-test), as dataclasses. Values from `${VAR}` are masked. |
+| `tests` | Each test in its final state: the fields of the [report](/reference/report#each-test), as dataclasses. Values from `${VAR}` where a secret goes are masked ([which ones](/guides/attach-mode)). |
 | `warnings` | The warnings of the run. |
 | `totals`, `suites` | [Tokens and cost](/reference/report#tokens-and-cost) of the run and of each suite. `totals` is `None` when no turn reported usage. |
 

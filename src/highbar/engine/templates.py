@@ -54,7 +54,7 @@ def pathless_templates(text: str) -> list[str]:
 
 def no_path_message(kind: str) -> str:
     """Why ``{{<kind>}}`` alone is refused, and what to write instead."""
-    example = "{{session.<key>}}" if kind == "session" else "{{previous.response}}"
+    example = f"{{{{{kind}.<key>}}}}" if kind in ("session", "run") else "{{previous.response}}"
     return f"names no value: write a path, as {example}"
 
 

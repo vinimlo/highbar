@@ -192,6 +192,29 @@ def test_fr3_a_wrong_traces_path_exits_2_before_any_message(attached: _Attached)
 
 
 @pytest.mark.timeout(40)
+def test_hb6_a_missing_trace_file_named_by_a_variable_shows_its_path(
+    attached: _Attached, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One variable for the traces path in the compose file, the spec and the Makefile:
+    masked, it hid the very path the error is about."""
+    attached.start()
+    monkeypatch.setenv("HB_TRACES_DIR", "var-elsewhere")
+    spec = attached.spec()
+    path = attached.root / spec
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            '"var/traces.jsonl"', '"./${HB_TRACES_DIR}/traces.jsonl"'
+        ),
+        encoding="utf-8",
+    )
+
+    result = attached.run(spec)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"{attached.root / 'var-elsewhere' / 'traces.jsonl'} does not exist" in result.stdout
+
+
+@pytest.mark.timeout(40)
 def test_hb15_a_directory_as_the_trace_file_exits_2_with_its_name(attached: _Attached) -> None:
     """What Docker leaves when a bind mount names a file that is not there yet."""
     attached.start()
@@ -208,6 +231,76 @@ def test_hb15_a_directory_as_the_trace_file_exits_2_with_its_name(attached: _Att
     assert result.returncode == 2, result.stdout + result.stderr
     assert f"{attached.root / 'var' / 'mounted.jsonl'} is a directory, not a file" in result.stdout
     assert "Traceback" not in result.stdout + result.stderr
+    records = attached.traces.read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["type"] for line in records] == ["hello"]
+
+
+def _traces_at(attached: _Attached, spec: str, traces: str) -> None:
+    path = attached.root / spec
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("var/traces.jsonl", traces), encoding="utf-8"
+    )
+
+
+@pytest.mark.timeout(40)
+def test_hb15_one_file_per_process_is_read_through_a_glob(attached: _Attached) -> None:
+    """The server writes its own file, and a worker that has handled nothing yet, its own."""
+    folder = attached.root / "var" / "traces"
+    folder.mkdir()
+    attached.traces = folder / "server.jsonl"
+    (folder / "worker.jsonl").write_text(
+        json.dumps({"v": 1, "type": "hello", "ts": 1.0, "pid": 2}) + "\n", encoding="utf-8"
+    )
+    attached.start()
+    spec = attached.spec()
+    _traces_at(attached, spec, "var/traces/*.jsonl")
+
+    result = attached.run(spec)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "2 passed" in result.stdout
+
+
+@pytest.mark.timeout(40)
+def test_hb15_a_process_that_ended_does_not_vouch_for_a_tool(attached: _Attached) -> None:
+    """An old build declared refund and exited; the running code may call it unrecorded."""
+    folder = attached.root / "var" / "traces"
+    folder.mkdir()
+    attached.traces = folder / "server.jsonl"
+    hello = {"v": 1, "type": "hello", "ts": 1.0}
+    (folder / "worker-2.jsonl").write_text(
+        json.dumps({**hello, "pid": 2, "tools": ["get_order"]}) + "\n", encoding="utf-8"
+    )
+    (folder / "worker-3.jsonl").write_text(
+        json.dumps({**hello, "pid": 3, "tools": ["get_order", "refund"]})
+        + "\n"
+        + json.dumps({"v": 1, "type": "bye", "ts": 2.0, "pid": 3})
+        + "\n",
+        encoding="utf-8",
+    )
+    attached.start()
+    spec = attached.spec(expect="forbid: [refund]")
+    _traces_at(attached, spec, "var/traces/*.jsonl")
+
+    result = attached.run(spec)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "cannot see calls to 'refund'" in result.stdout
+
+
+@pytest.mark.timeout(40)
+def test_hb15_a_glob_that_matches_no_file_exits_2_before_any_message(
+    attached: _Attached,
+) -> None:
+    attached.start()
+    spec = attached.spec()
+    _traces_at(attached, spec, "var/traces/*.jsonl")
+
+    result = attached.run(spec)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    pattern = attached.root / "var" / "traces" / "*.jsonl"
+    assert f"no file matches agent.traces {pattern}" in result.stdout
     records = attached.traces.read_text(encoding="utf-8").splitlines()
     assert [json.loads(line)["type"] for line in records] == ["hello"]
 

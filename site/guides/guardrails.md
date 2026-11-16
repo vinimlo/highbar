@@ -45,6 +45,7 @@ expect:
 "No tool was called" is also what an empty trace file says, so highbar never takes an empty trace as proof:
 
 - When highbar starts the agent, the run waits for the writer's `hello` and stops with exit code 2 without it. A stale server on the port, or an SDK that never started, cannot pass a guardrail.
+- The agent highbar started must also be the one that answers. Another process can take its port after highbar checked it was free: the agent says hello, dies on its own bind, and that process answers every message. Once highbar sees the agent gone with something else on its port, each execution with no record of its own is an `error`, including the ones already reported, since when the agent died cannot be told. A test with a record of its own stands: the agent wrote it.
 - When the agent tags its records with the test (`highbar.asgi.Middleware` or `hb.turn()`), and always in attach mode, each test that checks tool calls (`function_calls`, `forbid`) also needs a record of its own, the `turn` record. Without one, the test is an `error`, not a pass.
 
 Tag the records: without the tags, a guardrail knows the agent was running, not that it handled this message.

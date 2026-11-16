@@ -59,4 +59,20 @@ turns:
 
 A path that does not resolve makes that test an `error` that names the path and what was there instead, and the rest of the run goes on. So does a reply that was not read: the turn is an `error`, and the text `null` is never sent. A value that is `null` is an `error` too, and <code v-pre>{{previous}}</code> or <code v-pre>{{session}}</code> with no path does not load. In the first turn there is no previous response.
 
-Variations do not apply to multi-turn tests.
+## Variations on the last turn
+
+A follow-up like "and the deadline?" is where a conversation breaks, and users word it in many ways. The last turn can have `variations`: each paraphrase replaces only that turn's trigger, and the turns before it are sent as written, so every phrasing answers the same conversation.
+
+```yaml test
+turns:
+  - trigger: "I want to cancel my training"
+  - trigger: "and the deadline?"
+    variations: 3
+    expect:
+      response: {icontains: "days"}
+```
+
+- The paraphrases are generated with what the user said in the earlier turns, so a follow-up stays a follow-up, and the cache keeps them apart from the same sentence in another conversation. [Variations](/guides/variations) covers generating and committing them.
+- A phrasing that failed is named in its errors: `[variation: "until when?"] turn 2/2 ...`.
+- Only the last turn, for now. `variations` on an earlier turn, or on the test itself, does not load.
+- A last turn whose trigger has a template (<code v-pre>{{previous.response}}</code>, a session value) cannot have variations: a paraphrase can drop it or change it.

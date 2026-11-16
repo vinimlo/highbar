@@ -66,6 +66,15 @@ Writes the quickstart into the current directory: `agent.py` and `specs/quicksta
 
 Generates the paraphrases that tests with `variations` ask for, and stores them in `.highbar/variations.json`. Only missing entries are generated; `--force` regenerates them all. See [variations](/guides/variations).
 
+## `highbar compare --base PATH --head PATH`
+
+Compares two groups of runs test by test. Each `PATH` is a `--report json=` file or a folder of them, and `--base` and `--head` can repeat; each file is one round. A test gets `better` or `worse` only with a Holm-adjusted p under 0.05, at least 2 rounds a side and rounds that agree; otherwise the output says why there is no verdict. See [comparing two configurations](/guides/comparing).
+
+- `--fail-on-regression`: exit 1 when a test is `worse`. Without it, `compare` exits 0 whatever it found.
+- `--report json=FILE`: the comparison as JSON.
+
+It exits 2 when a report cannot be read, a folder holds no report, or no test is in every report with the same definition.
+
 ## Exit codes
 
 | Code | When |

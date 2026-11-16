@@ -14,7 +14,7 @@ The trace file is how an agent tells highbar what it did. The Python SDK writes 
 | Field | Type | |
 |---|---|---|
 | `v` | integer | `1`. A version newer than highbar reads is an error that says to upgrade highbar. |
-| `type` | string | Required: `"tool"`, `"turn"`, `"hello"` or `"tools"`. A line with another type, or none, is skipped, so emitters can add new types; a tool call written without `type` is lost. |
+| `type` | string | Required: `"tool"`, `"turn"`, `"hello"`, `"tools"` or `"bye"`. A line with another type, or none, is skipped, so emitters can add new types; a tool call written without `type` is lost. |
 | `ts` | number | When the record was written, in seconds since the epoch. |
 | `context` | object | Optional. What links the record to a test: `test` (the `X-Highbar-Test` header) and any key `agent.correlate` uses, like `conversation_id`. |
 
@@ -89,6 +89,44 @@ A `cost` from the writer always stands. Without one, highbar works it out from `
 
 Write `turn` before the reply goes out. A `turn` with `usage` recorded after its test's window closed still counts for that test, like a late tool call: it goes in the sums, and the test's budget is checked again, so a run within it can now fail. Raise `agent.settle_time` if that happens.
 
+## `llm`: one call to the model
+
+One per call, a failed one or a fallback included. Every field is optional; older versions of highbar ignore the record, and the contract stays at v1. `hb.llm(...)` writes it from Python.
+
+| Field | Type | |
+|---|---|---|
+| `model` | string | The model the call went to. |
+| `provider` | string | Its provider. |
+| `attempt` | integer | 1 for the first try, more for a retry. |
+| `fallback_from` | string | The model this call stands in for, when it is a fallback. |
+| `roles` | list of strings | The role of each message sent, in order: `["system", "user", "system"]`. Anything else in `roles` makes the line unreadable. |
+| `input_tokens`, `output_tokens`, `cache_tokens` | integers | What the call used. Not added to `usage` or to any budget: the `turn`'s `usage` stays the one count, so nothing counts twice. |
+| `latency_ms` | number | How long the call took. |
+| `error` | string | Why the call failed. Absent, `null`, `false` or `""`: it did not. |
+
+It goes to a test by its `context`, like a `tool` record, and it is proof that the agent handled the message. One recorded after its test's window closed still counts for that test, which is checked again. [`expect.llm`](/guides/assertions#calls-to-the-model-llm) checks these records.
+
+```json
+{"v": 1, "type": "llm", "ts": 1792983750.101, "model": "deepseek-flash", "provider": "openrouter", "attempt": 2, "fallback_from": "gpt-4o-mini", "roles": ["system", "user", "system"], "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
+```
+
+## `retrieval`: what entered the prompt
+
+One per message: the documents the agent put in the prompt, and how. Every field is optional, but each document needs an `id` or a `title`, and its `chunks` must be whole numbers: anything else makes the line unreadable. `hb.retrieval(...)` writes it from Python.
+
+| Field | Type | |
+|---|---|---|
+| `items` | list | The documents: `{id, title, source, chunks, tokens}`. `source` is `retrieved`, `expanded` (brought in whole) or `sticky` (kept from an earlier turn); `chunks` are the indexes of its parts that went in, in the order they went in. |
+| `query`, `search_query`, `strategy`, `skipped_reason` | strings | What was searched, how, and why nothing was, when nothing was. |
+| `expired` | list | Documents that left the prompt: `{id, reason}`. |
+| `tokens` | integer | The tokens the documents took. Without it, the documents' own `tokens` add up, when every one has them. |
+
+It goes to a test by its `context`, like a `tool` record. It is proof that the agent handled the message, and it is not a tool call: `function_calls: []` and `exclusive` do not see it. One recorded after its test's window closed still counts for that test, which is checked again. [`expect.retrieval`](/guides/assertions#what-entered-the-prompt-retrieval) checks these records.
+
+```json
+{"v": 1, "type": "retrieval", "ts": 1792983750.090, "query": "and the deadline?", "items": [{"id": "tr-7", "title": "Warranty", "source": "expanded", "chunks": [0, 1, 2], "tokens": 900}], "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
+```
+
 ## `hello`: the writer started
 
 | Field | Type | |
@@ -114,6 +152,18 @@ Write it once, when the agent starts. When highbar starts the agent and a test c
 ```
 
 A writer may write several. highbar joins those written since the writer's last `hello`, since earlier ones are another process's, and adds every name it sees in a `tool` record during the run. The Python SDK writes one each time a tool is decorated or declared, since its `hello` comes first. A name in a spec's `forbid` or `function_calls` that is in none of them makes the test an `error`: a guardrail on a tool the agent never records could not fail. A writer that declares nothing gets a warning instead, and older versions of highbar ignore the record.
+
+## `bye`: the writer ended
+
+| Field | Type | |
+|---|---|---|
+| `pid` | integer | The process that ended: the `pid` of its `hello`. |
+
+```json
+{"v": 1, "type": "bye", "ts": 1792987350.411, "pid": 94015}
+```
+
+Write it when the process exits. A `bye` with the `pid` of the file's last `hello` says that process ended, so the tools it declared no longer count: an old build's file must not vouch for a tool the code running now no longer records. A `bye` from another process, a forked child's, ends nothing. The Python SDK writes one when Python itself ends the process: the end of its main module, `sys.exit`, or Ctrl-C. A process stopped by SIGTERM, which is how `kill`, `docker stop` and `docker compose down` stop it, writes none, and neither does one stopped by SIGKILL, `os._exit` or a crash. Older versions of highbar ignore the record.
 
 ## Matching records to a test
 

@@ -358,6 +358,13 @@ def _run_all(
         # Nothing could be checked: the agent is up but not instrumented (or not ours).
         console.print(f"  [red]\u2717[/red] {escape(current)}: {escape(str(e))}", soft_wrap=True)
         return _stopped(report, "agent_not_observed", f"{current}: {e}", EXIT_UNRUNNABLE)
+    except SessionError as e:
+        # Only agent.run's setup gets here (RunHookError, HB-10): a session's own hooks
+        # fail one execution, inside the run. Nothing was sent, and the specs left would
+        # find what it was to set up missing too.
+        message = f"{current}: {e}; nothing was sent"
+        console.print(f"  [red]\u2717[/red] {escape(message)}", soft_wrap=True)
+        return _stopped(report, "run_setup_failed", message, EXIT_UNRUNNABLE)
 
     total = _total(summaries)
     if len(summaries) > 1:
@@ -419,13 +426,20 @@ def variations(
     for _, spec in specs:
         for suite in spec.suites:
             for test in suite.tests:
-                if not test.variations or not test.trigger:
+                # A conversation's paraphrases replace its last turn, and are made with
+                # what the user said before it (HB-16).
+                if test.turns:
+                    sentence = test.turns[-1].trigger
+                    context = [turn.trigger for turn in test.turns[:-1]]
+                else:
+                    sentence, context = test.trigger or "", []
+                if not test.variations or not sentence:
                     continue
 
                 # Triggers and paraphrases are user text: escaped, or Rich would read
                 # anything in square brackets as a style tag and drop it.
-                trigger = escape(test.trigger)
-                key = fingerprint(test.trigger, test.variations)
+                trigger = escape(sentence)
+                key = fingerprint(sentence, test.variations, context)
                 try:
                     if force:
                         cache.invalidate(key)
@@ -441,7 +455,7 @@ def variations(
                             )
                         continue
 
-                    produced = generator.generate(test.trigger, test.variations)
+                    produced = generator.generate(sentence, test.variations, context=context)
                 except (VariationError, CacheError) as exc:
                     console.print(f"  [red]✗[/red] {trigger}\n    {escape(str(exc))}")
                     raise typer.Exit(1) from exc
@@ -464,6 +478,53 @@ def variations(
     if short:
         summary += f" | [yellow]{short} with fewer than requested[/yellow]"
     console.print(f"{summary} [dim]({escape(str(cache.path))} — commit it)[/dim]\n")
+
+
+@app.command()
+def compare(
+    base: Annotated[
+        list[str],
+        typer.Option("--base", help="A JSON report, or a folder of them: each one is a round."),
+    ],
+    head: Annotated[
+        list[str],
+        typer.Option("--head", help="The same, for the side under test."),
+    ],
+    fail_on_regression: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-regression",
+            help=(
+                "Exit 1 when a test is worse: Holm p under 0.05, "
+                "2+ rounds a side, rounds that agree."
+            ),
+        ),
+    ] = False,
+    report: Annotated[
+        str | None,
+        typer.Option("--report", help="json=FILE: the comparison as JSON, for CI."),
+    ] = None,
+) -> None:
+    """Compare two groups of runs (--report json= files) test by test."""
+    # Imported here, so `run` does not load what only `compare` uses.
+    from highbar.compare.core import CompareError
+    from highbar.compare.core import compare as compare_rounds
+    from highbar.compare.output import load_side, render, write_json
+
+    if report is not None and not report.startswith("json="):
+        console.print("[red]--report takes json=FILE for compare.[/red]")
+        raise typer.Exit(EXIT_UNRUNNABLE)
+    try:
+        seen: dict[str, Path] = {}
+        rows = compare_rounds(load_side(base, seen), load_side(head, seen))
+    except CompareError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(EXIT_UNRUNNABLE) from exc
+    render(rows, console)
+    if report is not None:
+        write_json(report.removeprefix("json="), rows, base, head)
+    worse = any(row.verdict == "worse" for row in rows)
+    raise typer.Exit(EXIT_FAILED if fail_on_regression and worse else EXIT_OK)
 
 
 @app.command()

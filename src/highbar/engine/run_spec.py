@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import tempfile
-import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -11,13 +10,18 @@ from rich.console import Console
 from rich.markup import escape
 
 from highbar.adapters.attached import AttachedAgent
-from highbar.adapters.file_collector import FileTraceCollector, NoTraceCollector
+from highbar.adapters.file_collector import (
+    FileTraceCollector,
+    NoTraceCollector,
+    trace_collector,
+)
 from highbar.adapters.http_client import HTTPClient
 from highbar.adapters.subprocess_adapter import AgentStartError, SubprocessAdapter
 from highbar.assertions.function_calls import FunctionCallsAssertion
 from highbar.assertions.response import ResponseAssertion
-from highbar.domain.models import RunSummary, Spec
+from highbar.domain.models import RunSummary, SessionConfig, Spec
 from highbar.domain.protocols import Reporter, TraceCollector
+from highbar.engine.logs import log_path
 from highbar.engine.observation import AgentNotObservedError
 from highbar.engine.runner import TestRunner
 from highbar.engine.secrets import redact
@@ -31,10 +35,30 @@ OnEnd = Callable[[RunSummary, bool], None]
 
 
 def load_session_hooks(path: str, spec: Spec) -> SessionHooks | None:
-    """The spec's session hooks, with the Python ones imported. Raises ``SessionError``."""
-    if spec.agent.session is None:
+    """The spec's session and run hooks and its ``expect.check`` functions, with the
+    Python ones imported.
+
+    Raises ``SessionError``.
+    """
+    checks = sorted(
+        {
+            expect.check
+            for suite in spec.suites
+            for test in suite.tests
+            for expect in [test.expect, *(turn.expect for turn in test.turns or [])]
+            if expect is not None and expect.check is not None
+        }
+    )
+    if spec.agent.session is None and spec.agent.run is None and not checks:
         return None
-    hooks = SessionHooks(spec.agent.session, spec_path=path, timeout_ms=spec.agent.timeout)
+    hooks = SessionHooks(
+        spec.agent.session or SessionConfig(),
+        spec_path=path,
+        timeout_ms=spec.agent.timeout,
+        secrets=spec.agent.secrets,
+        run=spec.agent.run,
+        checks=checks,
+    )
     hooks.load()
     return hooks
 
@@ -85,7 +109,7 @@ def run_spec(
 
     if agent.start is None:
         collector: TraceCollector = (
-            FileTraceCollector(agent.traces) if agent.traces else NoTraceCollector()
+            trace_collector(agent.traces) if agent.traces else NoTraceCollector()
         )
         runner = _runner(
             spec,
@@ -186,6 +210,7 @@ def _runner(
         secrets=spec.agent.secrets,
         default_runs=default_runs,
         max_cost=max_cost,
+        hook_timeout=spec.agent.timeout / 1000,
         spent=spent,
         spent_untagged=spent_untagged,
         max_errors=max_errors,
@@ -218,15 +243,5 @@ def _run(runner: TestRunner, spec: Spec, on_end: OnEnd | None) -> RunSummary:
 
 
 def agent_log_path(spec_path: str) -> Path:
-    """``.highbar/logs/<spec stem>-<timestamp>.log``, relative to where highbar runs.
-
-    Never an existing file: two specs with the same name in the same second would
-    share a log, and one's failure would show the other agent's output.
-    """
-    stem = Path(spec_path).name.removesuffix(".yaml").removesuffix(".highbar")
-    base = Path(".highbar") / "logs" / f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}"
-    path, n = base.with_suffix(".log"), 1
-    while path.exists():
-        n += 1
-        path = base.parent / f"{base.name}-{n}.log"
-    return path
+    """``.highbar/logs/<spec stem>-<timestamp>.log``, relative to where highbar runs."""
+    return log_path(spec_path)
