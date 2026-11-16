@@ -79,6 +79,7 @@ def run_spec(
     spent_untagged: Mapping[str, float] | None = None,
     max_errors: int | None = None,
     streak: ErrorStreak | None = None,
+    jobs: int = 1,
     more_after: bool = False,
 ) -> RunSummary:
     """Run one spec against its agent.
@@ -95,6 +96,7 @@ def run_spec(
     the end of a test, and ``stopped`` says so. ``max_errors`` executions in a row that
     failed for one cause of the infrastructure stop it after the last of them, counted in
     ``streak``, which earlier specs of the run may have started (None or 0: no stop).
+    ``jobs`` is how many tests may be in flight at once (HB-8).
     """
     console.print(f"  Running {escape(path)}")
     agent = spec.agent
@@ -129,6 +131,7 @@ def run_spec(
             spent_untagged=spent_untagged,
             max_errors=max_errors,
             streak=streak,
+            jobs=jobs,
             more_after=more_after,
         )
         return _run(runner, spec, on_end)
@@ -166,6 +169,7 @@ def run_spec(
         spent_untagged=spent_untagged,
         max_errors=max_errors,
         streak=streak,
+        jobs=jobs,
         more_after=more_after,
     )
 
@@ -198,6 +202,7 @@ def _runner(
     spent_untagged: Mapping[str, float] | None,
     max_errors: int | None,
     streak: ErrorStreak | None,
+    jobs: int,
     more_after: bool,
 ) -> TestRunner:
     return TestRunner(
@@ -221,6 +226,7 @@ def _runner(
         spent_untagged=spent_untagged,
         max_errors=max_errors,
         streak=streak,
+        jobs=jobs,
         more_after=more_after,
     )
 

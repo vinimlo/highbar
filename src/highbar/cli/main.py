@@ -157,6 +157,16 @@ def run(
             f"{EXIT_REPEATED_ERRORS}."
         ),
     ),
+    jobs: int = typer.Option(
+        1,
+        "--jobs",
+        metavar="N",
+        help=(
+            "Run up to N tests at once, each with its own messages in order. Every trace "
+            "record must then carry agent.correlate: a test whose records have none is an "
+            "error. Results are shown in spec order."
+        ),
+    ),
 ) -> None:
     """Run behavior tests against your agent."""
     paths = _discover_specs(spec_path)
@@ -170,6 +180,7 @@ def run(
             keep_traces=keep_traces,
             max_cost=max_cost,
             max_errors=max_errors,
+            jobs=jobs,
         )
     except KeyboardInterrupt:
         # Anywhere in the run, parsing and hooks included. If an agent was up, the
@@ -273,6 +284,7 @@ def _run_all(
     keep_traces: bool,
     max_cost: float | None = None,
     max_errors: int = DEFAULT_MAX_ERRORS,
+    jobs: int = 1,
 ) -> int:
     """Run every spec and return the exit code.
 
@@ -291,6 +303,11 @@ def _run_all(
 
     if max_errors < 0:
         message = "--max-errors must be a whole number of at least 0 (0 never stops)."
+        console.print(f"[red]{message}[/red]")
+        return _stopped(report, "usage_error", message, EXIT_UNRUNNABLE)
+
+    if jobs < 1:
+        message = "--jobs must be a whole number of at least 1."
         console.print(f"[red]{message}[/red]")
         return _stopped(report, "usage_error", message, EXIT_UNRUNNABLE)
 
@@ -340,6 +357,7 @@ def _run_all(
                         spent_untagged=_spent_untagged(summaries),
                         max_errors=max_errors or None,
                         streak=streak,
+                        jobs=jobs,
                         # A stop leaves the specs after this one out (HB-33).
                         more_after=index < len(specs) - 1,
                     )

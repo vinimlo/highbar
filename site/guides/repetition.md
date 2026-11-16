@@ -85,6 +85,17 @@ Errors that come now and then are what `min_pass` is for. Errors that never stop
 
 A tool call that arrives after its run was judged (a background task that finished late) fails that run, and the test is judged again against `min_pass`. When the test was already reported, highbar prints a warning, and counts it again if its result changed.
 
+## Many runs in less time
+
+Ten runs of fifty tests are five hundred messages, and most of their time is the agent thinking. `highbar run --jobs 4` keeps up to four tests in flight at once, so the run takes about a quarter of the time. Each test's runs still go one after the other, so `min_pass` and the conversation of a multi-turn test are as before, and the results come out in spec order.
+
+Two things change with more than one test in flight:
+
+- Every record must carry the test's correlation (`agent.correlate`, the test id by default): the window a record falls in no longer says whose it is. A test with no record of its own is an `error`, never a pass on records it happened to see. Check that your agent tags everything with `--jobs 1` first: the warning about calls without a test context says what is missing.
+- Session hooks run for up to N tests at once, and one test's setup can come before another's teardown. A Python hook must be thread-safe, and must not keep state that assumes one test at a time.
+
+With `--max-cost`, the tests in flight when the ceiling is passed still finish, and the message says how much more they spent. See [`--jobs`](/reference/cli#jobs).
+
 ## A CI gate
 
 ```yaml workflow
