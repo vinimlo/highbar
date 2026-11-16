@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A message to the agent stops at `agent.timeout` when the agent sends its status line and headers slowly, as HTTP hooks do since 0.2.0. httpx's timeout holds for each read, so an agent that sent a byte every 0.1 s kept a message of 1 s waiting for 12 s. A message cut this way is a timeout, as any other, and counts for `--max-errors`.
+
 ## 0.2.0
 
 The second release. It breaks a few specs that 0.1.0 loaded or passed: read "Upgrading from 0.1.0" at the end of this section before you move.
