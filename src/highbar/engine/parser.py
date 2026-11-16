@@ -1361,6 +1361,13 @@ def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
             f"{where}.error: error must be true, false or a matcher such as "
             '{contains: "Timeout"}; a bare text would be ambiguous between equals and contains'
         )
+    for key, operand in matcher.items():
+        if isinstance(operand, bool):
+            # A boolean is never text (HB-46): this check could never pass.
+            raise SpecError(
+                f"{where}.error.{key}: a boolean is not text, and an error is; "
+                f'write the text it must hold, such as {{{key}: "Timeout"}}'
+            )
     try:
         validate_expected(matcher, f"{where}.error")
     except ValueError as e:

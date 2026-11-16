@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from highbar.engine.parser import parse_spec
+from highbar.engine.schema import SpecError
 
 
 def _spec_with_params(tmp_path: Path, params: str) -> str:
@@ -222,3 +223,39 @@ class TestEmptyOperandsAtLoad:
     def test_hb36_params_with_no_keys_still_load(self, tmp_path: Path) -> None:
         """The top of params is argument names: none at all is a call with any arguments."""
         parse_spec(_spec_with_params(tmp_path, "{}"))
+
+
+def _spec_with_error(tmp_path: Path, error: str) -> str:
+    spec = tmp_path / "test.highbar.yaml"
+    spec.write_text(
+        textwrap.dedent(
+            f"""
+            agent:
+              start: "true"
+              endpoint: "http://localhost:8000/chat"
+            suites:
+              - name: Products
+                tests:
+                  - trigger: "do you have coke?"
+                    expect:
+                      function_calls:
+                        - name: search_products
+                          error: {error}
+            """
+        )
+    )
+    return str(spec)
+
+
+@pytest.mark.parametrize(
+    "error", ["{contains: true}", "{not_contains: false}", "{icontains: true}"]
+)
+def test_review_73_a_boolean_operand_on_an_error_does_not_load(tmp_path: Path, error: str) -> None:
+    # An error is text, which a boolean never is (HB-46): the check could never pass.
+    with pytest.raises(SpecError, match="a boolean is not text"):
+        parse_spec(_spec_with_error(tmp_path, error))
+
+
+def test_review_73_a_text_operand_on_an_error_still_loads(tmp_path: Path) -> None:
+    call = parse_spec(_spec_with_error(tmp_path, '{contains: "Timeout"}')).suites[0].tests[0]
+    assert call.expect.function_calls[0].error == {"contains": "Timeout"}  # type: ignore[index]
