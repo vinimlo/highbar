@@ -22,9 +22,15 @@ from tests.integration.test_report import SERVER, _free_port
 REST = "raise the ceiling to run the rest"
 
 
-def _spec(suites: dict[str, list[str]]) -> str:
+def _spec(
+    suites: dict[str, list[str]],
+    *,
+    tags: dict[str, list[str]] | None = None,
+    server: tuple[str, ...] = ("--cost", "0.01"),
+) -> str:
+    """``tags`` are a test's own, by its trigger; ``server`` the fixture server's switches."""
     port = _free_port()
-    start = " ".join([sys.executable, str(SERVER), "--port", str(port), "--cost", "0.01"])
+    start = " ".join([sys.executable, str(SERVER), "--port", str(port), *server])
     lines = [
         "agent:",
         f'  start: "{start}"',
@@ -38,6 +44,8 @@ def _spec(suites: dict[str, list[str]]) -> str:
         lines += [f"  - name: {suite}", "    tests:"]
         for test in tests:
             lines += [f'      - trigger: "{test}"', '        expect: {response: {contains: "ok"}}']
+            if (tags or {}).get(test):
+                lines += [f"        tags: [{', '.join((tags or {})[test])}]"]
     return "\n".join(lines) + "\n"
 
 
@@ -129,6 +137,7 @@ def test_hb17_k1_a_spec_cut_whole_is_not_the_rest(two_specs: Path, jobs: str) ->
     assert "over its ceiling, by the end of its last test" in run.message
     assert REST not in run.message
     assert run.started("s1") and not run.started("s2")
+    assert "! part of the tests: 2 of 4 picked by -k spec1, 2 left out\n" in run.output
 
 
 @pytest.mark.timeout(60)
@@ -141,6 +150,12 @@ def test_hb17_k2_a_picked_test_in_the_next_spec_is_the_rest(two_specs: Path, job
     assert run.report["complete"] is False
     assert run.message.endswith(f"by the end of 'spec1 test1', so it stopped there; {REST}")
     assert not run.started("s2")
+    # 2 left out by -k, and 1 picked that the ceiling did not let run: said apart.
+    assert (
+        "! part of the tests: 2 of 4 picked by -k test1, 2 left out; "
+        "of the 2 picked, 1 did not run: the run stopped"
+    ) in run.output
+    assert run.output.index("! part of the tests") < run.output.index(REST)
 
 
 @pytest.mark.timeout(60)
@@ -225,3 +240,62 @@ def test_hb17_every_picked_test_ran_is_complete(two_specs: Path, jobs: str) -> N
     assert [spec["path"] for spec in run.report["specs"]] == ["specs/s2.highbar.yaml"]
     assert run.report["complete"] is True
     assert run.started("s2") and not run.started("s1")
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("jobs", ["1", "2"])
+def test_hb17_max_errors_tells_its_unrun_tests_from_the_ones_left_out(
+    tmp_path: Path, jobs: str
+) -> None:
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    for n in (1, 2):
+        tests = [f"spec{n} test1", f"spec{n} test2"]
+        spec = _spec({"S": tests}, server=("--statuses", "500"))
+        (specs / f"s{n}.highbar.yaml").write_text(spec, encoding="utf-8")
+
+    run = _run(tmp_path, "specs", "-k", "test1", "--max-errors", "1", "--jobs", jobs)
+
+    assert run.code == 4, run.output
+    assert run.ran == ["S/spec1 test1"]
+    assert run.report["stopped"]["reason"] == "repeated_errors"
+    assert (
+        "! part of the tests: 2 of 4 picked by -k test1, 2 left out; "
+        "of the 2 picked, 1 did not run: the run stopped"
+    ) in run.output
+
+
+# --tag, the same way (HB-17 v1).
+
+
+@pytest.mark.timeout(60)
+def test_hb17_tag_with_jobs_2_runs_only_the_tagged_tests_in_spec_order(tmp_path: Path) -> None:
+    tests = ["t1 one", "t2 two", "t3 three", "t4 four", "t5 five"]
+    tags = {"t1 one": ["smoke"], "t3 three": ["smoke", "slow"], "t4 four": ["smoke"]}
+    (tmp_path / "s6.highbar.yaml").write_text(_spec({"S": tests}, tags=tags), encoding="utf-8")
+
+    run = _run(tmp_path, "s6.highbar.yaml", "--tag", "smoke", "--jobs", "2")
+
+    assert run.code == 0, run.output
+    assert run.ran == ["S/t1 one", "S/t3 three", "S/t4 four"]
+    shown = [run.output.index(name) for name in ("t1 one", "t3 three", "t4 four")]
+    assert shown == sorted(shown), run.output
+    assert "two" not in run.output and "five" not in run.output
+    assert run.report["complete"] is True
+    assert "! part of the tests: 3 of 5 picked by --tag smoke, 2 left out" in run.output
+    assert run.report["selection"]["tags"] == ["smoke"]
+
+
+@pytest.mark.timeout(60)
+def test_hb17_tag_and_k_together_pick_the_tests_with_both(tmp_path: Path) -> None:
+    tests = ["cancel it", "cancel it now", "refund it"]
+    tags = {"cancel it": ["smoke"], "refund it": ["smoke"]}
+    (tmp_path / "s7.highbar.yaml").write_text(_spec({"S": tests}, tags=tags), encoding="utf-8")
+
+    run = _run(tmp_path, "s7.highbar.yaml", "--tag", "smoke", "-k", "cancel it")
+
+    assert run.code == 0, run.output
+    assert run.ran == ["S/cancel it"]
+    assert "! part of the tests: 1 of 3 picked by -k 'cancel it' --tag smoke, 2 left out" in (
+        run.output
+    )

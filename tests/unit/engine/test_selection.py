@@ -6,6 +6,8 @@ checked nothing must never read as green.
 
 from __future__ import annotations
 
+import shlex
+
 import pytest
 
 from highbar.domain.models import AgentConfig, Expect, ResponseExpect, Spec, Suite
@@ -183,5 +185,61 @@ class TestWhatWasCut:
         )
 
         assert cut.line() == (
-            "part of the tests: 1 of 4 picked by --suite Orders -k cancel --tag smoke, 3 not run"
+            "part of the tests: 1 of 4 picked by --suite Orders -k cancel --tag smoke, 3 left out"
+        )
+
+    def test_hb17_options_that_pick_every_test_print_no_line(self) -> None:
+        """They cut nothing, so "part of the tests" would not be true (the review of
+        4fb326f); the report still has the selection, with left_out 0."""
+        every = Selection(suites=(), keywords=("t",), tags=(), picked=3, left_out=0)
+
+        assert every.line() is None
+        assert every.line(not_run=1) is None
+
+    def test_hb17_a_stop_tells_its_own_unrun_tests_apart(self) -> None:
+        """--max-cost or --max-errors stopped the run: "left out" counts only what the
+        options cut, and the picked tests the stop left are said apart."""
+        cut = Selection(suites=(), keywords=("test1",), tags=(), picked=2, left_out=2)
+
+        assert cut.line(not_run=1) == (
+            "part of the tests: 2 of 4 picked by -k test1, 2 left out; "
+            "of the 2 picked, 1 did not run: the run stopped"
+        )
+        assert cut.line(not_run=0) == "part of the tests: 2 of 4 picked by -k test1, 2 left out"
+
+
+class TestQuoting:
+    """Each value is quoted as a shell would need it, so the line and the message read
+    as the command that was run, and can be pasted back (the review of 4fb326f)."""
+
+    def test_hb17_the_line_quotes_a_value_with_a_space_or_none(self) -> None:
+        cut = Selection(
+            suites=("Orders",), keywords=("cancel it", ""), tags=("smoke",), picked=1, left_out=3
+        )
+
+        line = cut.line()
+
+        assert line == (
+            "part of the tests: 1 of 4 picked by --suite Orders -k 'cancel it' -k '' "
+            "--tag smoke, 3 left out"
+        )
+        options = line.removeprefix("part of the tests: 1 of 4 picked by ").split(",")[0]
+        assert shlex.split(options) == [
+            "--suite",
+            "Orders",
+            "-k",
+            "cancel it",
+            "-k",
+            "",
+            "--tag",
+            "smoke",
+        ]
+
+    def test_hb17_no_test_matches_quotes_its_values(self) -> None:
+        with pytest.raises(SelectionError) as caught:
+            select(SPECS, suites=["Support"], keywords=["cancel it", "it's"])
+
+        assert str(caught.value) == (
+            "no test matches --suite Support -k 'cancel it' -k 'it'\"'\"'s': "
+            "nothing would be checked"
         )

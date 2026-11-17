@@ -466,13 +466,17 @@ def _run_all(
     total = _total(summaries)
     if len(summaries) > 1:
         console.print(f"  Total: {format_summary(total, styled=True)}\n")
+    last = summaries[-1] if summaries else None
     # A run of part of the tests can be all green: the last lines say the rest did not run.
+    # A stop's own unrun tests are counted apart: its message, below, says why.
     if selection is not None:
-        console.print(f"  [yellow]![/yellow] {escape(selection.line())}", soft_wrap=True)
+        stopped = last is not None and last.stopped is not None
+        line = selection.line(not_run=selection.picked - total.total if stopped else 0)
+        if line is not None:
+            console.print(f"  [yellow]![/yellow] {escape(line)}", soft_wrap=True)
 
     # Before the tests' verdict: a run that was cut short is not a verdict on the agent.
     # The message is the runner's, with every value from ${VAR} already masked.
-    last = summaries[-1] if summaries else None
     if last is not None and last.stopped is not None:
         console.print(f"  [red]✗[/red] {escape(last.stopped)}", soft_wrap=True)
         if last.stop_reason == REPEATED_ERRORS:
