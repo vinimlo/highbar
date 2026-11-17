@@ -75,8 +75,8 @@ class JsonReport:
     def plan(self, specs: list[tuple[str, Spec]], selection: Selection | None = None) -> None:
         """The specs that will run. Hashed now: a file can change during a long run.
 
-        ``selection`` is what --suite, -k and --tag picked, when they were given: the
-        report of part of the tests has to say so (HB-17).
+        ``selection`` is what --suite, -k and --tag picked, when they were given: the report
+        of part of the tests has to say so, and is not complete (HB-17).
         """
         self._selection = asdict(selection) if selection is not None else None
         for path, spec in specs:
@@ -111,10 +111,14 @@ class JsonReport:
         # A ceiling passed once every test ran left nothing out, and `stopped` says it was
         # passed (HB-32); so did repeated errors whose last was the last execution of the
         # last test (HB-34). Each spec says whether all of its tests ran all they had to.
-        # Any other reason ended the run halfway.
+        # Any other reason ended the run halfway. Tests that --suite, -k or --tag left
+        # out did not run either: a reader of `complete` (the export) must not take part
+        # of the tests for all of them (HB-17). Options that cut nothing leave the run whole.
         halfway = self._stopped is not None and self._stopped["reason"] not in CAN_END_COMPLETE
+        cut = self._selection is not None and self._selection["left_out"] > 0
         complete = (
             not halfway
+            and not cut
             and ran >= set(self._planned)
             and all(spec["complete"] for spec in self._specs)
         )

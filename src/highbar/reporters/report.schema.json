@@ -26,7 +26,7 @@
       "type": ["integer", "null"]
     },
     "complete": {
-      "description": "Every test of every spec ran all of its executions; with --suite, -k or --tag, every test picked, and selection says how many were not. A run that --max-cost stopped after its last test is complete: stopped says the ceiling was passed. So is a run that --max-errors stopped at the last execution of its last test.",
+      "description": "Every test of every spec ran all of its executions. A run of part of the tests (--suite, -k or --tag left tests out, see selection) is not complete, even when every test picked ran. A run that --max-cost stopped after its last test is complete: stopped says the ceiling was passed. So is a run that --max-errors stopped at the last execution of its last test.",
       "type": "boolean"
     },
     "stopped": {
@@ -58,7 +58,7 @@
       ]
     },
     "selection": {
-      "description": "What --suite, -k and --tag picked, or null when none was given. A run of part of the tests can exit 0 and be complete: this says the rest did not run.",
+      "description": "What --suite, -k and --tag picked, or null when none was given. When they left tests out, complete is false even if every test picked ran, and the exit code follows the tests picked. Options that pick every test still give a selection, with left_out 0.",
       "oneOf": [
         { "type": "null" },
         {

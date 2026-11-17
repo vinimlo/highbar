@@ -74,6 +74,7 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
             "exclusive",
             "forbid",
             "budget",
+            "max_duration_ms",
             "check",
             "llm",
             "retrieval",

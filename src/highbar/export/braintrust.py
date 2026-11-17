@@ -38,6 +38,7 @@ from highbar._narrow import as_dict, as_list
 from highbar.domain.models import Status
 from highbar.engine.runs import against_expected
 from highbar.engine.secrets import redact
+from highbar.engine.selection import Selection
 
 DEFAULT_API_URL = "https://api.braintrust.dev"
 DEFAULT_KEY_ENV = "BRAINTRUST_API_KEY"
@@ -125,6 +126,10 @@ def _why_stopped(body: dict[str, Any]) -> str:
     stopped = as_dict(body.get("stopped"))
     code = body.get("exit_code")
     if stopped is None:
+        cut = _selection_line(body)
+        if cut is not None:
+            # --suite, -k or --tag left tests out (HB-17): nothing stopped it, it ran part.
+            return f"{cut} (exit code {code})"
         return f"with no reason recorded (exit code {code})"
     message = str(stopped.get("message"))
     # highbar's own stop messages already end with "Exits with N." (review of #99).
@@ -132,10 +137,28 @@ def _why_stopped(body: dict[str, Any]) -> str:
     return f"{stopped.get('reason')}: {message}" + ("" if named else f" (exit code {code})")
 
 
+def _selection_line(body: dict[str, Any]) -> str | None:
+    """The run's "part of the tests" line, from the report's ``selection``, or None."""
+    selection = as_dict(body.get("selection"))
+    if selection is None:
+        return None
+    picked, left_out = selection.get("picked"), selection.get("left_out")
+    if not isinstance(picked, int) or not isinstance(left_out, int):
+        return None
+    words = [str(word) for word in as_list(selection.get("keywords")) or []]
+    suites = [str(name) for name in as_list(selection.get("suites")) or []]
+    # A report from before --tag has no tags (HB-17 v1).
+    tags = [str(tag) for tag in as_list(selection.get("tags")) or []]
+    return Selection(tuple(suites), tuple(words), tuple(tags), picked, left_out).line()
+
+
 def partial_note(body: dict[str, Any]) -> str | None:
     """What the summary line adds for a run that did not run every test, or None."""
     if body.get("complete") is True:
         return None
+    if body.get("stopped") is None and _selection_line(body) is not None:
+        # Each spec ran all it was given: the count of specs would say nothing.
+        return f"A partial run, {_why_stopped(body)}"
     specs = [as_dict(spec) or {} for spec in as_list(body.get("specs")) or []]
     short = sum(spec.get("complete") is not True for spec in specs)
     return (

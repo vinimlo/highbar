@@ -1218,6 +1218,7 @@ def _asserts_something(expect: Expect) -> bool:
         or bool(expect.forbid)
         or expect.budget is not None
         or expect.check is not None
+        or expect.max_duration_ms is not None
     )
 
 
@@ -1236,7 +1237,7 @@ def _parse_expect(raw: Any, where: str) -> Expect:
     if not user_keys(raw):
         raise SpecError(
             f"{where}: asserts nothing — use function_calls, response, forbid, budget, check, "
-            "or function_calls: [] to check that no tool is called"
+            "max_duration_ms, or function_calls: [] to check that no tool is called"
         )
 
     function_calls = None
@@ -1273,6 +1274,9 @@ def _parse_expect(raw: Any, where: str) -> Expect:
     retrieval = (
         _parse_retrieval(raw["retrieval"], f"{where}.retrieval") if "retrieval" in raw else None
     )
+    duration = (
+        _parse_max_duration(raw["max_duration_ms"], where) if "max_duration_ms" in raw else None
+    )
 
     return Expect(
         function_calls=function_calls,
@@ -1282,8 +1286,25 @@ def _parse_expect(raw: Any, where: str) -> Expect:
         check=check,
         llm=llm,
         retrieval=retrieval,
+        max_duration_ms=duration,
         **flags,
     )
+
+
+def _parse_max_duration(raw: Any, where: str) -> float:
+    """How long the agent may take to answer, in milliseconds (HB-18)."""
+    wrong = f"{where}: max_duration_ms must be a number of milliseconds above 0"
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        raise SpecError(f"{wrong}, got {raw!r}")
+    try:
+        limit = float(raw)
+    except OverflowError:
+        # An integer of 309 digits or more fits no float (review of fbbf029).
+        raise SpecError(f"{wrong}, got an integer of more than 308 digits") from None
+    # YAML reads `.inf` and `.nan` as numbers, and neither is a limit.
+    if not 0 < limit < math.inf:
+        raise SpecError(f"{wrong}, got {raw!r}")
+    return limit
 
 
 def _parse_llm(raw: Any, where: str) -> LlmExpect:

@@ -24,9 +24,9 @@ class SelectionError(ValueError):
 class Selection:
     """What the options picked, for the report and the run's last line.
 
-    A run of part of the tests can exit 0 with ``complete: true``: only this says that
-    the rest did not run. With ``left_out`` 0 the options cut nothing, and the report
-    still says they were given.
+    A run of part of the tests can exit 0: only this, and ``complete: false`` in the
+    report, say that the rest did not run. With ``left_out`` 0 the options cut nothing,
+    and the report still says they were given.
     """
 
     suites: tuple[str, ...]

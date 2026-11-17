@@ -73,7 +73,7 @@ Options that pick every test cut nothing, and print no line. When [`--max-cost`]
   ! part of the tests: 2 of 4 picked by -k test1, 2 left out; of the 2 picked, 1 did not run: the run stopped
 ```
 
-The [report](/reference/report) lists only the tests picked, and its `selection` holds the options and the same two numbers, also when nothing was left out. `complete` and the exit code are about the tests picked: a gate that runs `--tag smoke` should not be read as the whole suite.
+The [report](/reference/report) lists only the tests picked, and its `selection` holds the options and the same two numbers, also when nothing was left out. When tests were left out, the report's `complete` is `false`, even if every test picked ran, so a gate that runs `--tag smoke` is not read as the whole suite: [`highbar export braintrust`](/guides/exporting-results) needs `--partial` for it. The exit code is about the tests picked.
 
 A selection that picks no test stops the run before any agent starts, with exit code 2, since a run that checks nothing must not pass. So does a `--suite` that no spec has, or a `--tag` that no test has, with the closest name.
 

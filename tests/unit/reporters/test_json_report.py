@@ -143,7 +143,22 @@ class TestSelection:
             "picked": 2,
             "left_out": 5,
         }
+        # --tag left 5 tests out: part of the tests is not complete (#45's review, F1).
+        assert data["complete"] is False
         jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
+
+    def test_hb17_a_tag_that_cut_nothing_leaves_the_run_complete(self, workdir: Path) -> None:
+        path, spec_path = workdir / "report.json", _spec_file(workdir)
+        report = JsonReport(path, version="1.2.3")
+        report.start()
+        every = Selection(suites=(), keywords=(), tags=("smoke",), picked=1, left_out=0)
+        report.plan([(spec_path, SPEC)], selection=every)
+        report.add(spec_path, SPEC, _summary(_test()), True)
+        report.finish(0)
+
+        data = _read(path)
+        assert data["complete"] is True
+        assert data["selection"]["left_out"] == 0
 
     def test_hb17_a_whole_run_has_no_selection(self, workdir: Path) -> None:
         data = _finished(workdir / "report.json", _spec_file(workdir), _summary(_test()))

@@ -383,7 +383,7 @@ def _run_all(
         return _stopped(report, "spec_invalid", "; ".join(failures), EXIT_UNRUNNABLE)
     # Before the selection: a spec left out still lends its ${VAR} values to the masks.
     specs = _sharing_secrets(specs)
-    # --suite and -k: the specs are whole above, so a typo anywhere still stops the run.
+    # --suite, -k and --tag: the specs are whole above, so a typo anywhere still stops it.
     try:
         picked = select(specs, suites=suites, keywords=keywords, tags=tags)
     except SelectionError as e:
