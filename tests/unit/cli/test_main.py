@@ -129,6 +129,48 @@ class TestSelection:
         fake.assert_not_called()
 
 
+class TestSelectionWithTheLlmProxy:
+    """HB-17 with HB-30: a spec with no test picked starts neither its agent nor its proxy,
+    and does not hold --jobs back."""
+
+    @staticmethod
+    def _proxied(project: Path) -> None:
+        proxied = (
+            textwrap.dedent(SPEC)
+            .replace("name: Menu", "name: Drinks")
+            .replace('  start: "true"\n', '  start: "drinks-agent"\n  llm_proxy: true\n')
+        )
+        (project / "specs" / "menu" / "drinks.highbar.yaml").write_text(proxied, "utf-8")
+
+    @pytest.mark.parametrize("jobs", ["1", "2"])
+    def test_hb17_a_proxied_spec_cut_whole_starts_no_agent_and_no_proxy(
+        self, project: Path, jobs: str
+    ) -> None:
+        self._proxied(project)
+
+        with (
+            patch("highbar.engine.run_spec.TestRunner") as fake,
+            patch("highbar.engine.run_spec.LlmProxy") as proxy,
+            patch("highbar.engine.run_spec.SubprocessAdapter") as adapter,
+        ):
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--suite", "Menu", "--jobs", jobs])
+
+        assert result.exit_code == 0, result.output
+        proxy.assert_not_called()
+        assert [call.kwargs["start_cmd"] for call in adapter.call_args_list] == ["true"]
+
+    def test_hb17_jobs_over_one_still_refuses_a_picked_proxied_spec(self, project: Path) -> None:
+        self._proxied(project)
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            result = runner.invoke(app, ["run", "specs/", "--suite", "Drinks", "--jobs", "2"])
+
+        assert result.exit_code == 2, result.output
+        assert "agent.llm_proxy" in result.output and "--jobs" in result.output
+        fake.assert_not_called()
+
+
 class TestExitCodes:
     def test_version_flag(self) -> None:
         result = runner.invoke(app, ["--version"])
