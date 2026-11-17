@@ -86,6 +86,23 @@ The file format is small and versioned: one JSON object per line, `v: 1`, a `typ
 
 The [trace contract](/reference/trace-contract) has every field, and a reference emitter in under 40 lines.
 
+## An agent that answers later
+
+An agent behind a queue answers the HTTP request at once, with `202` and no reply, and a worker sends the reply afterwards, to WhatsApp or another channel. Its reply is not in the HTTP body. With `reply: turn`, highbar reads it from the trace instead: the `response` of the `turn` record of that test, written by the worker.
+
+```yaml agent
+agent:
+  endpoint: "http://localhost:8000/webhook"
+  traces: "var/traces.jsonl"
+  reply: turn
+```
+
+- Any `2xx` is accepted, with or without a body. Another status is still an `error`.
+- highbar waits for that `turn` up to `agent.timeout`, then `settle_time` more, for the records written after it. A reply that does not come in time, or a `response` that is empty or only spaces, makes the test an `error`, not a pass.
+- Only a `turn` tagged as this test's counts, through [correlation](/guides/attach-mode#which-records-belong-to-a-test). The worker must carry the test id from the request to the record it writes, as `hb.turn(test=...)` does in the example above. An untagged turn may be another test's reply.
+- `agent.response`, a path in the HTTP body, does not go with `reply: turn`.
+- The reply is the first of this test's turns with a `response`. A worker that writes two per message ("one moment..." and then the answer) has only the first checked: write the answer in one turn.
+
 ## Checking the connection
 
 Start with one test per tool: a message that makes the agent call it, and `function_calls` naming it. When it passes, highbar saw the call, so the tool is recorded; when the records are tagged, the test id reaches it too. When it does not, the run says what highbar read and what it expected.

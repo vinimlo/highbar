@@ -71,7 +71,18 @@ class Classified(NamedTuple):
         When none does (the decorator without the middleware), the window is all
         there is to go by, and every record in it counts for the test.
         """
-        return any([self.mine.tools, self.mine.turns, self.other.tools, self.other.turns])
+        return any(
+            [
+                self.mine.tools,
+                self.mine.turns,
+                self.mine.llms,
+                self.mine.retrievals,
+                self.other.tools,
+                self.other.turns,
+                self.other.llms,
+                self.other.retrievals,
+            ]
+        )
 
 
 def classify(window: Window, correlate: Mapping[str, Any]) -> Classified:
@@ -84,6 +95,10 @@ def classify(window: Window, correlate: Mapping[str, Any]) -> Classified:
         parts[attribute(tool.context, correlate)].tools.append(tool)
     for turn in window.turns:
         parts[attribute(turn.context, correlate)].turns.append(turn)
+    for call in window.llms:
+        parts[attribute(call.context, correlate)].llms.append(call)
+    for record in window.retrievals:
+        parts[attribute(record.context, correlate)].retrievals.append(record)
     return Classified(
         parts[Attribution.MINE], parts[Attribution.OTHER], parts[Attribution.UNATTRIBUTED]
     )

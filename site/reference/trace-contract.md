@@ -14,7 +14,7 @@ The trace file is how an agent tells highbar what it did. The Python SDK writes 
 | Field | Type | |
 |---|---|---|
 | `v` | integer | `1`. A version newer than highbar reads is an error that says to upgrade highbar. |
-| `type` | string | Required: `"tool"`, `"turn"`, `"hello"` or `"tools"`. A line with another type, or none, is skipped, so emitters can add new types; a tool call written without `type` is lost. |
+| `type` | string | Required: `"tool"`, `"turn"`, `"hello"`, `"tools"` or `"bye"`. A line with another type, or none, is skipped, so emitters can add new types; a tool call written without `type` is lost. |
 | `ts` | number | When the record was written, in seconds since the epoch. |
 | `context` | object | Optional. What links the record to a test: `test` (the `X-Highbar-Test` header) and any key `agent.correlate` uses, like `conversation_id`. |
 
@@ -26,7 +26,7 @@ Unknown fields are ignored.
 |---|---|---|
 | `fn` | string | The tool's name. Required. |
 | `args` | object | The arguments, by name. |
-| `result` | any JSON | What the tool returned. highbar never reads it to decide whether the call failed. |
+| `result` | any JSON | What the tool returned. highbar never reads it to decide whether the call failed. Left out, the return was not seen: a `returns` check on the call is an `error`, while `"result": null` is a return of null. |
 | `error` | string or null | Why the call failed. `null`, `false` or `""` mean it did not; a value that is not text is kept as JSON. |
 | `started_at`, `ended_at` | number | Seconds since the epoch. `ordered` compares them. They default to `ts`. |
 
@@ -89,6 +89,65 @@ A `cost` from the writer always stands. Without one, highbar works it out from `
 
 Write `turn` before the reply goes out. A `turn` with `usage` recorded after its test's window closed still counts for that test, like a late tool call: it goes in the sums, and the test's budget is checked again, so a run within it can now fail. Raise `agent.settle_time` if that happens.
 
+## `llm`: one call to the model
+
+One per call, a failed one or a fallback included. Every field is optional; older versions of highbar ignore the record, and the contract stays at v1. `hb.llm(...)` writes it from Python.
+
+| Field | Type | |
+|---|---|---|
+| `model` | string | The model the call went to. |
+| `provider` | string | Its provider. |
+| `attempt` | integer | 1 for the first try, more for a retry. |
+| `fallback_from` | string | The model this call stands in for, when it is a fallback. |
+| `roles` | list of strings | The role of each message sent, in order: `["system", "user", "system"]`. Anything else in `roles` makes the line unreadable. |
+| `input_tokens`, `output_tokens`, `cache_tokens` | integers | What the call used. Not added to `usage` or to any budget: the `turn`'s `usage` stays the one count, so nothing counts twice. |
+| `latency_ms` | number | How long the call took. |
+| `error` | string | Why the call failed. Absent, `null`, `false` or `""`: it did not. |
+| `source` | string | Who wrote the record: `"proxy"` for highbar's LLM proxy. Absent: the agent. |
+| `read` | boolean | Whether the writer read the call's usage whole. `false` says it saw the call and its count is not whole; absent, the writer did not say. Anything but `true`, `false` or `null` makes the line unreadable. |
+| `unread` | string | Why the usage was not read, when `read` is `false`. |
+| `cost`, `currency` | number, string | What the provider said the call cost, such as OpenRouter's `usage.cost` (in `USD`). |
+| `call` | string | The proxy's: `"model"` for a call to a model endpoint, read or not, and `"other"` for one it passed on. |
+
+It goes to a test by its `context`, like a `tool` record, and it is proof that the agent handled the message. One recorded after its test's window closed still counts for that test, which is checked again. [`expect.llm`](/guides/assertions#calls-to-the-model-llm) checks these records.
+
+```json
+{"v": 1, "type": "llm", "ts": 1792983750.101, "model": "deepseek-flash", "provider": "openrouter", "attempt": 2, "fallback_from": "gpt-4o-mini", "roles": ["system", "user", "system"], "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
+```
+
+### Records from highbar's LLM proxy
+
+highbar's LLM proxy sits between the agent and its model provider, passes every request and reply through unchanged, and writes one `llm` record per call with `"source": "proxy"`. It reads the usage the provider reports: OpenAI-compatible `chat/completions` and `responses` (OpenRouter, DeepSeek and local servers included) and Anthropic `messages`, streamed or not. `input_tokens` is the whole input, cached tokens included, as in a `turn`'s `usage`: for Anthropic it adds `cache_read_input_tokens` and `cache_creation_input_tokens` to `input_tokens`, and `cache_tokens` is `cache_read_input_tokens`. `model` is the one the reply names, or the one the request asked for when the reply names none. The test context is the request's `X-Highbar-Test` header, when it has one.
+
+```json
+{"v": 1, "type": "llm", "ts": 1792983750.301, "source": "proxy", "model": "gpt-4o-mini-2024-07-18", "provider": "openai", "input_tokens": 1000, "output_tokens": 200, "cache_tokens": 800, "call": "model", "read": true, "latency_ms": 812.4, "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
+```
+
+A call whose usage it could not read is recorded all the same, with `"read": false` and the reason in `unread`. That is a stream that ended without usage, a reply without usage (a 5xx, for one), a path or a provider whose format the proxy does not read (passed through as it is, with `"call": "other"`, and only the method and the first segment of its path in `unread`, so an id further on stays out of the trace), an upstream it could not reach, and a reply cut off before its end. Its token fields are left out, or hold only what was read: an unread call is a count that is not whole, never zero tokens. The one exception is a request the provider rejected with a 4xx and no usage, like a 429: it is not billed, so it is recorded as read, with `0` tokens and its `error`.
+
+```json
+{"v": 1, "type": "llm", "ts": 1792983751.020, "source": "proxy", "model": "gpt-4o-mini-2024-07-18", "provider": "openai", "call": "model", "read": false, "unread": "the stream ended without usage", "latency_ms": 1301.7}
+```
+
+For an OpenAI chat stream that does not set `stream_options.include_usage`, the proxy sets it to `true`, and asks for the stream uncompressed. It reads the usage from the chunk the upstream adds for it, the one with `"choices": []`, and does not forward that chunk, so the agent gets the stream it would get directly, `data: [DONE]` included. A stream that sets `include_usage` itself gets that chunk as usual, and one that sets it to `false` is sent as it is and recorded unread. The proxy never logs a header, a URL or a body, and never writes a key or a body to the trace.
+
+## `retrieval`: what entered the prompt
+
+One per message: the documents the agent put in the prompt, and how. Every field is optional, but each document needs an `id` or a `title`, and its `chunks` must be whole numbers: anything else makes the line unreadable. `hb.retrieval(...)` writes it from Python.
+
+| Field | Type | |
+|---|---|---|
+| `items` | list | The documents: `{id, title, source, chunks, tokens}`. `source` is `retrieved`, `expanded` (brought in whole) or `sticky` (kept from an earlier turn); `chunks` are the indexes of its parts that went in, in the order they went in. |
+| `query`, `search_query`, `strategy`, `skipped_reason` | strings | What was searched, how, and why nothing was, when nothing was. |
+| `expired` | list | Documents that left the prompt: `{id, reason}`. |
+| `tokens` | integer | The tokens the documents took. Without it, the documents' own `tokens` add up, when every one has them. |
+
+It goes to a test by its `context`, like a `tool` record. It is proof that the agent handled the message, and it is not a tool call: `function_calls: []` and `exclusive` do not see it. One recorded after its test's window closed still counts for that test, which is checked again. [`expect.retrieval`](/guides/assertions#what-entered-the-prompt-retrieval) checks these records.
+
+```json
+{"v": 1, "type": "retrieval", "ts": 1792983750.090, "query": "and the deadline?", "items": [{"id": "tr-7", "title": "Warranty", "source": "expanded", "chunks": [0, 1, 2], "tokens": 900}], "context": {"test": "9784235d06704e5da37c3230a9e99b34"}}
+```
+
 ## `hello`: the writer started
 
 | Field | Type | |
@@ -115,9 +174,46 @@ Write it once, when the agent starts. When highbar starts the agent and a test c
 
 A writer may write several. highbar joins those written since the writer's last `hello`, since earlier ones are another process's, and adds every name it sees in a `tool` record during the run. The Python SDK writes one each time a tool is decorated or declared, since its `hello` comes first. A name in a spec's `forbid` or `function_calls` that is in none of them makes the test an `error`: a guardrail on a tool the agent never records could not fail. A writer that declares nothing gets a warning instead, and older versions of highbar ignore the record.
 
+## `bye`: the writer ended
+
+| Field | Type | |
+|---|---|---|
+| `pid` | integer | The process that ended: the `pid` of its `hello`. |
+
+```json
+{"v": 1, "type": "bye", "ts": 1792987350.411, "pid": 94015}
+```
+
+Write it when the process exits. A `bye` with the `pid` of the file's last `hello` says that process ended, so the tools it declared no longer count: an old build's file must not vouch for a tool the code running now no longer records. A `bye` from another process, a forked child's, ends nothing. The Python SDK writes one when Python itself ends the process: the end of its main module, `sys.exit`, or Ctrl-C. A process stopped by SIGTERM, which is how `kill`, `docker stop` and `docker compose down` stop it, writes none, and neither does one stopped by SIGKILL, `os._exit` or a crash. Older versions of highbar ignore the record.
+
 ## Matching records to a test
 
-Each test execution sends its id in the `X-Highbar-Test` header. A writer copies it into `context.test` of every record made while handling that request. highbar keeps the records whose `context` matches `agent.correlate` (by default, `test`); numbers and text that read the same match, so `42` matches `"42"`.
+Each test execution sends its id in the `X-Highbar-Test` header (and, when highbar reads [OpenTelemetry spans](#opentelemetry-spans-otlp), as the trace id of a `traceparent`). A writer copies it into `context.test` of every record made while handling that request. highbar keeps the records whose `context` matches `agent.correlate` (by default, `test`); numbers and text that read the same match, so `42` matches `"42"`.
+
+## OpenTelemetry spans (OTLP)
+
+With `agent.traces.format: otlp`, the file holds OpenTelemetry spans instead: one OTLP/JSON `ExportTraceServiceRequest` per line (`resourceSpans[].scopeSpans[].spans[]`), as the Collector's `file` exporter writes it. The guide is [OpenTelemetry traces](/guides/opentelemetry). It is read by offset like this contract, and a line that is not valid JSON, or a tool or agent span that cannot be read, is an error for the test that read it, naming the line. Lines with logs or metrics and spans of other kinds are skipped.
+
+The mapping is versioned in highbar's code (`OTLP_MAPPING_VERSION`, now `0`). It follows OpenTelemetry's GenAI semantic conventions as published in Development status, which may still change, plus OpenInference's span kinds. It reads only the attributes in this table, and the span's `traceId`, start and end times and status:
+
+| Record | GenAI conventions | OpenInference |
+|---|---|---|
+| a `tool` record | a span with `gen_ai.operation.name` = `execute_tool` | `openinference.span.kind` = `TOOL` |
+| `fn` | `gen_ai.tool.name`, else the span name after `execute_tool ` | `tool.name`, else the span name |
+| `args` | `gen_ai.tool.call.arguments`, a JSON object (as text or as a map) | `input.value` |
+| `result` | `gen_ai.tool.call.result`; text that is JSON is parsed | `output.value` |
+| `error` | status `ERROR` (its message), or `error.type` | the same |
+| `started_at`, `ended_at` | `startTimeUnixNano`, `endTimeUnixNano`; unknown when missing, never 0 | the same |
+| a `turn` record | `gen_ai.operation.name` = `invoke_agent` | `openinference.span.kind` = `AGENT` |
+| `response` | the text parts of the last assistant message in `gen_ai.output.messages` | `output.value` |
+| `usage.input_tokens`, `output_tokens` | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | `llm.token_count.prompt`, `llm.token_count.completion` |
+| `usage.model` | `gen_ai.response.model`, else `gen_ai.request.model` | `llm.model_name` |
+| `usage.provider` | `gen_ai.provider.name`, else `gen_ai.system` | `llm.provider` |
+| `context.test` | the span's `traceId` | the same |
+
+Each message highbar sends carries a W3C `traceparent` whose trace id is the test execution's id, so `context.test` is the test a span belongs to. A span whose trace id highbar did not send in the run (a tool run in a worker that started a new root trace) has no test context: it is an untagged record, and every test it would change is an `error`. A tool span without arguments was exported with content capture off: a `params` check on it is an `error`, and so is a `returns` check on one without a result, and an `ordered` check on a span without its times. `chat` and `LLM` spans (the `llm` record) and `RETRIEVER` spans (the `retrieval` record) are not read in version 0.
+
+Nothing in an OTLP file declares tools: the spec lists them in `agent.traces.tools`, which takes the place of the `tools` record. Without it, a test whose pass rests on the absence of a span (`forbid`, `function_calls: []`, `exclusive`) is an `error`. See [list the tools](/guides/opentelemetry#list-the-tools).
 
 ## A reference emitter
 
@@ -155,9 +251,10 @@ def hello(tools: list[str]) -> None:
     _write({"type": "hello", "sdk": "reference-emitter/1", "pid": os.getpid(), "tools": tools})
 
 
-def tool(fn, args, *, result=None, error=None, started_at, test=None) -> None:
-    """One tool call. `error` says why it failed, also when it returned the failure."""
-    record = {"fn": fn, "args": args, "result": result, "error": error}
+def tool(fn, args, *, result=..., error=None, started_at, test=None) -> None:
+    """One tool call. `error` says why it failed. No `result=`: the return was not seen."""
+    record = {"fn": fn, "args": args, "error": error}
+    record |= {} if result is ... else {"result": result}  # unseen is not "returned null"
     _write({"type": "tool", **record, "started_at": started_at, "ended_at": time.time()}, test)
 
 

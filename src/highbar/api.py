@@ -32,9 +32,11 @@ def run(
 
     The summary holds every test in its final state, in ``tests``.
 
-    Raises ``SpecError`` for a spec that cannot run, ``SessionError`` for session hooks
-    that cannot be loaded, and ``AgentStartError`` for an agent that does not come up.
-    An agent highbar started is stopped before this returns or raises.
+    Raises ``SpecError`` for a spec that cannot run, ``SessionError`` for session or run
+    hooks that cannot be loaded, ``RunHookError`` (a ``SessionError``) for an
+    ``agent.run`` setup that fails, and ``AgentStartError`` for an agent that does not
+    come up. An agent highbar started is stopped before this returns or raises, and
+    ``agent.run``'s teardown has run.
     """
     path = os.fspath(spec)
     parsed = parse_spec(path)

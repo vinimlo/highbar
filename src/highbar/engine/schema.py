@@ -11,7 +11,7 @@ import difflib
 from collections.abc import Mapping
 from typing import Any
 
-from highbar.assertions._match import MATCHER_KEYS
+from highbar.assertions._match import TEXT_MATCHER_KEYS
 
 
 class SpecError(ValueError):
@@ -20,7 +20,7 @@ class SpecError(ValueError):
 
 ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "spec": frozenset({"agent", "suites", "defaults"}),
-    "defaults": frozenset({"runs", "min_pass", "budget"}),
+    "defaults": frozenset({"runs", "min_pass", "budget", "session"}),
     "agent": frozenset(
         {
             "start",
@@ -31,19 +31,40 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
             "timeout",
             "request",
             "response",
+            "reply",
             "traces",
             "session",
+            "run",
             "correlate",
+            "llm_proxy",
         }
     ),
+    "traces": frozenset({"path", "format", "tools"}),
+    "llm_proxy": frozenset({"openai", "anthropic"}),
     "request": frozenset({"method", "headers", "body"}),
     "session": frozenset({"setup", "teardown"}),
-    "python_hook": frozenset({"python"}),
-    "suite": frozenset({"name", "tests"}),
+    "run": frozenset({"setup", "teardown"}),
+    "hook": frozenset({"python", "http"}),
+    "http_hook": frozenset({"url", "method", "headers", "body"}),
+    "suite": frozenset({"name", "tests", "session"}),
     "test": frozenset(
-        {"id", "name", "trigger", "expect", "turns", "variations", "runs", "min_pass"}
+        {
+            "id",
+            "name",
+            "trigger",
+            "expect",
+            "turns",
+            "variations",
+            "runs",
+            "min_pass",
+            "session",
+            "history",
+            "expect_status",
+        }
     ),
-    "turn": frozenset({"name", "trigger", "expect"}),
+    "test_session": frozenset({"args"}),
+    "history_message": frozenset({"role", "content"}),
+    "turn": frozenset({"name", "trigger", "expect", "variations"}),
     "expect": frozenset(
         {
             "function_calls",
@@ -53,11 +74,18 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
             "forbid",
             "budget",
             "max_duration_ms",
+            "check",
+            "llm",
+            "retrieval",
         }
     ),
+    "llm": frozenset({"model", "fallback", "last_role", "max_calls"}),
+    "retrieval": frozenset({"includes", "excludes", "max_items", "max_tokens", "chunks_in_order"}),
+    "retrieval_item": frozenset({"id", "title", "source"}),
+    "check": frozenset({"python"}),
     "budget": frozenset({"max_input_tokens", "max_cost"}),
-    "function_call": frozenset({"name", "params", "result", "error"}),
-    "response": MATCHER_KEYS,
+    "function_call": frozenset({"name", "params", "result", "returns", "error"}),
+    "response": TEXT_MATCHER_KEYS,
 }
 
 # Keys starting with this are the author's own (YAML anchors, notes), as in compose

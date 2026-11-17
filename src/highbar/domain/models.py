@@ -38,6 +38,10 @@ def combine(statuses: Iterable[Status]) -> Status:
     return Status.PASSED
 
 
+# What agent.traces.format names: highbar's own contract, or OTLP JSON lines (HB-48).
+TRACE_FORMATS = ("highbar", "otlp")
+
+
 @dataclass(frozen=True)
 class Trace:
     """One tool call, from a `tool` record of the trace contract.
@@ -50,13 +54,27 @@ class Trace:
     fn: str
     args: dict[str, Any]
     result: Any
-    started_at: float
-    ended_at: float
+    # None when the record did not say: an OpenTelemetry span without its timestamps.
+    # `ordered` cannot be checked on such a call (review of #98, F2).
+    started_at: float | None
+    ended_at: float | None
     error: str | None = None
     context: dict[str, Any] = field(default_factory=dict[str, Any])
+    # False when the record had no `result` key: what the tool returned was not seen,
+    # which is not the same as having returned null (review of #74, HB-37).
+    has_result: bool = True
+    # False when the arguments were not recorded: an OpenTelemetry tool span exports
+    # them only with content capture on (HB-48). `params` cannot be checked on it.
+    has_args: bool = True
 
     @property
-    def duration_ms(self) -> float:
+    def timed(self) -> bool:
+        return self.started_at is not None and self.ended_at is not None
+
+    @property
+    def duration_ms(self) -> float | None:
+        if self.started_at is None or self.ended_at is None:
+            return None
         return (self.ended_at - self.started_at) * 1000
 
 
@@ -99,6 +117,69 @@ class TurnRecord:
 
 
 @dataclass(frozen=True)
+class LlmCall:
+    """An `llm` record: one call to the model, a failed one or a fallback included (HB-11).
+
+    Its tokens are shown, not summed: the `turn`'s usage is what budgets read, so
+    nothing counts twice (decision E3, on the card).
+
+    ``source`` says who wrote it: ``"proxy"`` for highbar's LLM proxy (HB-30), None for
+    the agent. ``read`` is False when the writer saw the call and could not read its
+    usage, with ``unread`` saying why; None means the writer did not say. A token field
+    that is None is unknown, never zero, and an unread call's count is not whole.
+    ``call`` is the proxy's: ``"model"`` for a call to a model endpoint (chat/completions,
+    responses, messages), ``"other"`` for one it passed on (a list of the models).
+    """
+
+    ts: float
+    context: dict[str, Any] = field(default_factory=dict[str, Any])
+    model: str | None = None
+    provider: str | None = None
+    attempt: int | None = None
+    fallback_from: str | None = None
+    roles: tuple[str, ...] | None = None  # the roles of the messages sent, in order
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_tokens: int | None = None
+    latency_ms: float | None = None
+    error: str | None = None
+    source: str | None = None
+    read: bool | None = None
+    unread: str | None = None  # why the usage was not read, when read is False
+    cost: float | None = None  # what the provider said the call cost (OpenRouter)
+    currency: str | None = None
+    # The proxy's: "model" for a call to a model endpoint, "other" for one it passed on.
+    call: str | None = None
+
+
+@dataclass(frozen=True)
+class RetrievedItem:
+    """One document in a prompt: a training, a manual. ``source``: retrieved, expanded or
+    sticky (kept from an earlier turn). ``chunks``: the indexes of its parts that went in."""
+
+    id: str | None = None
+    title: str | None = None
+    source: str | None = None
+    chunks: tuple[int, ...] = ()
+    tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class Retrieval:
+    """A `retrieval` record: what entered the prompt for one message (HB-3)."""
+
+    ts: float
+    context: dict[str, Any] = field(default_factory=dict[str, Any])
+    query: str | None = None
+    search_query: str | None = None
+    strategy: str | None = None
+    skipped_reason: str | None = None
+    items: tuple[RetrievedItem, ...] = ()
+    expired: tuple[dict[str, Any], ...] = ()
+    tokens: int | None = None
+
+
+@dataclass(frozen=True)
 class Hello:
     """A `hello` record: an emitter started writing to the trace file."""
 
@@ -114,6 +195,8 @@ class Window:
     tools: list[Trace] = field(default_factory=list[Trace])
     turns: list[TurnRecord] = field(default_factory=list[TurnRecord])
     hellos: list[Hello] = field(default_factory=list[Hello])
+    llms: list[LlmCall] = field(default_factory=list[LlmCall])
+    retrievals: list[Retrieval] = field(default_factory=list[Retrieval])
     # The tools the agent declared it records, one tuple per declaration (spec D4).
     declarations: list[tuple[str, ...]] = field(default_factory=list[tuple[str, ...]])
     # Where the next read starts: every record is read once, none falls between reads.
@@ -143,7 +226,21 @@ class PythonHook:
     target: str
 
 
-Hook = CommandHook | PythonHook
+@dataclass(frozen=True)
+class HttpHook:
+    """A session hook sent as an HTTP request; placeholders are resolved in each part.
+
+    ``body`` is sent as JSON, and ``None`` sends no body. A setup's reply must be a JSON
+    object, which becomes the session.
+    """
+
+    url: str
+    method: str = "POST"
+    headers: dict[str, str] = field(default_factory=dict[str, str])
+    body: Any = None
+
+
+Hook = CommandHook | PythonHook | HttpHook
 
 
 @dataclass(frozen=True)
@@ -152,6 +249,18 @@ class SessionConfig:
 
     setup: Hook | None = None
     teardown: Hook | None = None
+
+
+@dataclass(frozen=True)
+class RunConfig:
+    """Once per spec (HB-10): ``setup`` before the agent starts, ``teardown`` on every way
+    out of a run whose setup finished, Ctrl-C and SIGTERM included."""
+
+    setup: Hook | None = None
+    teardown: Hook | None = None
+    # The spec reads what the setup returns as {{run.*}} (v1): only then must the setup
+    # return a JSON object. A setup whose result nobody reads may print what it likes.
+    read_result: bool = False
 
 
 @dataclass(frozen=True)
@@ -170,11 +279,26 @@ class AgentConfig:
     timeout: int = 60000
     request: RequestConfig = field(default_factory=RequestConfig)
     response: str | None = None
+    # Where the reply text comes from: the HTTP body, or the `response` of the test
+    # execution's turn record, for an agent that answers later through a queue (HB-14).
+    reply: str = "body"
     traces: str | None = None
+    # How the trace file is written: highbar's own contract, or OTLP JSON lines (HB-48).
+    trace_format: str = "highbar"
+    # agent.traces.tools (OTLP only): the tools the agent has, each emitting a tool span.
+    # What a name in the spec is checked against; None when the spec does not say.
+    trace_tools: tuple[str, ...] | None = None
     session: SessionConfig | None = None
+    run: RunConfig | None = None
     correlate: dict[str, Any] = field(default_factory=lambda: {"test": "{{test.id}}"})
     # Each value expanded from ${NAME}, and the name: what output must never show.
     secrets: dict[str, str] = field(default_factory=dict[str, str])
+    # HB-30: the agent's model calls go through highbar's LLM proxy, whose count of them
+    # is the usage budgets and --max-cost hold. Managed mode only. The upstreams, by
+    # provider ("openai", "anthropic"), when the spec gives them: they take the place of
+    # the environment's base URLs.
+    llm_proxy: bool = False
+    llm_proxy_upstreams: dict[str, str] = field(default_factory=dict[str, str])
 
     @property
     def managed(self) -> bool:
@@ -196,6 +320,10 @@ class FunctionCallExpect:
     name: str | list[str]
     params: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
+    # The whole return value, as an expected value (a matcher, a list, a text): for a
+    # tool that returns a list or a text, which `result`'s key names cannot reach
+    # (HB-37). None: not checked; a null return is ``{equals: null}``.
+    returns: Any = None
     # False: the call must not have failed. True: it must have. A matcher: it must
     # have failed with an error that matches (``{contains: "Timeout"}``).
     error: bool | dict[str, Any] = False
@@ -231,6 +359,42 @@ class Budget:
 
 
 @dataclass(frozen=True)
+class LlmExpect:
+    """``expect.llm`` (HB-11): checks of the test's calls to the model (decision E4).
+
+    ``model`` is a text matcher on the call that answered, the last without ``error``.
+    ``last_role`` holds for every call. ``fallback`` is whether any call came from another
+    model or was a retry. ``max_calls`` counts the failed calls too.
+    """
+
+    model: dict[str, Any] | None = None
+    fallback: bool | None = None
+    last_role: str | None = None
+    max_calls: int | None = None
+
+
+@dataclass(frozen=True)
+class ItemRef:
+    """A document named in ``expect.retrieval.includes``: its id or title, and how it
+    must have come in, when that matters."""
+
+    key: str
+    source: str | None = None
+
+
+@dataclass(frozen=True)
+class RetrievalExpect:
+    """``expect.retrieval`` (HB-3). ``includes``/``excludes`` read every record of the test;
+    ``max_items``/``max_tokens`` hold for each record, one prompt each."""
+
+    includes: tuple[ItemRef, ...] = ()
+    excludes: tuple[str, ...] = ()
+    max_items: int | None = None
+    max_tokens: int | None = None
+    chunks_in_order: bool = False
+
+
+@dataclass(frozen=True)
 class Expect:
     """Expected outcomes for a test or turn."""
 
@@ -240,6 +404,9 @@ class Expect:
     exclusive: bool = False  # no call beyond the expected ones
     forbid: tuple[str, ...] = ()  # tools that must not be called, failed or not
     budget: Budget | None = None  # per turn in a turn, per execution in a test
+    check: str | None = None  # "module:function" of the author's own check (HB-12)
+    llm: LlmExpect | None = None  # the calls to the model (HB-11)
+    retrieval: RetrievalExpect | None = None  # what entered the prompt (HB-3)
     # How long the agent may take to answer the message, from request to reply (HB-18).
     max_duration_ms: float | None = None
 
@@ -256,7 +423,13 @@ class Expect:
         nothing unless the message reached an agent that would have recorded one. A
         budget reads the usage of the turn's own record.
         """
-        return self.function_calls is not None or bool(self.forbid) or self.budget is not None
+        return (
+            self.function_calls is not None
+            or bool(self.forbid)
+            or self.budget is not None
+            or self.llm is not None
+            or self.retrieval is not None
+        )
 
 
 @dataclass(frozen=True)
@@ -291,6 +464,15 @@ class Test:
     min_pass: int | float | None = None
     # What joins this test across reports; without it, the key is suite/name (D15).
     id: str | None = None
+    # Its own ``session: {args: ...}`` (HB-9): the state its hooks open, and
+    # ``{{test.args.*}}`` in the request. A JSON object, checked when the spec loads.
+    session_args: dict[str, Any] = field(default_factory=dict[str, Any])
+    # The conversation before its first message (HB-24): {role, content} each, for the
+    # session's setup to seed. highbar sends none of it.
+    history: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
+    # The state a negative control must end in (HB-21): ``failed`` or ``error``. The test
+    # passes when it ends exactly there; None: it must pass, as every test.
+    expect_status: Status | None = None
 
     @property
     def requires_observation(self) -> bool:
@@ -309,7 +491,7 @@ class Test:
         Labels (``name``, ``id``) and sampling (``runs``, ``min_pass``) stay out: they
         change neither the message nor what counts as right (D16).
         """
-        definition = {
+        definition: dict[str, Any] = {
             "trigger": self.trigger,
             "expect": self.expect,
             "variations": self.variations,
@@ -317,6 +499,15 @@ class Test:
                 {"trigger": turn.trigger, "expect": turn.expect} for turn in self.turns or []
             ],
         }
+        if self.session_args:
+            # The state a test starts from is part of what it measures. Only when there
+            # is one: the hash of every test without it stays what it was.
+            definition["session_args"] = self.session_args
+        if self.history:
+            definition["history"] = self.history
+        if self.expect_status is not None:
+            # It changes what counts as right. Only when set, as session_args and history.
+            definition["expect_status"] = str(self.expect_status)
         # ASCII, so a lone surrogate from YAML is an escape and not a failed encode.
         text = json.dumps(_canonical(definition), sort_keys=True, default=str)
         return hashlib.sha256(text.encode("ascii")).hexdigest()
@@ -383,6 +574,9 @@ class AssertionResult:
 
     passed: bool
     message: str
+    # What a failure says apart from the agent's reply, which changes on every run: a
+    # phrasing's runs are grouped by it (HB-27). None when the message is all of it.
+    condition: str | None = None
 
 
 @dataclass(frozen=True)
@@ -395,6 +589,8 @@ class TestResult:
     traces: list[Trace] = field(default_factory=list[Trace])
     # (passed, runs, min_pass) when a test without variations ran more than once.
     counts: tuple[int, int, int] | None = None
+    # The test's expect_status (HB-21): ``status`` is already judged against it.
+    expected: Status | None = None
 
     @property
     def passed(self) -> bool:
@@ -427,7 +623,7 @@ class ToolOutcome:
     name: str
     args: dict[str, Any]
     error: str | None
-    duration_ms: float
+    duration_ms: float | None  # None when the call's times were not recorded
     late: bool = False  # recorded after the test's window closed
 
 
@@ -467,6 +663,9 @@ class TurnOutcome:
     tools: tuple[ToolOutcome, ...] = ()
     usage: Usage | None = None
     budget: Budget | None = None
+    # agent.llm_proxy (HB-30): what the agent's `turn` records said, when the proxy's
+    # count took its place as ``usage``. Shown, not added.
+    agent_usage: Usage | None = None
 
 
 @dataclass(frozen=True)
@@ -511,6 +710,9 @@ class TestOutcome:
     phrasings: tuple[PhrasingOutcome, ...] = ()
     budget: Budget | None = None  # what each execution may spend, default included
     totals: UsageTotals | None = None
+    # The state the test expects to end in (HB-21); ``status`` is judged against it, and
+    # its phrasings and executions keep what happened.
+    expect_status: Status | None = None
 
     @property
     def usages(self) -> list[Usage | None]:

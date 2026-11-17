@@ -244,6 +244,13 @@ class _FakeSession:
         if self._fail_teardown:
             raise SessionError("session.teardown exited with code 2")
 
+    # A spec without agent.run (HB-10): its hooks run nothing.
+    def before_run(self) -> None:
+        pass
+
+    def after_run(self) -> None:
+        pass
+
 
 def _run(
     tests: list[Case], session: _FakeSession, *, variations: Any = None

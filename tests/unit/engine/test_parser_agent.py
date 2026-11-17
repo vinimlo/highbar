@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from highbar.domain.models import CommandHook, PythonHook, RequestConfig
+from highbar.domain.models import CommandHook, HttpHook, PythonHook, RequestConfig
 from highbar.engine.parser import parse_spec
 from highbar.engine.schema import SpecError
 
@@ -271,6 +271,76 @@ session:
             parse_spec(_spec(tmp_path, ATTACH + 'session:\n  setup: "open \'unclosed"\n'))
 
 
+class TestHttpSessionHooks:
+    """HB-13: `{http: {url, method, headers, body}}` as a setup or a teardown."""
+
+    def test_hb13_http_hooks_parse(self, tmp_path: Path) -> None:
+        spec = _spec(
+            tmp_path,
+            ATTACH
+            + """\
+session:
+  setup:
+    http:
+      url: "http://localhost:8000/test/sessions"
+      headers: {Authorization: "Bearer abc"}
+      body: {label: "{{test.name}}"}
+  teardown:
+    http:
+      url: "http://localhost:8000/test/sessions/{{session.conversation_id}}"
+      method: delete
+""",
+        )
+
+        session = parse_spec(spec).agent.session
+
+        assert session is not None
+        assert session.setup == HttpHook(
+            url="http://localhost:8000/test/sessions",
+            headers={"Authorization": "Bearer abc"},
+            body={"label": "{{test.name}}"},
+        )
+        assert session.teardown == HttpHook(
+            url="http://localhost:8000/test/sessions/{{session.conversation_id}}",
+            method="DELETE",
+        )
+
+    @pytest.mark.parametrize(
+        ("hook", "error"),
+        [
+            ("{http: {}}", r"agent\.session\.setup\.http: missing 'url'"),
+            ('{http: {url: "localhost:8000/s"}}', r"url must start with http:// or https://"),
+            ('{http: {url: ""}}', r"url must start with http:// or https://"),
+            ('{http: {url: "http://h/s", method: TRACE}}', r"method must be one of"),
+            ('{http: {url: "http://h/s", headers: {X-N: 3}}}', r"headers: X-N must be a string"),
+            ('{http: {url: "http://h/s", bdy: {}}}', r"did you mean 'body'"),
+            ('{http: "http://h/s"}', r"http must be a mapping"),
+            ('{python: "m:f", http: {url: "http://h/s"}}', r"either python or http"),
+            ('{htp: {url: "http://h/s"}}', r"unknown key 'htp'"),
+            ('{http: {url: "http://h:8734{{test.id}}/s"}}', r"not in its scheme or host"),
+            ('{http: {url: "http://{{test.name}}/s"}}', r"not in its scheme or host"),
+            ('{http: {url: "http://h/s", headers: {X-Ação: "1"}}}', r"header name 'X-Ação'"),
+        ],
+    )
+    def test_hb13_a_malformed_http_hook_is_a_spec_error(
+        self, tmp_path: Path, hook: str, error: str
+    ) -> None:
+        with pytest.raises(SpecError, match=error):
+            parse_spec(_spec(tmp_path, ATTACH + f"session:\n  setup: {hook}\n"))
+
+    def test_hb13_setup_cannot_use_session_placeholders(self, tmp_path: Path) -> None:
+        hook = '{http: {url: "http://h/s", body: {id: "{{session.id}}"}}}'
+
+        with pytest.raises(SpecError, match=r"agent\.session\.setup.*session"):
+            parse_spec(_spec(tmp_path, ATTACH + f"session:\n  setup: {hook}\n"))
+
+    def test_hb13_a_hook_has_no_message(self, tmp_path: Path) -> None:
+        hook = '{http: {url: "http://h/s?q={{message}}"}}'
+
+        with pytest.raises(SpecError, match="message"):
+            parse_spec(_spec(tmp_path, ATTACH + f"session:\n  teardown: {hook}\n"))
+
+
 class TestCorrelate:
     def test_correlate_default_and_custom(self, tmp_path: Path) -> None:
         spec = _spec(
@@ -289,3 +359,152 @@ correlate: {conversation_id: "{{session.conversation_id}}"}
     def test_correlate_must_be_a_non_empty_mapping(self, tmp_path: Path) -> None:
         with pytest.raises(SpecError, match="correlate must be a non-empty mapping"):
             parse_spec(_spec(tmp_path, ATTACH + "correlate: {}\n"))
+
+
+class TestSessionInTriggers:
+    """HB-20 v1: {{session.*}} in a trigger, checked when the spec loads."""
+
+    WITH_SESSION = MANAGED + 'session:\n  setup: "open"\n'
+
+    @pytest.mark.parametrize(
+        ("template", "named"), [("{{session}}", "session"), ("{{ previous }}", "previous")]
+    )
+    def test_hb20_a_trigger_template_with_no_path_does_not_load(
+        self, tmp_path: Path, template: str, named: str
+    ) -> None:
+        """Review of #36: `{{session}}` used to go to the agent as it was written."""
+        suites = (
+            "suites:\n  - name: S\n    tests:\n"
+            f'      - trigger: "hi {template}"\n'
+            '        expect: {response: {contains: "ok"}}\n'
+        )
+
+        with pytest.raises(
+            SpecError,
+            match=rf"suites\[0\]\.tests\[0\]\.trigger: '\{{\{{{named}\}}\}}' names no value",
+        ):
+            parse_spec(_spec(tmp_path, self.WITH_SESSION, suites))
+
+    def test_hb20_a_trigger_with_a_session_value_loads_with_a_session(self, tmp_path: Path) -> None:
+        suites = (
+            "suites:\n  - name: S\n    tests:\n"
+            '      - trigger: "I am {{session.customer_id}}"\n'
+            '        expect: {response: {contains: "ok"}}\n'
+            "      - turns:\n"
+            '          - trigger: "hi"\n'
+            '          - trigger: "my id: {{ session.customer.id }}"\n'
+            '            expect: {response: {contains: "ok"}}\n'
+        )
+
+        parse_spec(_spec(tmp_path, self.WITH_SESSION, suites))
+
+    @pytest.mark.parametrize(
+        ("suites", "where"),
+        [
+            (
+                '      - trigger: "I am {{session.customer_id}}"\n'
+                '        expect: {response: {contains: "ok"}}\n',
+                r"suites\[0\]\.tests\[0\]\.trigger",
+            ),
+            (
+                "      - turns:\n"
+                '          - trigger: "hi"\n'
+                '          - trigger: "I am {{session.customer_id}}"\n'
+                '            expect: {response: {contains: "ok"}}\n',
+                r"suites\[0\]\.tests\[0\]\.turns\[1\]\.trigger",
+            ),
+        ],
+    )
+    def test_hb20_a_session_value_needs_a_session(
+        self, tmp_path: Path, suites: str, where: str
+    ) -> None:
+        """Without agent.session, the raw {{...}} would go to the agent."""
+        path = _spec(tmp_path, MANAGED, "suites:\n  - name: S\n    tests:\n" + suites)
+
+        with pytest.raises(
+            SpecError, match=where + r": '\{\{session\.customer_id\}\}' needs agent\.session"
+        ):
+            parse_spec(path)
+
+    def test_hb20_a_session_value_and_variations_are_refused(self, tmp_path: Path) -> None:
+        """A paraphrase can drop the placeholder or change it, and then test something else."""
+        suites = (
+            "suites:\n  - name: S\n    tests:\n"
+            '      - trigger: "I am {{session.customer_id}}"\n'
+            "        variations: 3\n"
+            '        expect: {response: {contains: "ok"}}\n'
+        )
+
+        with pytest.raises(
+            SpecError,
+            match=r"tests\[0\]: a trigger with '\{\{session\.customer_id\}\}' "
+            r"cannot have variations",
+        ):
+            parse_spec(_spec(tmp_path, self.WITH_SESSION, suites))
+
+
+class TestLlmProxy:
+    """HB-30, P1: agent.llm_proxy is opt-in, and only for an agent highbar starts."""
+
+    def test_hb30_off_unless_written(self, tmp_path: Path) -> None:
+        assert parse_spec(_spec(tmp_path, MANAGED)).agent.llm_proxy is False
+
+    def test_hb30_on_for_a_managed_agent(self, tmp_path: Path) -> None:
+        spec = parse_spec(_spec(tmp_path, MANAGED + "llm_proxy: true\n"))
+
+        assert spec.agent.llm_proxy is True
+
+    def test_hb30_attach_mode_is_refused_and_says_why(self, tmp_path: Path) -> None:
+        agent = ATTACH + 'traces: "/tmp/t.jsonl"\nllm_proxy: true\n'
+
+        with pytest.raises(SpecError, match=r"llm_proxy.*'start'.*environment"):
+            parse_spec(_spec(tmp_path, agent))
+
+    def test_hb30_a_value_that_is_not_a_boolean_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(SpecError, match="llm_proxy must be true or false"):
+            parse_spec(_spec(tmp_path, MANAGED + 'llm_proxy: "yes"\n'))
+
+
+class TestLlmProxyUpstreams:
+    """Review of #97, note: an agent whose base URL lives in its own .env needs the
+    upstream given in the spec, or the proxy sends its calls to the provider's own URL."""
+
+    def test_hb30_a_mapping_turns_it_on_and_names_the_upstreams(self, tmp_path: Path) -> None:
+        agent = MANAGED + 'llm_proxy:\n  openai: "http://127.0.0.1:11434/v1"\n'
+
+        spec = parse_spec(_spec(tmp_path, agent))
+
+        assert spec.agent.llm_proxy is True
+        assert spec.agent.llm_proxy_upstreams == {"openai": "http://127.0.0.1:11434/v1"}
+
+    def test_hb30_an_unknown_provider_is_refused_with_a_suggestion(self, tmp_path: Path) -> None:
+        agent = MANAGED + 'llm_proxy:\n  opnai: "http://127.0.0.1:11434/v1"\n'
+
+        with pytest.raises(SpecError, match="did you mean 'openai'"):
+            parse_spec(_spec(tmp_path, agent))
+
+    def test_hb30_a_value_that_is_not_a_url_is_refused(self, tmp_path: Path) -> None:
+        agent = MANAGED + 'llm_proxy:\n  anthropic: "localhost:8000"\n'
+
+        with pytest.raises(
+            SpecError, match=r"llm_proxy\.anthropic must be an http:// or https:// URL"
+        ):
+            parse_spec(_spec(tmp_path, agent))
+
+    def test_hb30_a_mapping_in_attach_mode_is_refused(self, tmp_path: Path) -> None:
+        agent = ATTACH + 'traces: "/tmp/t.jsonl"\nllm_proxy:\n  openai: "http://x.test/v1"\n'
+
+        with pytest.raises(SpecError, match="llm_proxy needs 'start'"):
+            parse_spec(_spec(tmp_path, agent))
+
+    def test_hb30_the_spec_upstream_wins_over_the_environment(self) -> None:
+        from highbar.engine.run_spec import proxy_upstreams
+
+        upstreams = proxy_upstreams(
+            {"OPENAI_BASE_URL": "https://openrouter.ai/api/v1"},
+            {"openai": "http://127.0.0.1:11434/v1"},
+        )
+
+        assert upstreams["openai"].base_url == "http://127.0.0.1:11434/v1"
+        assert upstreams["openai"].provider is None
+        assert upstreams["anthropic"].base_url == "https://api.anthropic.com"
