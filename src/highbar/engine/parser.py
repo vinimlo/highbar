@@ -6,39 +6,57 @@ spec, so an error says where it is: ``suites[0].tests[2].expect: unknown key ...
 
 from __future__ import annotations
 
+import difflib
 import math
 import os
 import re
 import shlex
 from dataclasses import replace
+from datetime import date
 from typing import Any
 from urllib.parse import urlsplit
 
 import yaml
 
 from highbar._narrow import as_dict, as_list
-from highbar.assertions._match import MATCHER_KEYS, REGEX_KEYS, validate_expected
+from highbar.assertions._match import (
+    LENGTH_KEYS,
+    MATCHER_KEYS,
+    NUMBER_KEYS,
+    REGEX_KEYS,
+    TEXT_MATCHER_KEYS,
+    validate_expected,
+)
 from highbar.domain.models import (
+    TRACE_FORMATS,
     AgentConfig,
     Budget,
     CommandHook,
     Expect,
     FunctionCallExpect,
     Hook,
+    HttpHook,
+    ItemRef,
+    LlmExpect,
     PythonHook,
     RequestConfig,
     ResponseExpect,
+    RetrievalExpect,
+    RunConfig,
     SessionConfig,
     Spec,
+    Status,
     Suite,
     Test,
     Turn,
     stable_key,
 )
 from highbar.engine import placeholders
-from highbar.engine.placeholders import check_placeholders, uses_placeholder
+from highbar.engine.paths import PathError, get_path
+from highbar.engine.placeholders import args_used, check_placeholders, uses_placeholder
 from highbar.engine.schema import SpecError, check_keys, require_type, user_keys
 from highbar.engine.secrets import redact
+from highbar.engine.templates import no_path_message, pathless_templates, session_placeholders
 
 
 def parse_spec(path: str) -> Spec:
@@ -65,6 +83,40 @@ def parse_spec(path: str) -> Spec:
         return _parse_spec(raw)
     except SpecError as e:
         raise SpecError(f"{path}: {e}") from None
+
+
+def _check_trigger_sessions(suites: list[Suite], *, has_session: bool) -> None:
+    """A trigger's ``{{session.*}}`` needs a session, and no variations (HB-20).
+
+    ``{{session}}`` or ``{{previous}}`` with no path names no value, and is refused.
+
+    Without agent.session the raw ``{{...}}`` would go to the agent. A paraphrase can
+    drop the placeholder or change it, and then its phrasing tests another message.
+    """
+    for i, suite in enumerate(suites):
+        for j, test in enumerate(suite.tests):
+            where = f"suites[{i}].tests[{j}]"
+            triggers = [(f"{where}.trigger", test.trigger)] if test.trigger is not None else []
+            triggers += [
+                (f"{where}.turns[{k}].trigger", turn.trigger)
+                for k, turn in enumerate(test.turns or [])
+            ]
+            for k, (at, trigger) in enumerate(triggers):
+                # Of a conversation, only the last turn is paraphrased (HB-16).
+                paraphrased = test.variations and k == len(triggers) - 1
+                for template in pathless_templates(trigger):
+                    kind = template.strip("{}")
+                    raise SpecError(f"{at}: '{template}' {no_path_message(kind)}")
+                for placeholder in session_placeholders(trigger):
+                    if not has_session:
+                        raise SpecError(
+                            f"{at}: '{placeholder}' needs agent.session, whose setup returns it"
+                        )
+                    if paraphrased:
+                        raise SpecError(
+                            f"{where}: a trigger with '{placeholder}' cannot have variations: "
+                            "a paraphrase can drop it or change it"
+                        )
 
 
 class _StrictLoader(yaml.SafeLoader):
@@ -112,6 +164,10 @@ def _parse_spec(raw: Any) -> Spec:
     require_type(suites_raw, list, "suites", "must be a list of suites")
     suites = [_parse_suite(s, f"suites[{i}]") for i, s in enumerate(suites_raw)]
     _check_unique_keys(suites)
+    suites = _with_inherited_args(suites, suites_raw, raw.get("defaults"))
+    _check_args_used(raw["agent"], suites)
+    _check_not_in_triggers(suites)
+    _check_history_seeded(agent, suites)
 
     default_runs = 1
     default_min_pass: int | float | None = None
@@ -136,6 +192,8 @@ def _parse_spec(raw: Any) -> Spec:
                         f"writes: suites[{i}].tests[{j}] checks function_calls or a budget"
                     )
 
+    _check_trigger_sessions(suites, has_session=agent.session is not None)
+
     # min_pass is checked against runs where the run's runs are known: --runs (or
     # highbar.run(runs=...)) takes the place of defaults.runs.
     return Spec(
@@ -145,6 +203,203 @@ def _parse_spec(raw: Any) -> Spec:
         default_min_pass=default_min_pass,
         default_budget=default_budget,
     )
+
+
+# A test's own values, which a trigger does not read: it goes to the agent as written.
+# Each says where its value is read instead.
+_NOT_IN_TRIGGERS = {
+    "test.args": "use it in agent.request, agent.correlate or a session hook",
+    "test.history": (
+        "the session setup seeds it (ctx.history, or {{test.history}} in a command or HTTP "
+        "setup), or agent.request hands it on in a single-turn test"
+    ),
+    "run": "use it in agent.request, a session hook or agent.run.teardown",
+}
+
+
+def _check_not_in_triggers(suites: list[Suite]) -> None:
+    """``{{test.args.<path>}}``, ``{{test.history}}`` or ``{{run.<path>}}`` in a trigger stops
+    the spec (HB-9, HB-24, HB-10).
+
+    A trigger is sent as written, braces included, so the agent would get a message
+    nobody meant to send, and the test could pass on it. Names highbar does not own
+    stay text, as before.
+    """
+    for i, suite in enumerate(suites):
+        for j, test in enumerate(suite.tests):
+            where = f"suites[{i}].tests[{j}]"
+            if test.turns is None:
+                triggers = [(f"{where}.trigger", test.trigger or "")]
+            else:
+                triggers = [
+                    (f"{where}.turns[{k}].trigger", turn.trigger)
+                    for k, turn in enumerate(test.turns)
+                ]
+            for at, trigger in triggers:
+                for match in placeholders.PLACEHOLDER.finditer(trigger):
+                    name = match.group(1)
+                    for own, instead in _NOT_IN_TRIGGERS.items():
+                        if name == own or name.startswith(f"{own}."):
+                            raise SpecError(
+                                f"{at}: '{match.group(0)}' is not read in a trigger: {instead}"
+                            )
+
+
+def _with_inherited_args(suites: list[Suite], raw: list[Any], defaults: Any) -> list[Suite]:
+    """Each test's args over its suite's, over the defaults' (HB-9).
+
+    The most specific level wins key by key, as runs, min_pass and budget do, and a key
+    is replaced whole: a test's args can be read from one place per key, without merge
+    rules for nested objects.
+    """
+    mapping = as_dict(defaults)
+    base = _parse_session_args(mapping, "defaults") if mapping is not None else {}
+    combined: list[Suite] = []
+    for i, (suite, suite_raw) in enumerate(zip(suites, raw, strict=True)):
+        # _parse_suite already refused a suite that is not a mapping.
+        own = {**base, **_parse_session_args(suite_raw, f"suites[{i}]")}
+        tests = [replace(test, session_args={**own, **test.session_args}) for test in suite.tests]
+        combined.append(replace(suite, tests=tests))
+    return combined
+
+
+def _check_args_used(agent: dict[str, Any], suites: list[Suite]) -> None:
+    """Every ``{{test.args.<path>}}`` the agent uses has a value in every test (HB-9).
+
+    Found when the spec loads, not when a test's request would go out without it. A
+    ``null`` is refused too: the agent would get ``null`` for a value never given.
+    """
+    uses = [
+        use
+        for part in ("request", "correlate", "session")
+        for use in args_used(agent.get(part), f"agent.{part}")
+    ]
+    for i, suite in enumerate(suites):
+        for j, test in enumerate(suite.tests):
+            for at, path in uses:
+                try:
+                    value = get_path(test.session_args, path)
+                except PathError as e:
+                    reason = str(e)
+                else:
+                    if value is not None:
+                        continue
+                    reason = "the value is null"
+                raise SpecError(
+                    f"suites[{i}].tests[{j}].session.args: {at} uses "
+                    f"'{{{{test.args.{path}}}}}': {reason}"
+                )
+
+
+def _check_history_seeded(agent: AgentConfig, suites: list[Suite]) -> None:
+    """A test with a ``history`` needs something that hands it to the agent (HB-24).
+
+    Without it, the test would start from an empty conversation while its spec says it
+    starts in the middle of one: a pass there would not mean what it says. A session
+    setup seeds it: a command or an HTTP setup sees only its placeholders, so it must use
+    ``{{test.history}}``; a Python setup gets ``ctx.history``, and what it does with it
+    cannot be read here. An agent with no state of its own takes the conversation in
+    each request instead, through ``{{test.history}}`` in ``agent.request`` (v2). That
+    holds in a single-turn test only: from a conversation's second turn on, the request
+    would carry the history without the turns the test itself ran.
+    """
+    setup = agent.session.setup if agent.session is not None else None
+    if setup is None:
+        problem = (
+            "needs agent.session with a setup, which seeds it in the agent: without one the "
+            "test starts from an empty conversation"
+        )
+    elif isinstance(setup, PythonHook) or uses_placeholder(_hook_parts(setup), "test.history"):
+        return
+    else:
+        problem = (
+            "agent.session.setup does not use '{{test.history}}': a command or HTTP setup "
+            "sees only its placeholders, so the test would start from an empty conversation"
+        )
+    request = agent.request
+    in_request = uses_placeholder([request.headers, request.body], "test.history")
+    for i, suite in enumerate(suites):
+        for j, test in enumerate(suite.tests):
+            if not test.history or (in_request and len(test.turns or []) <= 1):
+                continue
+            if in_request:
+                problem = (
+                    "'{{test.history}}' in agent.request hands it on only in a single-turn "
+                    "test: from the second turn on, the request would carry it without the "
+                    "turns this test ran. Seed it in agent.session's setup instead"
+                )
+            raise SpecError(f"suites[{i}].tests[{j}].history: {problem}")
+
+
+def _hook_parts(hook: CommandHook | HttpHook) -> list[Any]:
+    """What a command or an HTTP hook sends: where its placeholders can be."""
+    if isinstance(hook, CommandHook):
+        return list(hook.argv)
+    return [hook.url, hook.headers, hook.body]
+
+
+def _parse_history(raw: dict[str, Any], where: str) -> list[dict[str, str]]:
+    """A test's ``history`` (HB-24): the conversation before its first message."""
+    if "history" not in raw:
+        return []
+    where = f"{where}.history"
+    items = raw["history"]
+    require_type(items, list, where, "must be a list of {role, content}")
+    if not items:
+        raise SpecError(f"{where}: is empty (leave it out for a conversation from the start)")
+    messages: list[dict[str, str]] = []
+    for k, item in enumerate(items):
+        at = f"{where}[{k}]"
+        require_type(item, dict, at, "must be a mapping with role and content")
+        check_keys(item, "history_message", at)
+        for key in ("role", "content"):
+            if key not in item:
+                raise SpecError(f"{at}: needs '{key}'")
+        if item["role"] not in ("user", "assistant"):
+            raise SpecError(f"{at}.role: must be user or assistant, got {item['role']!r}")
+        require_type(item["content"], str, f"{at}.content", "must be text")
+        if not item["content"]:
+            raise SpecError(f"{at}.content: cannot be empty")
+        messages.append({"role": item["role"], "content": item["content"]})
+    return messages
+
+
+def _parse_session_args(raw: dict[str, Any], where: str) -> dict[str, Any]:
+    """A test's own ``session: {args: {...}}`` (HB-9), for its hooks and its request."""
+    if "session" not in raw:
+        return {}
+    where = f"{where}.session"
+    session = raw["session"]
+    require_type(session, dict, where, "must be a mapping with 'args'")
+    check_keys(session, "test_session", where)
+    if "args" not in session:
+        raise SpecError(f"{where}: needs 'args', the values its hooks and its request read")
+    args = session["args"]
+    require_type(args, dict, f"{where}.args", "must be a mapping")
+    _json_value(args, f"{where}.args")
+    return dict(args)
+
+
+def _json_value(value: Any, where: str) -> None:
+    """``value`` is what JSON can say, with text keys: what a request or a hook carries."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise SpecError(f"{where}: {value} is not JSON")
+        return
+    if (mapping := as_dict(value)) is not None:
+        for key, item in mapping.items():
+            if not isinstance(key, str):
+                raise SpecError(f"{where}: the key {key!r} is not text (quote it)")
+            _json_value(item, f"{where}.{key}")
+        return
+    if (items := as_list(value)) is not None:
+        for index, item in enumerate(items):
+            _json_value(item, f"{where}[{index}]")
+        return
+    kind = "a date" if isinstance(value, date) else f"a {type(value).__name__}"
+    raise SpecError(f"{where}: {kind} is not JSON (quote it to keep it as text)")
 
 
 def _parse_runs(raw: Any, where: str) -> int:
@@ -170,7 +425,21 @@ def _parse_repetition(raw: dict[str, Any], where: str) -> dict[str, Any]:
         fields["runs"] = _parse_runs(raw["runs"], where)
     if "min_pass" in raw:
         fields["min_pass"] = _parse_min_pass(raw["min_pass"], where)
+    if "expect_status" in raw:
+        fields["expect_status"] = _parse_expect_status(raw["expect_status"], where)
     return fields
+
+
+def _parse_expect_status(value: Any, where: str) -> Status:
+    """``failed`` or ``error``: the state a negative control must end in (HB-21)."""
+    if value == "passed":
+        raise SpecError(f"{where}: expect_status: passed is what every test expects: leave it out")
+    if value not in ("failed", "error"):
+        raise SpecError(
+            f"{where}: expect_status must be failed or error (the state this negative "
+            f"control must end in), got {value!r}"
+        )
+    return Status(value)
 
 
 def _parse_budget(raw: Any, where: str) -> Budget:
@@ -233,17 +502,46 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
             f"{where}: startup_timeout only applies with 'start' "
             "(in attach mode highbar does not start the agent)"
         )
+    llm_proxy, llm_upstreams = _parse_llm_proxy(raw.get("llm_proxy", False))
+    if llm_proxy and not managed:
+        raise SpecError(
+            f"{where}: llm_proxy needs 'start': highbar points the agent's model client at "
+            "the proxy through the environment it starts the agent with, and an agent it "
+            "attaches to is not its to set, and may serve other traffic"
+        )
     traces = None
+    trace_format = "highbar"
+    trace_tools: tuple[str, ...] | None = None
     if "traces" in raw:
         if managed:
             raise SpecError(
                 f"{where}: 'traces' is for attach mode; with 'start', highbar creates the "
                 "trace file and passes it to the agent in HIGHBAR_TRACES_URL"
             )
-        traces = _required_text(raw, "traces")
+        traces, trace_format, trace_tools = _parse_traces(raw)
+    if trace_format == "otlp" and "correlate" in raw:
+        raise SpecError(
+            "agent.correlate: with traces.format: otlp, a span belongs to the test whose "
+            "trace id it carries (highbar sends it in traceparent); remove agent.correlate"
+        )
+    for key, text in (("start", start), ("traces", traces)):
+        # Run values are the first that exist before the agent starts (review of #61): the
+        # agent would get the braces as written.
+        if found := placeholders.owned(text or ""):
+            raise SpecError(
+                f"agent.{key}: '{found[0]}' is not resolved here, so it would be used as "
+                "written; pass the value in agent.request, or have agent.run.setup write "
+                "it where the agent reads it"
+            )
 
-    session = _parse_session(raw["session"]) if "session" in raw else None
+    # What agent.run.setup returns is {{run.*}} (HB-10): known before any session.
+    run_raw = as_dict(raw.get("run"))
+    has_run = run_raw is not None and "setup" in run_raw
+    session = _parse_session(raw["session"], has_run) if "session" in raw else None
     has_session = session is not None
+    read_result = placeholders.reads(
+        [raw.get(key) for key in ("request", "session", "correlate", "run")], "run"
+    )
 
     return AgentConfig(
         endpoint=endpoint,
@@ -252,12 +550,18 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
         startup_timeout=_milliseconds(raw, "startup_timeout", 15000, minimum=1),
         settle_time=_milliseconds(raw, "settle_time", 500, minimum=0),
         timeout=_milliseconds(raw, "timeout", 60000, minimum=1),
-        request=_parse_request(raw.get("request"), has_session),
+        request=_parse_request(raw.get("request"), has_session, has_run),
         response=_parse_response_path(raw["response"]) if "response" in raw else None,
+        reply=_parse_reply(raw),
+        llm_proxy=llm_proxy,
+        llm_proxy_upstreams=llm_upstreams,
         traces=traces,
+        trace_format=trace_format,
+        trace_tools=trace_tools,
         session=session,
+        run=_parse_run(raw["run"], read_result) if "run" in raw else None,
         correlate=(
-            _parse_correlate(raw["correlate"], has_session)
+            _parse_correlate(raw["correlate"], has_session, has_run)
             if "correlate" in raw
             else {"test": "{{test.id}}"}
         ),
@@ -272,7 +576,8 @@ def _expand_env(value: Any, where: str, found: dict[str, str]) -> Any:
 
     A missing variable is an error that names it: an empty token would send
     ``Authorization: Bearer `` and read as the agent refusing a correct request.
-    Each value expanded goes in ``found``, to be masked in every message.
+    Each value expanded where a secret goes (``_secret_place``) goes in ``found``, to be
+    masked in every message.
     """
     if (mapping := as_dict(value)) is not None:
         return {key: _expand_env(item, f"{where}.{key}", found) for key, item in mapping.items()}
@@ -285,10 +590,167 @@ def _expand_env(value: Any, where: str, found: dict[str, str]) -> Any:
         name = match.group(1)
         if name not in os.environ:
             raise SpecError(f"{where}: environment variable {name} is not set")
-        found[os.environ[name]] = name
-        return os.environ[name]
+        expanded = os.environ[name]
+        if _secret_place(where, value, match.start()):
+            found[expanded] = name
+        return expanded
 
     return _ENV_VAR.sub(variable, value)
+
+
+# Where tokens go: everything highbar sends to the agent or to a session or run hook,
+# besides the URL. A command hook's line is how it passes its own token on.
+_SECRET_BLOCKS = ("agent.request", "agent.session", "agent.run")
+_URLS = ("agent.endpoint", "agent.health")
+
+
+def _secret_place(where: str, text: str, at: int) -> bool:
+    """Whether ``${NAME}`` at ``at`` in ``text``, the value at ``where``, is a secret (HB-6).
+
+    A token goes in a header, a body, a session hook or a URL's query, and those values
+    are masked. The traces path, the start command, ``correlate`` and a URL's host and
+    path are shown: masked, they made the trace file's "does not exist" unreadable.
+    A value masked in one place is masked everywhere it appears.
+    """
+    for block in _SECRET_BLOCKS:
+        if where == block or where.startswith((f"{block}.", f"{block}[")):
+            return True
+    return where in _URLS and _secret_in_url(text, at)
+
+
+def _secret_in_url(url: str, at: int) -> bool:
+    """A variable in a URL's userinfo (a password), query (an API key) or fragment is a
+    secret; the scheme, host, port and path are shown.
+
+    The URL is read twice. As the spec wrote it: a variable before an ``@`` (the first of
+    ``@ / ? #`` after it, in the spec's own text) is a password, and one after a ``?`` or
+    ``#`` is a query or a fragment, whatever its value holds, so a ``/`` in a password
+    does not make it a host. With its values in, as it is sent: a ``?``, ``#`` or ``//``
+    that a value brings moves the parts as it would for the agent, and a variable whose
+    value touches a secret part is a secret. A value with an ``@`` in it, and a URL that
+    is not ``scheme://host`` with nothing odd in it (a space, a control character, a
+    backslash), cannot be read the way every client would read it: all its variables are
+    secrets.
+    """
+    if any("@" in os.environ.get(m.group(1), "") for m in _ENV_VAR.finditer(url)):
+        return True
+    if _secret_as_written(url, at):
+        return True
+    whole, spans = _url_with_values(url)
+    regions = _secret_regions(whole)
+    if regions is None:
+        return True
+    start, end = spans[at]
+    return any(start < stop and begin < end for begin, stop in regions)
+
+
+def _secret_as_written(url: str, at: int) -> bool:
+    """Whether the spec's own text, its values left out, puts the variable at ``at``
+    before an ``@`` or after a ``?`` or ``#``."""
+    match = _ENV_VAR.match(url, at)
+    after = _ENV_VAR.sub("", url[match.end() :]) if match else ""
+    before = _ENV_VAR.sub("", url[:at])
+    if "?" in before or "#" in before:
+        return True
+    delimiter = re.search(r"[@/?#]", after)
+    return delimiter is not None and delimiter.group() == "@"
+
+
+def _url_with_values(url: str) -> tuple[str, dict[int, tuple[int, int]]]:
+    """``url`` with each ``${NAME}`` replaced, and where each one's value lands in it."""
+    pieces: list[str] = []
+    spans: dict[int, tuple[int, int]] = {}
+    length = written = 0
+    for match in _ENV_VAR.finditer(url):
+        pieces.append(url[written : match.start()])
+        length += match.start() - written
+        value = os.environ.get(match.group(1), "")
+        spans[match.start()] = (length, length + len(value))
+        pieces.append(value)
+        length += len(value)
+        written = match.end()
+    pieces.append(url[written:])
+    return "".join(pieces), spans
+
+
+def _secret_regions(url: str) -> list[tuple[int, int]] | None:
+    """Where ``url`` holds its userinfo and its query and fragment, or ``None`` when it
+    cannot be read with certainty."""
+    if any(c.isspace() or ord(c) < 32 or ord(c) == 127 or c == "\\" for c in url):
+        return None
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # an IPv6 host without its closing bracket
+        return None
+    host_at = url.find("//") + 2
+    if not parts.scheme or not parts.netloc:
+        return None
+    if url[host_at : host_at + len(parts.netloc)] != parts.netloc:
+        return None
+    path_at = host_at + len(parts.netloc)
+    if url[path_at : path_at + len(parts.path)] != parts.path:
+        return None
+    regions = [(path_at + len(parts.path), len(url))]
+    userinfo, at_sign, _ = parts.netloc.rpartition("@")
+    if at_sign:
+        regions.append((host_at, host_at + len(userinfo) + 1))
+    return regions
+
+
+def _parse_traces(raw: dict[str, Any]) -> tuple[str, str, tuple[str, ...] | None]:
+    """``agent.traces``: a path, or ``{path, format, tools}`` (HB-48). The format is
+    highbar's own contract unless it says ``otlp``; ``tools`` lists an OTLP agent's tools."""
+    if isinstance(raw["traces"], str):
+        return _required_text(raw, "traces"), "highbar", None
+    where = "agent.traces"
+    traces = as_dict(raw["traces"])
+    if traces is None:
+        raise SpecError(
+            f"agent: traces must be a path, or a mapping with path and format, "
+            f"got {type(raw['traces']).__name__}"
+        )
+    check_keys(traces, "traces", where)
+    if "path" not in traces:
+        raise SpecError(f"{where}: missing 'path' (the file the agent's traces are written to)")
+    path = traces["path"]
+    require_type(path, str, where, "path must be a string")
+    if not path.strip():
+        raise SpecError(f"{where}: path cannot be empty")
+    raw_format = traces.get("format", "highbar")
+    require_type(raw_format, str, f"{where}.format", "must be a string")
+    trace_format = str(raw_format)
+    if trace_format not in TRACE_FORMATS:
+        close = difflib.get_close_matches(trace_format, TRACE_FORMATS, n=1, cutoff=0.5)
+        hint = f" — did you mean '{close[0]}'?" if close else ""
+        raise SpecError(
+            f"{where}.format: unknown format '{trace_format}'{hint} "
+            f"(formats: {', '.join(TRACE_FORMATS)})"
+        )
+    tools = _parse_trace_tools(traces["tools"]) if "tools" in traces else None
+    if tools is not None and trace_format != "otlp":
+        raise SpecError(
+            f"{where}.tools: only with format: otlp; an agent that writes highbar's own "
+            "contract declares its tools itself (hb.declare, or a `tools` record)"
+        )
+    return path, trace_format, tools
+
+
+def _parse_trace_tools(raw: Any) -> tuple[str, ...]:
+    """``agent.traces.tools`` (review of #98): an OTLP file declares no tools, so the spec
+    says which the agent has. A guardrail on a name not listed cannot be verified."""
+    where = "agent.traces.tools"
+    names = as_list(raw)
+    if names is None:
+        raise SpecError(f"{where}: must be a list of tool names, got {type(raw).__name__}")
+    tools: list[str] = []
+    for name in names:
+        if not isinstance(name, str) or not name.strip():
+            got = f", got {type(name).__name__}" if not isinstance(name, str) else ""
+            raise SpecError(f"{where}: each tool must be a non-empty string{got}")
+        if name in tools:
+            raise SpecError(f"{where}: '{name}' is listed twice")
+        tools.append(name)
+    return tuple(tools)
 
 
 def _required_text(raw: dict[str, Any], key: str) -> str:
@@ -299,7 +761,7 @@ def _required_text(raw: dict[str, Any], key: str) -> str:
     return value
 
 
-def _parse_request(raw: Any, has_session: bool) -> RequestConfig:
+def _parse_request(raw: Any, has_session: bool, has_run: bool) -> RequestConfig:
     if raw is None:
         return RequestConfig()
     where = "agent.request"
@@ -311,9 +773,33 @@ def _parse_request(raw: Any, has_session: bool) -> RequestConfig:
     if method.upper() not in ("POST", "PUT", "PATCH"):
         raise SpecError(f"{where}: method must be POST, PUT or PATCH, got {method!r}")
 
-    headers = raw.get("headers", {})
-    require_type(headers, dict, where, "headers must be a mapping")
-    for name, value in headers.items():
+    headers = _parse_headers(raw.get("headers", {}), where)
+
+    body = raw.get("body", RequestConfig().body)
+    # A misspelled placeholder is reported as such, before "never uses {{message}}".
+    for part, value in (("headers", headers), ("body", body)):
+        check_placeholders(
+            value,
+            f"{where}.{part}",
+            allowed=placeholders.ALL,
+            has_session=has_session,
+            has_run=has_run,
+        )
+    if not uses_placeholder(body, "message"):
+        raise SpecError(
+            f"{where}.body: never uses {{{{message}}}}, so the trigger would not be sent"
+        )
+    return RequestConfig(method=method.upper(), headers=dict(headers), body=body)
+
+
+def _parse_headers(raw: Any, where: str) -> dict[str, str]:
+    require_type(raw, dict, where, "headers must be a mapping")
+    for name, value in raw.items():
+        if not str(name).isascii():
+            raise SpecError(
+                f"{where}.headers: the header name {name!r} has characters outside ASCII, "
+                "which a header cannot carry"
+            )
         if not isinstance(value, str):
             raise SpecError(
                 f"{where}.headers: {name} must be a string (quote it), got {type(value).__name__}"
@@ -324,18 +810,7 @@ def _parse_request(raw: Any, has_session: bool) -> RequestConfig:
                 f"{where}.headers.{name}: the value has a control character or leading or "
                 "trailing whitespace (often a secret read with its newline); not shown"
             )
-
-    body = raw.get("body", RequestConfig().body)
-    # A misspelled placeholder is reported as such, before "never uses {{message}}".
-    check_placeholders(
-        headers, f"{where}.headers", allowed=placeholders.ALL, has_session=has_session
-    )
-    check_placeholders(body, f"{where}.body", allowed=placeholders.ALL, has_session=has_session)
-    if not uses_placeholder(body, "message"):
-        raise SpecError(
-            f"{where}.body: never uses {{{{message}}}}, so the trigger would not be sent"
-        )
-    return RequestConfig(method=method.upper(), headers=dict(headers), body=body)
+    return dict(raw)
 
 
 _RESPONSE_PATH = re.compile(r"[^.\s]+(?:\.[^.\s]+)*")
@@ -351,24 +826,89 @@ def _parse_response_path(raw: Any) -> str:
     return raw
 
 
-def _parse_session(raw: Any) -> SessionConfig:
+def _parse_llm_proxy(raw: Any) -> tuple[bool, dict[str, str]]:
+    """``agent.llm_proxy``: true or false, or the upstream of each provider (HB-30).
+
+    A mapping turns it on, and its URLs take the place of the environment's base URLs: an
+    agent that reads its own from a .env file has none in highbar's environment.
+    """
+    upstreams = as_dict(raw)
+    if upstreams is None:
+        if not isinstance(raw, bool):
+            raise SpecError(
+                "agent: llm_proxy must be true or false, or a mapping of provider to base "
+                f"URL ({{openai: <url>, anthropic: <url>}}), got {raw!r}"
+            )
+        return raw, {}
+    check_keys(upstreams, "llm_proxy", "agent.llm_proxy")
+    found: dict[str, str] = {}
+    for key in user_keys(upstreams):
+        url = upstreams[key]
+        require_type(url, str, "agent", f"llm_proxy.{key} must be a string (a base URL)")
+        _check_url(url, f"llm_proxy.{key}")
+        found[key] = url
+    return True, found
+
+
+def _parse_reply(raw: dict[str, Any]) -> str:
+    reply = raw.get("reply", "body")
+    if reply not in ("body", "turn"):
+        raise SpecError(
+            f"agent: reply must be 'body' or 'turn' (the turn record's response, for an "
+            f"agent that answers later), got {reply!r}"
+        )
+    if reply == "turn" and "response" in raw:
+        raise SpecError(
+            "agent: agent.response is a path in the HTTP body, which agent.reply: turn "
+            "does not read: the reply is the turn record's response. Remove one of them"
+        )
+    return reply
+
+
+def _parse_session(raw: Any, has_run: bool) -> SessionConfig:
     where = "agent.session"
     require_type(raw, dict, where, "must be a mapping with setup and/or teardown")
     check_keys(raw, "session", where)
     if "setup" not in raw and "teardown" not in raw:
         raise SpecError(f"{where}: needs setup or teardown")
     return SessionConfig(
-        setup=_parse_hook(raw["setup"], f"{where}.setup", placeholders.SETUP)
+        setup=_parse_hook(raw["setup"], f"{where}.setup", placeholders.SETUP, has_run=has_run)
         if "setup" in raw
         else None,
-        teardown=_parse_hook(raw["teardown"], f"{where}.teardown", placeholders.TEARDOWN)
+        teardown=_parse_hook(
+            raw["teardown"], f"{where}.teardown", placeholders.TEARDOWN, has_run=has_run
+        )
         if "teardown" in raw
         else None,
     )
 
 
-def _parse_hook(raw: Any, where: str, allowed: frozenset[str]) -> Hook:
-    """A command (text, split like a shell would, run without one) or ``{python: ...}``."""
+def _parse_run(raw: Any, read_result: bool) -> RunConfig:
+    """Hooks once per spec, around the run (HB-10). They belong to no test, so no test's
+    placeholder: a ``{{test.id}}`` there would have nothing to stand for. The teardown
+    reads what the setup returned, ``{{run.*}}`` (v1)."""
+    where = "agent.run"
+    require_type(raw, dict, where, "must be a mapping with setup and/or teardown")
+    check_keys(raw, "run", where)
+    if "setup" not in raw and "teardown" not in raw:
+        raise SpecError(f"{where}: needs setup or teardown")
+    return RunConfig(
+        setup=_parse_hook(raw["setup"], f"{where}.setup", frozenset()) if "setup" in raw else None,
+        teardown=_parse_hook(
+            raw["teardown"],
+            f"{where}.teardown",
+            placeholders.RUN_TEARDOWN,
+            has_run="setup" in raw,
+        )
+        if "teardown" in raw
+        else None,
+        read_result=read_result,
+    )
+
+
+def _parse_hook(raw: Any, where: str, allowed: frozenset[str], *, has_run: bool = False) -> Hook:
+    """A command (text, split like a shell would, run without one), ``{python: ...}`` or
+    ``{http: {url, method, headers, body}}``."""
     if isinstance(raw, str):
         try:
             argv = shlex.split(raw)
@@ -376,11 +916,17 @@ def _parse_hook(raw: Any, where: str, allowed: frozenset[str]) -> Hook:
             raise SpecError(f"{where}: not a valid command line: {e}") from None
         if not argv:
             raise SpecError(f"{where}: cannot be empty")
-        check_placeholders(argv, where, allowed=allowed, has_session=True)
+        check_placeholders(argv, where, allowed=allowed, has_session=True, has_run=has_run)
         return CommandHook(argv=argv)
 
-    require_type(raw, dict, where, "must be a command or {python: 'module:function'}")
-    check_keys(raw, "python_hook", where)
+    require_type(
+        raw, dict, where, "must be a command, {python: 'module:function'} or {http: {url: ...}}"
+    )
+    check_keys(raw, "hook", where)
+    if "python" in raw and "http" in raw:
+        raise SpecError(f"{where}: a hook is either python or http, not both")
+    if "http" in raw:
+        return _parse_http_hook(raw["http"], f"{where}.http", allowed, has_run)
     target = raw.get("python")
     require_type(target, str, where, "python must be 'module:function'")
     module, colon, function = target.partition(":")
@@ -389,7 +935,43 @@ def _parse_hook(raw: Any, where: str, allowed: frozenset[str]) -> Hook:
     return PythonHook(target=target)
 
 
-def _parse_correlate(raw: Any, has_session: bool) -> dict[str, Any]:
+_HOOK_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
+
+def _parse_http_hook(raw: Any, where: str, allowed: frozenset[str], has_run: bool) -> HttpHook:
+    """A request highbar sends itself, so it can run away from the agent's image (HB-13)."""
+    require_type(raw, dict, where, "http must be a mapping with a url")
+    check_keys(raw, "http_hook", where)
+    if "url" not in raw:
+        raise SpecError(f"{where}: missing 'url' (where the hook sends its request)")
+    url = raw["url"]
+    require_type(url, str, where, "url must be a string")
+    if not url.lower().startswith(("http://", "https://")):
+        # The value is not shown: it may hold a ${VAR}.
+        raise SpecError(f"{where}: url must start with http:// or https://")
+    if "{{" in url.split("://", 1)[1].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]:
+        # A value there would choose the host the hook's headers go to.
+        raise SpecError(
+            f"{where}: placeholders go in the URL's path and query, not in its scheme or host"
+        )
+
+    method = raw.get("method", "POST")
+    require_type(method, str, where, "method must be a string")
+    if method.upper() not in _HOOK_METHODS:
+        raise SpecError(
+            f"{where}: method must be one of {', '.join(_HOOK_METHODS)}, got {method!r}"
+        )
+
+    headers = _parse_headers(raw.get("headers", {}), where)
+    body = raw.get("body")
+    for part, value in (("url", url), ("headers", headers), ("body", body)):
+        check_placeholders(
+            value, f"{where}.{part}", allowed=allowed, has_session=True, has_run=has_run
+        )
+    return HttpHook(url=url, method=method.upper(), headers=headers, body=body)
+
+
+def _parse_correlate(raw: Any, has_session: bool, has_run: bool) -> dict[str, Any]:
     where = "agent.correlate"
     correlate = as_dict(raw)
     if not correlate:
@@ -400,13 +982,31 @@ def _parse_correlate(raw: Any, has_session: bool) -> dict[str, Any]:
     for key, value in correlate.items():
         if isinstance(value, bool) or not isinstance(value, (str, int, float)):
             raise SpecError(f"{where}.{key}: must be text, a number or a placeholder")
-    check_placeholders(correlate, where, allowed=placeholders.ALL, has_session=has_session)
+    check_placeholders(
+        correlate, where, allowed=placeholders.ALL, has_session=has_session, has_run=has_run
+    )
     return dict(correlate)
 
 
 def _check_url(url: str, key: str) -> None:
     """An http(s) URL with a host. Without a scheme, `localhost:8000/chat` reads as port 80."""
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        # urlsplit refuses a bracket that is not a pair around an IP address, and a
+        # character whose NFKC form is / ? # @ or : in the host part (HB-41). Its own
+        # message quotes that part, a password included: it is never shown.
+        if "[" in url or "]" in url:
+            reason = (
+                'a "[" or "]" goes only around an IPv6 host; in a user or a password, '
+                "write it as %5B or %5D"
+            )
+        else:
+            reason = (
+                "a character in its host or password reads as / ? # @ or : once "
+                "normalized (a fullwidth slash, for one); percent-encode it"
+            )
+        raise SpecError(f"agent: {key} is not a valid URL: {reason}: {url!r}") from None
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise SpecError(f"agent: {key} must be an http:// or https:// URL, got {url!r}")
     try:
@@ -502,16 +1102,23 @@ def _parse_test(raw: Any, where: str) -> Test:
     if "turns" in raw:
         if "trigger" in raw:
             raise SpecError(f"{where}: a test has either 'trigger' or 'turns', not both")
-        if raw.get("variations"):
-            # Paraphrasing turn 1 would leave the later turns answering a conversation
-            # that no longer happened. Multi-turn variations need a design of their own.
-            raise SpecError(f"{where}: 'variations' is not supported on multi-turn tests")
+        if "variations" in raw:
+            # Which turn's trigger the paraphrases replace is the whole question: a
+            # paraphrase of turn 1 leaves the later turns answering another conversation.
+            raise SpecError(
+                f"{where}: on a multi-turn test, 'variations' goes on its last turn "
+                "(turns[-1].variations), the one paraphrased"
+            )
         expect = _parse_conversation_expect(raw, where)
+        turns = _parse_turns(raw["turns"], where, budgeted=expect is not None)
         return Test(
-            turns=_parse_turns(raw["turns"], where, budgeted=expect is not None),
+            turns=turns,
+            variations=_last_turn_variations(raw["turns"], turns, where),
             expect=expect,
             name=name,
             id=_optional_id(raw, where),
+            session_args=_parse_session_args(raw, where),
+            history=_parse_history(raw, where),
             tags=_parse_tags(raw, where),
             **_parse_repetition(raw, where),
         )
@@ -530,6 +1137,8 @@ def _parse_test(raw: Any, where: str) -> Test:
         variations=variations,
         name=name,
         id=_optional_id(raw, where),
+        session_args=_parse_session_args(raw, where),
+        history=_parse_history(raw, where),
         tags=_parse_tags(raw, where),
         **_parse_repetition(raw, where),
     )
@@ -580,12 +1189,35 @@ def _parse_turn(raw: Any, where: str) -> Turn:
     return Turn(trigger=trigger, expect=expect, name=_optional_name(raw, where))
 
 
+def _last_turn_variations(raw: list[Any], turns: list[Turn], where: str) -> int:
+    """How many paraphrases of a conversation's last turn its test asks for (HB-16).
+
+    Only that turn's trigger changes; the turns before it are sent as written. v0
+    paraphrases the last turn, the elliptic follow-up ("and the deadline?").
+    """
+    last = len(raw) - 1
+    for k, turn in enumerate(raw[:-1]):
+        if isinstance(turn, dict) and "variations" in turn:
+            raise SpecError(
+                f"{where}.turns[{k}]: 'variations' goes on the last turn only: the turns "
+                "after a paraphrase would answer a conversation that did not happen"
+            )
+    count = _parse_variations(raw[last].get("variations"), f"{where}.turns[{last}]")
+    if count and (template := placeholders.PLACEHOLDER.search(turns[last].trigger)):
+        raise SpecError(
+            f"{where}.turns[{last}]: a trigger with '{template.group(0)}' cannot have "
+            "variations: a paraphrase can drop it or change it"
+        )
+    return count
+
+
 def _asserts_something(expect: Expect) -> bool:
     return (
         expect.function_calls is not None
         or expect.response is not None
         or bool(expect.forbid)
         or expect.budget is not None
+        or expect.check is not None
     )
 
 
@@ -603,8 +1235,8 @@ def _parse_expect(raw: Any, where: str) -> Expect:
     check_keys(raw, "expect", where)
     if not user_keys(raw):
         raise SpecError(
-            f"{where}: asserts nothing — use function_calls, response, forbid, budget, or "
-            "function_calls: [] to check that no tool is called"
+            f"{where}: asserts nothing — use function_calls, response, forbid, budget, check, "
+            "or function_calls: [] to check that no tool is called"
         )
 
     function_calls = None
@@ -636,19 +1268,151 @@ def _parse_expect(raw: Any, where: str) -> Expect:
         response = _parse_response(raw["response"], where)
 
     budget = _parse_budget(raw["budget"], where) if "budget" in raw else None
+    check = _parse_check(raw["check"], f"{where}.check") if "check" in raw else None
+    llm = _parse_llm(raw["llm"], f"{where}.llm") if "llm" in raw else None
+    retrieval = (
+        _parse_retrieval(raw["retrieval"], f"{where}.retrieval") if "retrieval" in raw else None
+    )
 
     return Expect(
-        function_calls=function_calls, response=response, forbid=forbid, budget=budget, **flags
+        function_calls=function_calls,
+        response=response,
+        forbid=forbid,
+        budget=budget,
+        check=check,
+        llm=llm,
+        retrieval=retrieval,
+        **flags,
     )
+
+
+def _parse_llm(raw: Any, where: str) -> LlmExpect:
+    """``expect.llm`` (HB-11): the test's calls to the model, from its `llm` records."""
+    require_type(raw, dict, where, "llm must be a mapping")
+    check_keys(raw, "llm", where)
+    if not user_keys(raw):
+        raise SpecError(f"{where}: llm checks nothing (use model, fallback, last_role, max_calls)")
+    model: dict[str, Any] | None = None
+    if "model" in raw:
+        value = raw["model"]
+        if isinstance(value, str) and value:
+            model = {"equals": value}
+        else:
+            matcher = as_dict(value)
+            if matcher is None:
+                raise SpecError(f"{where}: model must be a name or a text matcher")
+            model = {}
+            for key, operand in matcher.items():
+                if key not in TEXT_MATCHER_KEYS:
+                    raise SpecError(
+                        f"{where}.model: unknown matcher {key!r} "
+                        f"(use {', '.join(sorted(TEXT_MATCHER_KEYS))})"
+                    )
+                if not isinstance(operand, str) or not operand:
+                    raise SpecError(f"{where}.model: {key} must be a non-empty string")
+                if key in REGEX_KEYS:
+                    try:
+                        re.compile(operand)
+                    except re.error as e:
+                        raise SpecError(f"{where}.model.{key}: invalid regex: {e}") from None
+                model[key] = operand
+            if not model:
+                raise SpecError(f"{where}.model: no matcher")
+    fallback = raw.get("fallback")
+    if "fallback" in raw:
+        require_type(fallback, bool, where, "fallback must be true or false")
+    last_role = raw.get("last_role")
+    if "last_role" in raw and (not isinstance(last_role, str) or not last_role):
+        raise SpecError(f"{where}: last_role must be a role name, like system")
+    max_calls = raw.get("max_calls")
+    if "max_calls" in raw and (
+        isinstance(max_calls, bool) or not isinstance(max_calls, int) or max_calls < 1
+    ):
+        raise SpecError(f"{where}: max_calls must be a whole number of at least 1")
+    return LlmExpect(model=model, fallback=fallback, last_role=last_role, max_calls=max_calls)
+
+
+RETRIEVAL_SOURCES = ("expanded", "retrieved", "sticky")
+
+
+def _parse_retrieval(raw: Any, where: str) -> RetrievalExpect:
+    """``expect.retrieval`` (HB-3): what entered the prompt, from `retrieval` records."""
+    require_type(raw, dict, where, "retrieval must be a mapping")
+    check_keys(raw, "retrieval", where)
+    if not user_keys(raw):
+        raise SpecError(
+            f"{where}: retrieval checks nothing "
+            "(use includes, excludes, max_items, max_tokens, chunks_in_order)"
+        )
+    includes: list[ItemRef] = []
+    for n, entry in enumerate(_listed(raw, "includes", where)):
+        at = f"{where}.includes[{n}]"
+        if isinstance(entry, str) and entry:
+            includes.append(ItemRef(entry))
+            continue
+        mapping = as_dict(entry)
+        if mapping is None:
+            raise SpecError(f"{at}: a document is an id or title, or {{id, title, source}}")
+        check_keys(mapping, "retrieval_item", at)
+        key = mapping.get("id", mapping.get("title"))
+        if not isinstance(key, str) or not key:
+            raise SpecError(f"{at}: needs 'id' or 'title'")
+        source = mapping.get("source")
+        if source is not None and source not in RETRIEVAL_SOURCES:
+            raise SpecError(f"{at}: source must be one of {', '.join(RETRIEVAL_SOURCES)}")
+        includes.append(ItemRef(key, source))
+    excludes = _listed(raw, "excludes", where)
+    if not all(isinstance(key, str) and key for key in excludes):
+        raise SpecError(f"{where}: excludes must be a list of ids or titles")
+    bounds: dict[str, int | None] = {}
+    for key, least in (("max_items", 0), ("max_tokens", 1)):
+        value = raw.get(key)
+        if key in raw and (isinstance(value, bool) or not isinstance(value, int) or value < least):
+            raise SpecError(f"{where}: {key} must be a whole number of at least {least}")
+        bounds[key] = value
+    in_order = raw.get("chunks_in_order", False)
+    if "chunks_in_order" in raw and in_order is not True:
+        raise SpecError(f"{where}: chunks_in_order can only be true (leave it out otherwise)")
+    return RetrievalExpect(
+        includes=tuple(includes),
+        excludes=tuple(str(key) for key in excludes),
+        max_items=bounds["max_items"],
+        max_tokens=bounds["max_tokens"],
+        chunks_in_order=bool(in_order),
+    )
+
+
+def _listed(raw: dict[str, Any], key: str, where: str) -> list[Any]:
+    if key not in raw:
+        return []
+    items = as_list(raw[key])
+    if not items:
+        raise SpecError(f"{where}: {key} must be a list with at least one entry")
+    return items
+
+
+def _parse_check(raw: Any, where: str) -> str:
+    """``{python: "module:function"}``: the author's own check of the turn (HB-12)."""
+    require_type(raw, dict, where, "check must be {python: 'module:function'}")
+    check_keys(raw, "check", where)
+    target = raw.get("python")
+    require_type(target, str, where, "python must be 'module:function'")
+    module, colon, function = target.partition(":")
+    if not colon or not module.strip() or not function.strip() or ":" in function:
+        raise SpecError(f"{where}: python must be 'module:function', got {target!r}")
+    return target
 
 
 def _parse_response(raw: Any, where: str) -> ResponseExpect:
     if raw is None or ((mapping := as_dict(raw)) is not None and not user_keys(mapping)):
-        raise SpecError(f"{where}: response has no matcher (use {', '.join(sorted(MATCHER_KEYS))})")
+        raise SpecError(
+            f"{where}: response has no matcher (use {', '.join(sorted(TEXT_MATCHER_KEYS))})"
+        )
     require_type(raw, dict, where, "response must be a mapping")
     response_where = f"{where}.response"
+    _refuse_bounds_on_text(raw, response_where, "the reply")
     check_keys(raw, "response", response_where)
-    matcher: dict[str, Any] = {key: value for key, value in raw.items() if key in MATCHER_KEYS}
+    matcher: dict[str, Any] = {key: value for key, value in raw.items() if key in TEXT_MATCHER_KEYS}
     for key, value in matcher.items():
         require_type(value, str, response_where, f"{key} must be a string")
         if not value and key != "equals":
@@ -685,17 +1449,44 @@ def _parse_function_call(raw: Any, where: str) -> FunctionCallExpect:
                 "here '{{...}}' would be compared as literal text"
             )
         # A malformed matcher must fail at `highbar validate`, not in the middle of a run.
-        try:
-            validate_expected(value, f"{where}.{field}")
-        except ValueError as e:
-            raise SpecError(str(e)) from None
+        # The keys at the top are argument names, as `subset_match` reads them: a tool
+        # may well take an argument called `gt` or `len`, so only their values are
+        # checked as expected values.
+        for name, expected in (as_dict(value) or {}).items():
+            try:
+                validate_expected(expected, f"{where}.{field}.{name}")
+            except ValueError as e:
+                raise SpecError(str(e)) from None
 
     return FunctionCallExpect(
         name=_parse_call_name(raw["name"], where),
         params=raw.get("params"),
         result=raw.get("result"),
+        returns=_parse_returns(raw, where),
         error=_parse_call_error(raw.get("error", False), where),
     )
+
+
+def _parse_returns(raw: dict[str, Any], where: str) -> Any:
+    """The whole return value, as any expected value (HB-37). None: not checked."""
+    if "returns" not in raw:
+        return None
+    value = raw["returns"]
+    if value is None:
+        raise SpecError(
+            f"{where}.returns: returns: null checks nothing; "
+            "to expect a null return, write {equals: null}"
+        )
+    if _has_template(value):
+        raise SpecError(
+            f"{where}.returns: templates are only resolved in triggers; "
+            "here '{{...}}' would be compared as literal text"
+        )
+    try:
+        validate_expected(value, f"{where}.returns")
+    except ValueError as e:
+        raise SpecError(str(e)) from None
+    return value
 
 
 def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
@@ -703,16 +1494,60 @@ def _parse_call_error(raw: Any, where: str) -> bool | dict[str, Any]:
     if isinstance(raw, bool):
         return raw
     matcher = as_dict(raw)
-    if not matcher or not set(matcher) <= MATCHER_KEYS:
+    if matcher:
+        _refuse_bounds_on_text(matcher, f"{where}.error", "an error")
+    if not matcher or not set(matcher) <= TEXT_MATCHER_KEYS:
         raise SpecError(
             f"{where}.error: error must be true, false or a matcher such as "
             '{contains: "Timeout"}; a bare text would be ambiguous between equals and contains'
         )
+    for key, operand in matcher.items():
+        if isinstance(operand, bool):
+            # A boolean is never text (HB-46): this check could never pass.
+            raise SpecError(
+                f"{where}.error.{key}: a boolean is not text, and an error is; "
+                f'write the text it must hold, such as {{{key}: "Timeout"}}'
+            )
+        if operand is None or isinstance(operand, dict | list):
+            # A null, a list or an object would be compared as its Python repr ("None",
+            # "[1, 2]"): never what an error says (reviews of #79 and #81).
+            # Named as the YAML author wrote it: null, or nothing after the colon.
+            shown = "an empty value (null)" if operand is None else f"{operand!r}"
+            raise SpecError(
+                f"{where}.error.{key}: {shown} is not text, and an error is; "
+                f'write the text it must hold, such as {{{key}: "Timeout"}}'
+            )
+        if key == "equals" and operand == "":
+            raise SpecError(
+                f"{where}.error.equals: an empty error is no error, so this never holds; "
+                "write error: false for a call that must not fail"
+            )
+        if key == "equals" and not isinstance(operand, str):
+            # equals compares as is, and an error is text: 1 never equals "1".
+            raise SpecError(
+                f"{where}.error.equals: {operand!r} is not text, and an error is; "
+                'write it as text, such as {equals: "1"}'
+            )
     try:
         validate_expected(matcher, f"{where}.error")
     except ValueError as e:
         raise SpecError(str(e)) from None
     return matcher
+
+
+def _refuse_bounds_on_text(raw: dict[Any, Any], where: str, what: str) -> None:
+    """Refuse the matchers that only values of params and result have.
+
+    A bound on a number or a list length, where the value is always text, never holds.
+    """
+    for key in raw:
+        if key in NUMBER_KEYS or key in LENGTH_KEYS:
+            raise SpecError(
+                f"{where}: '{key}' does not apply to {what}, which is text; "
+                "bounds and lengths go in the values of params and result"
+            )
+        if key in MATCHER_KEYS and key not in TEXT_MATCHER_KEYS:
+            raise SpecError(f"{where}: '{key}' works only in the values of params and result")
 
 
 def _has_template(value: Any) -> bool:

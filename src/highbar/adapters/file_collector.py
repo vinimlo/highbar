@@ -18,18 +18,36 @@ Rules of the contract (v1) that live here:
   writer that had its own ``usage`` field keeps working, and a budget on a value that
   was dropped ends in ``error``, never in a pass. A ``usage`` with nothing readable is
   remembered as such: alone it says nothing, but next to a readable one it was spent too.
+
+With ``trace_format="otlp"`` each line is OpenTelemetry's OTLP/JSON instead, mapped in
+``highbar.adapters.otlp`` (HB-48). The reading by offset and a bad line are the same.
 """
 
 from __future__ import annotations
 
+import glob
+import heapq
 import json
 import math
 import os
+import stat
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
 from highbar._narrow import as_dict, as_list
-from highbar.domain.models import Hello, Trace, TurnRecord, Usage, Window
+from highbar.adapters.otlp import OtlpLineError, add_otlp
+from highbar.domain.models import (
+    Hello,
+    LlmCall,
+    Retrieval,
+    RetrievedItem,
+    Trace,
+    TurnRecord,
+    Usage,
+    Window,
+)
+from highbar.engine.observation import AgentNotObservedError
 
 CONTRACT_VERSION = 1
 
@@ -39,6 +57,9 @@ _V0_FIELDS = frozenset(
 )
 
 _BACKWARD_CHUNK = 64 * 1024
+
+# Before the first `hello` of a file, no `bye` can end what it declared.
+_NO_HELLO = object()
 
 
 class TraceFormatError(ValueError):
@@ -58,10 +79,11 @@ class _BadLine(Exception):
 
 
 class FileTraceCollector:
-    """Reads trace records written to a JSONL file."""
+    """Reads trace records written to a JSONL file, in ``trace_format``."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, trace_format: str = "highbar") -> None:
         self._path = Path(path)
+        self._otlp = trace_format == "otlp"
 
     @property
     def path(self) -> Path:
@@ -78,6 +100,8 @@ class FileTraceCollector:
                 return _end_of_last_line(f)
         except FileNotFoundError:
             return 0
+        except OSError as e:
+            raise _unreadable(self._path, e) from None
 
     def collect(self, since: int) -> Window:
         """The records in the complete lines written after byte ``since``.
@@ -94,6 +118,8 @@ class FileTraceCollector:
                 data = f.read()
         except FileNotFoundError:
             return Window()
+        except OSError as e:
+            raise _unreadable(self._path, e) from None
 
         complete = data[: data.rfind(b"\n") + 1]
         window = Window(end=start + len(complete))
@@ -101,7 +127,10 @@ class FileTraceCollector:
         problem: str | None = None
         for raw in complete.splitlines(keepends=True):
             try:
-                _add(window, raw)
+                if self._otlp:
+                    _add_otlp(window, raw)
+                else:
+                    _add(window, raw)
             except _BadLine as e:
                 if problem is None:
                     problem = f"{self._path} line {self._line_at(offset)}: {e}"
@@ -115,25 +144,36 @@ class FileTraceCollector:
 
         Read once at the start of a run, from the whole file: an agent declares its
         tools when it starts, before the first test's cursor. Declarations before the
-        last `hello` are an earlier process's, whose tools may since have changed. Only
-        `hello` and `tools` lines are parsed, one at a time, and a line that cannot be
-        read is skipped: it is history, which no test reads.
+        last `hello` are an earlier process's, whose tools may since have changed. A
+        `bye` with the pid of the last `hello` says that process ended, so what it
+        declared says nothing about the code running now: None (review of #52). Only
+        `hello`, `tools` and `bye` lines are parsed, one at a time, and a line that
+        cannot be read is skipped: it is history, which no test reads. OTLP declares
+        nothing (HB-48).
         """
+        if self._otlp:
+            return None
         current: set[str] | None = None
+        hello_pid: Any = _NO_HELLO
+        ended = False
         try:
             with open(self._path, "rb") as f:
                 for raw in f:
-                    if b'"hello"' not in raw and b'"tools"' not in raw:
+                    if b'"hello"' not in raw and b'"tools"' not in raw and b'"bye"' not in raw:
                         continue
                     try:
                         record = as_dict(json.loads(raw))
                     except ValueError:
                         continue
                     kind = record.get("type") if record is not None else None
-                    if record is None or kind not in ("hello", "tools"):
+                    if record is None or kind not in ("hello", "tools", "bye"):
+                        continue
+                    if kind == "bye":
+                        # Another process's end (a forked child's) ends nothing here.
+                        ended = ended or record.get("pid") == hello_pid
                         continue
                     if kind == "hello":
-                        current = None
+                        current, hello_pid, ended = None, record.get("pid"), False
                         if "tools" not in record:
                             continue
                     try:
@@ -143,12 +183,151 @@ class FileTraceCollector:
                     current = set(names) if current is None else current | set(names)
         except FileNotFoundError:
             return None
-        return frozenset(current) if current is not None else None
+        except OSError as e:
+            raise _unreadable(self._path, e) from None
+        return frozenset(current) if current is not None and not ended else None
 
     def _line_at(self, offset: int) -> int:
         """The 1-based number of the line that starts at byte ``offset``."""
         with open(self._path, "rb") as f:
             return f.read(offset).count(b"\n") + 1
+
+
+def is_glob(path: str | Path) -> bool:
+    """Whether ``agent.traces`` names several files: a ``*``, ``?`` or ``[`` in it (HB-15)."""
+    return any(char in "*?[" for char in str(path))
+
+
+def trace_collector(
+    path: str | Path, *, trace_format: str = "highbar"
+) -> FileTraceCollector | GlobTraceCollector:
+    """The collector for ``agent.traces``: one file, or every file a glob matches.
+
+    A path that names a file is that file, a ``[`` in its name or not, as before HB-15.
+    """
+    if is_glob(path) and not Path(path).is_file():
+        return GlobTraceCollector(path, trace_format=trace_format)
+    return FileTraceCollector(path, trace_format=trace_format)
+
+
+class GlobTraceCollector:
+    """Reads the trace files a glob matches, one per process of the agent, as one (HB-15).
+
+    A server and its queue workers that share one file depend on appends that do not
+    interleave, which a bind mount on macOS does not promise. With ``{pid}`` in
+    ``HIGHBAR_TRACES_URL`` each process writes its own file, and this reads them all.
+
+    Each file is read by byte offset, as ``FileTraceCollector`` reads one. A checkpoint
+    is a number that stands for the offset of every file at that moment, and a file the
+    glob starts to match later is read from its start. The records of a read are put in
+    time order across files (a tool by when it ended, a turn and a hello by ``ts``), and
+    each file keeps its own order. A directory the glob matches is not a trace file, and
+    a link is another name for a file it matches: each file is read once.
+    """
+
+    def __init__(self, pattern: str | Path, *, trace_format: str = "highbar") -> None:
+        self._pattern = str(pattern)
+        self._format = trace_format
+        # Checkpoint 0 is every file from its start; each later one, the offsets it holds.
+        self._marks: list[dict[Path, int]] = [{}]
+        # Every name a checkpoint has held an offset for: the name a file is read by.
+        self._known: set[Path] = set()
+
+    @property
+    def path(self) -> Path:
+        return Path(self._pattern)
+
+    def missing(self) -> bool:
+        """No file matches: a wrong pattern, or no process of the agent has written yet."""
+        return not self._files()
+
+    def checkpoint(self) -> int:
+        files = self._files(self._known)
+        return self._mark({file: self._reader(file).checkpoint() for file in files})
+
+    def collect(self, since: int) -> Window:
+        """The records written in every file after checkpoint ``since``, in time order.
+
+        Raises ``TraceFormatError`` for the first line that cannot be read, with the
+        records of all the others, as one file does.
+        """
+        offsets = self._marks[since]
+        windows: list[Window] = []
+        ends: dict[Path, int] = {}
+        problem: TraceFormatError | None = None
+        for file in self._files(self._known):
+            reader = self._reader(file)
+            try:
+                window = reader.collect(since=offsets.get(file, 0))
+            except TraceFormatError as e:
+                problem = problem or e
+                window = e.window if e.window is not None else Window(end=reader.checkpoint())
+            windows.append(window)
+            ends[file] = window.end
+        merged = _merged(windows, end=self._mark(ends))
+        if problem is not None:
+            raise TraceFormatError(str(problem), merged)
+        return merged
+
+    def declared(self) -> frozenset[str] | None:
+        """The tools every process declared since its own last `hello`, together."""
+        found = [self._reader(file).declared() for file in self._files()]
+        declared = [names for names in found if names is not None]
+        return frozenset[str]().union(*declared) if declared else None
+
+    def _reader(self, file: Path) -> FileTraceCollector:
+        return FileTraceCollector(file, trace_format=self._format)
+
+    def _files(self, known: Collection[Path] = ()) -> list[Path]:
+        """Each file the glob matches, once, by one of its names (review of #52).
+
+        A link, or a second hard link, names a file already matched: read under both
+        names, each record would count twice. The name the run already reads it by is
+        kept, so a link made during the run does not read the file again from its start;
+        else the name that is not a link, else the first.
+        """
+        names: dict[tuple[int, int], Path] = {}
+        for path in sorted(map(Path, glob.glob(self._pattern))):
+            try:
+                status = path.stat()
+            except OSError:
+                continue
+            if not stat.S_ISREG(status.st_mode):
+                continue
+            identity = (status.st_dev, status.st_ino)
+            kept = names.get(identity)
+            if kept is None or _rank(path, known) < _rank(kept, known):
+                names[identity] = path
+        return sorted(names.values())
+
+    def _mark(self, offsets: dict[Path, int]) -> int:
+        self._marks.append(offsets)
+        self._known.update(offsets)
+        return len(self._marks) - 1
+
+
+def _rank(path: Path, known: Collection[Path]) -> tuple[bool, bool]:
+    """Which of two names of one file to read it by: lower first."""
+    return (path not in known, path.is_symlink())
+
+
+def _ended(tool: Trace) -> float:
+    """When a call ended, to merge files by; one whose times are unknown goes first."""
+    for moment in (tool.ended_at, tool.started_at):
+        if moment is not None:
+            return moment
+    return float("-inf")
+
+
+def _merged(windows: list[Window], *, end: int) -> Window:
+    """The records of several files' windows in time order, each file's order kept."""
+    return Window(
+        tools=list(heapq.merge(*(w.tools for w in windows), key=_ended)),
+        turns=list(heapq.merge(*(w.turns for w in windows), key=lambda turn: turn.ts)),
+        hellos=list(heapq.merge(*(w.hellos for w in windows), key=lambda hello: hello.ts)),
+        declarations=[names for w in windows for names in w.declarations],
+        end=end,
+    )
 
 
 class NoTraceCollector:
@@ -169,6 +348,25 @@ class NoTraceCollector:
         return False
 
 
+def _unreadable(path: Path, error: OSError) -> AgentNotObservedError:
+    """A trace path that is there but cannot be read: named, not a traceback (HB-15).
+
+    Docker makes a directory when a bind mount names a file that does not exist yet:
+    the most common way to get here, so it gets its own message.
+    """
+    where = path.absolute()
+    if isinstance(error, IsADirectoryError) or path.is_dir():
+        return AgentNotObservedError(
+            f"agent.traces {where} is a directory, not a file, so no test can see what the "
+            "agent does. Docker makes one when a bind mount names a file that does not exist "
+            "yet: remove it, create the file and start the agent again"
+        )
+    return AgentNotObservedError(
+        f"could not read agent.traces {where}: {error.strerror or error}, so no test can "
+        "see what the agent does"
+    )
+
+
 def _end_of_last_line(f: Any) -> int:
     """Offset after the last newline of an open binary file, reading it backwards."""
     position = f.seek(0, os.SEEK_END)
@@ -182,10 +380,8 @@ def _end_of_last_line(f: Any) -> int:
     return 0
 
 
-def _add(window: Window, raw: bytes) -> None:
-    """The record of one line, added whole or, if the line cannot be read, not at all."""
-    if not raw.strip():
-        return
+def _object(raw: bytes) -> dict[str, Any]:
+    """The JSON object of one line, or ``_BadLine``."""
     try:
         parsed: Any = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -194,6 +390,24 @@ def _add(window: Window, raw: bytes) -> None:
     record = as_dict(parsed)
     if record is None:
         raise _BadLine(f"not a JSON object, got {type(parsed).__name__}")
+    return record
+
+
+def _add_otlp(window: Window, raw: bytes) -> None:
+    """The spans of one OTLP line, added whole or, if the line cannot be read, not at all."""
+    if not raw.strip():
+        return
+    try:
+        add_otlp(window, _object(raw))
+    except OtlpLineError as e:
+        raise _BadLine(str(e)) from None
+
+
+def _add(window: Window, raw: bytes) -> None:
+    """The record of one line, added whole or, if the line cannot be read, not at all."""
+    if not raw.strip():
+        return
+    record = _object(raw)
 
     version = record.get("v")
     if version is None or (not isinstance(version, bool) and version == 0):
@@ -238,6 +452,10 @@ def _add(window: Window, raw: bytes) -> None:
             window.declarations.append(names)
     elif kind == "tools":
         window.declarations.append(_names(record, "names"))
+    elif kind == "llm":
+        window.llms.append(_llm(record))
+    elif kind == "retrieval":
+        window.retrievals.append(_retrieval(record))
     # Any other type is from a newer emitter: ignored, as the contract says.
 
 
@@ -259,6 +477,7 @@ def _tool(record: dict[str, Any], *, context: dict[str, Any]) -> Trace:
         fn=fn,
         args=args,
         result=record.get("result"),
+        has_result="result" in record,
         started_at=_number(record, "started_at", ts),
         ended_at=_number(record, "ended_at", ts),
         error=error,
@@ -320,6 +539,85 @@ def _names(record: dict[str, Any], key: str) -> tuple[str, ...]:
     if names is None or not all(isinstance(name, str) for name in names):
         raise _BadLine(f"'{key}' must be a list of tool names")
     return tuple(str(name) for name in names)
+
+
+def _llm(record: dict[str, Any]) -> LlmCall:
+    """One call to the model (HB-11). Only ``roles`` is strict: a check reads its order."""
+    raw_roles = record.get("roles")
+    roles: tuple[str, ...] | None = None
+    if raw_roles is not None:
+        items = as_list(raw_roles)
+        if items is None or not all(isinstance(role, str) for role in items):
+            raise _BadLine(f"'roles' must be a list of role names, got {raw_roles!r}")
+        roles = tuple(items)
+    error = record.get("error")
+    latency = record.get("latency_ms")
+    read = record.get("read")
+    if read is not None and not isinstance(read, bool):
+        # Read loosely, "no" would vouch for a count nobody read.
+        raise _BadLine(f"'read' must be true or false, got {read!r}")
+    return LlmCall(
+        ts=_number(record, "ts", 0.0),
+        context=_context(record),
+        model=_text(record.get("model")),
+        provider=_text(record.get("provider")),
+        attempt=_whole(record.get("attempt")),
+        fallback_from=_text(record.get("fallback_from")),
+        roles=roles,
+        input_tokens=_whole(record.get("input_tokens")),
+        output_tokens=_whole(record.get("output_tokens")),
+        cache_tokens=_whole(record.get("cache_tokens")),
+        latency_ms=_number(record, "latency_ms", 0.0) if latency is not None else None,
+        error=str(error) if error else None,  # false, "" and null all say "no error"
+        source=_text(record.get("source")),
+        read=read,
+        unread=_text(record.get("unread")),
+        cost=_cost(record.get("cost")),
+        currency=_currency(record.get("currency")),
+        call=_text(record.get("call")),
+    )
+
+
+def _retrieval(record: dict[str, Any]) -> Retrieval:
+    """What entered the prompt (HB-3). The items are strict: every check reads them."""
+    raw_items = record.get("items", [])
+    items = as_list(raw_items)
+    if items is None or not all(as_dict(item) is not None for item in items):
+        raise _BadLine(f"'items' must be a list of objects, got {raw_items!r}")
+    read: list[RetrievedItem] = []
+    for n, raw in enumerate(items):
+        item = as_dict(raw) or {}
+        if item.get("id") is None and item.get("title") is None:
+            raise _BadLine(f"items[{n}] has neither 'id' nor 'title': no check can name it")
+        raw_chunks = item.get("chunks", [])
+        chunks = as_list(raw_chunks)
+        if chunks is None or not all(_whole(chunk) is not None for chunk in chunks):
+            raise _BadLine(f"items[{n}].chunks must be a list of whole numbers, got {raw_chunks!r}")
+        read.append(
+            RetrievedItem(
+                id=_text(item.get("id")),
+                title=_text(item.get("title")),
+                source=_text(item.get("source")),
+                chunks=tuple(int(chunk) for chunk in chunks),
+                tokens=_whole(item.get("tokens")),
+            )
+        )
+    expired = as_list(record.get("expired")) or []
+    return Retrieval(
+        ts=_number(record, "ts", 0.0),
+        context=_context(record),
+        query=_text(record.get("query")),
+        search_query=_text(record.get("search_query")),
+        strategy=_text(record.get("strategy")),
+        skipped_reason=_text(record.get("skipped_reason")),
+        items=tuple(read),
+        expired=tuple(entry for entry in (as_dict(e) for e in expired) if entry is not None),
+        tokens=_whole(record.get("tokens")),
+    )
+
+
+def _whole(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _context(record: dict[str, Any]) -> dict[str, Any]:

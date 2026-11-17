@@ -6,6 +6,7 @@ import json
 import math
 import os
 import subprocess
+from dataclasses import replace
 from datetime import date
 from importlib import resources
 from pathlib import Path
@@ -309,6 +310,17 @@ class TestBody:
         execution["turns"][0]["tools"][0]["later"] = 1
 
         jsonschema.Draft202012Validator(_schema()).validate(data)
+
+    def test_hb21_a_negative_control_says_what_it_expected(self, workdir: Path) -> None:
+        control = replace(_test(), status=Status.PASSED, expect_status=Status.FAILED)
+        path = workdir / "report.json"
+
+        data = _finished(path, _spec_file(workdir), _summary(control, _test()))
+
+        first, second = data["specs"][0]["tests"]
+        assert (first["status"], first["expect_status"]) == ("passed", "failed")
+        assert second["expect_status"] is None
+        jsonschema.Draft202012Validator(_closed(_schema())).validate(data)
 
     def test_an_unfinished_report_matches_the_schema_too(self, workdir: Path) -> None:
         path = workdir / "report.json"

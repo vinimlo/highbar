@@ -414,6 +414,56 @@ class TestTheTestItStoppedIn:
         assert test.phrasings[0].status is Status.ERROR
         assert (summary.passed, summary.errored) == (0, 1)
 
+    def test_hb34_ac7_a_phrasing_that_failed_before_the_stop_makes_it_failed(self) -> None:
+        """His answer on 15/11, 13:11 ("Falhou", thread 4526841100): a known failure wins.
+
+        The trigger's three runs fail for real, then every reply is a 500: the run stops
+        in the second variation, and the test is failed, not error.
+        """
+        generator = MagicMock()
+        generator.generate.return_value = ["v1", "v2"]
+        agent = _Down("no", "no", "no", "500")
+
+        summary = _run(
+            [Case(trigger="t", expect=SAYS_OK, variations=2, runs=3)], agent, variations=generator
+        )
+
+        (test,) = summary.tests
+        assert [p.status for p in test.phrasings] == [Status.FAILED, Status.ERROR, Status.ERROR]
+        assert test.status is Status.FAILED
+        assert (summary.failed, summary.errored) == (1, 0)
+        assert test.errors[-1] == "the run stopped before this test ended: 8 of 9 executions ran"
+
+    def test_hb34_ac7_a_cut_phrasing_its_failures_already_sink_is_failed(self) -> None:
+        """runs 7, min_pass 7: one real failure means the phrasing can no longer pass."""
+        summary = _run([_test("a", runs=7, min_pass=7)], _Down("no", "500"))
+
+        (test,) = summary.tests
+        assert test.phrasings[0].status is Status.FAILED
+        assert test.status is Status.FAILED
+
+    def test_hb34_ac7_a_cut_phrasing_that_could_still_pass_is_an_error(self) -> None:
+        """One real failure, but 3 of the 4 runs left would still reach min_pass 3."""
+        summary = _run([_test("a", runs=10, min_pass=3)], _Down("no", "500"))
+
+        (test,) = summary.tests
+        assert test.phrasings[0].status is Status.ERROR
+        assert test.status is Status.ERROR
+
+    def test_hb34_ac7_a_passed_phrasing_before_the_stop_is_no_pass(self) -> None:
+        """The trigger passed every run; the variations never ended: unverified."""
+        generator = MagicMock()
+        generator.generate.return_value = ["v1", "v2"]
+        agent = _Down("ok", "ok", "ok", "500")
+
+        summary = _run(
+            [Case(trigger="t", expect=SAYS_OK, variations=2, runs=3)], agent, variations=generator
+        )
+
+        (test,) = summary.tests
+        assert test.phrasings[0].status is Status.PASSED
+        assert test.status is Status.ERROR
+
     def test_hb34_ac7_the_spec_it_stopped_in_is_not_complete(self) -> None:
         summary, complete = _ended([_test("a")], _Down("500"))
 

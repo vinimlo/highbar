@@ -192,6 +192,48 @@ class TestSelectionHelp:
             ), option
 
 
+class TestSelectionWithTheLlmProxy:
+    """HB-17 with HB-30: a spec with no test picked starts neither its agent nor its proxy,
+    and does not hold --jobs back."""
+
+    @staticmethod
+    def _proxied(project: Path) -> None:
+        proxied = (
+            textwrap.dedent(SPEC)
+            .replace("name: Menu", "name: Drinks")
+            .replace('  start: "true"\n', '  start: "drinks-agent"\n  llm_proxy: true\n')
+        )
+        (project / "specs" / "menu" / "drinks.highbar.yaml").write_text(proxied, "utf-8")
+
+    @pytest.mark.parametrize("jobs", ["1", "2"])
+    def test_hb17_a_proxied_spec_cut_whole_starts_no_agent_and_no_proxy(
+        self, project: Path, jobs: str
+    ) -> None:
+        self._proxied(project)
+
+        with (
+            patch("highbar.engine.run_spec.TestRunner") as fake,
+            patch("highbar.engine.run_spec.LlmProxy") as proxy,
+            patch("highbar.engine.run_spec.SubprocessAdapter") as adapter,
+        ):
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--suite", "Menu", "--jobs", jobs])
+
+        assert result.exit_code == 0, result.output
+        proxy.assert_not_called()
+        assert [call.kwargs["start_cmd"] for call in adapter.call_args_list] == ["true"]
+
+    def test_hb17_jobs_over_one_still_refuses_a_picked_proxied_spec(self, project: Path) -> None:
+        self._proxied(project)
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            result = runner.invoke(app, ["run", "specs/", "--suite", "Drinks", "--jobs", "2"])
+
+        assert result.exit_code == 2, result.output
+        assert "agent.llm_proxy" in result.output and "--jobs" in result.output
+        fake.assert_not_called()
+
+
 class TestExitCodes:
     def test_version_flag(self) -> None:
         result = runner.invoke(app, ["--version"])
@@ -230,6 +272,76 @@ class TestExitCodes:
 
         assert result.exit_code == 1, result.output
         assert "Total: 1 passed | 1 failed | 0.02s" in result.output
+
+
+class TestJobs:
+    """HB-8: --jobs is 1 unless given, and a count under 1 exits 2 before anything runs."""
+
+    @pytest.mark.parametrize(
+        ("args", "expected"), [([], 1), (["--jobs", "3"], 3), (["--jobs=2"], 2)]
+    )
+    def test_hb8_the_option_reaches_the_runner(
+        self, project: Path, args: list[str], expected: int
+    ) -> None:
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", *args])
+
+        assert result.exit_code == 0, result.output
+        assert fake.call_args.kwargs["jobs"] == expected
+
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_hb8_a_count_under_one_exits_2_before_anything_runs(
+        self, project: Path, value: str
+    ) -> None:
+        report = project / "report.json"
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            result = runner.invoke(
+                app, ["run", "specs/", f"--jobs={value}", "--report", f"json={report}"]
+            )
+
+        assert result.exit_code == 2, result.output
+        assert "--jobs must be a whole number of at least 1" in result.output
+        fake.assert_not_called()
+        data = json.loads(report.read_text(encoding="utf-8"))
+        assert (data["exit_code"], data["stopped"]["reason"]) == (2, "usage_error")
+
+
+class TestJobsWithTheLlmProxy:
+    """HB-30, P9: no test id goes out on the agent's model calls yet, so with more than one
+    test in flight the proxy could not tell whose call it saw."""
+
+    def test_hb30_jobs_over_one_with_llm_proxy_exits_2_before_anything_runs(
+        self, project: Path
+    ) -> None:
+        spec = project / "specs" / "menu" / "menu.highbar.yaml"
+        spec.write_text(SPEC.replace('  start: "true"\n', '  start: "true"\n  llm_proxy: true\n'))
+        report = project / "report.json"
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            result = runner.invoke(
+                app, ["run", "specs/", "--jobs", "2", "--report", f"json={report}"]
+            )
+
+        assert result.exit_code == 2, result.output
+        assert "agent.llm_proxy" in result.output and "--jobs" in result.output
+        fake.assert_not_called()
+        data = json.loads(report.read_text(encoding="utf-8"))
+        assert (data["exit_code"], data["stopped"]["reason"]) == (2, "usage_error")
+
+    def test_hb30_jobs_one_with_llm_proxy_runs(self, project: Path) -> None:
+        spec = project / "specs" / "menu" / "menu.highbar.yaml"
+        spec.write_text(SPEC.replace('  start: "true"\n', '  start: "true"\n  llm_proxy: true\n'))
+
+        with (
+            patch("highbar.engine.run_spec.TestRunner") as fake,
+            patch("highbar.engine.run_spec.LlmProxy"),
+        ):
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--jobs", "1"])
+
+        assert result.exit_code == 0, result.output
 
 
 class TestMaxErrors:

@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 
 from highbar.adapters.ports import accepts_connections, endpoint_address
-from highbar.adapters.subprocess_adapter import AgentStartError
+from highbar.adapters.subprocess_adapter import AgentExit, AgentStartError
 
 
 class AttachedAgent:
@@ -47,3 +47,7 @@ class AttachedAgent:
 
     def stop(self) -> None:
         """Nothing to do: highbar did not start this agent."""
+
+    def exited(self) -> AgentExit | None:
+        """None: highbar has no process of this agent's to look at."""
+        return None

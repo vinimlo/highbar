@@ -63,6 +63,11 @@ class JsonReport:
     def path(self) -> Path:
         return self._path
 
+    @property
+    def paths(self) -> list[Path]:
+        """Every file this report writes: one here, one per format in ``Reports``."""
+        return [self._path]
+
     def start(self) -> None:
         """Write the unfinished report. Raises ``ReportError``, before any message goes."""
         self._write(self._body(exit_code=None, complete=False))
@@ -132,11 +137,22 @@ class JsonReport:
             "specs": self._specs,
         }
 
-    def _write(self, body: dict[str, Any]) -> None:
+    def _render(self, body: dict[str, Any]) -> bytes:
+        """The file's bytes for ``body``: JSON here, another format in a subclass."""
         # default=str: a value in agent.correlate may be a date from YAML. A surrogate the
         # agent sent has no UTF-8 form, and becomes the JSON escape it came from.
         text = json.dumps(_finite(body), ensure_ascii=False, indent=2, allow_nan=False, default=str)
-        data = (text + "\n").encode("utf-8", "backslashreplace")
+        return (text + "\n").encode("utf-8", "backslashreplace")
+
+    def _write(self, body: dict[str, Any]) -> None:
+        self._replace(self._stage(body))
+
+    def _stage(self, body: dict[str, Any]) -> str:
+        """``body`` in a temporary file next to the report, not yet in its place.
+
+        Raises ``ReportError``, and then leaves no temporary behind.
+        """
+        data = self._render(body)
         temporary: str | None = None
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -149,10 +165,18 @@ class JsonReport:
                 f.flush()
                 os.fsync(f.fileno())
             os.chmod(temporary, mode)
-            os.replace(temporary, self._path)
         except OSError as e:
             if temporary is not None:
                 Path(temporary).unlink(missing_ok=True)
+            raise ReportError(f"cannot write the report to {self._path}: {e}") from None
+        return temporary
+
+    def _replace(self, temporary: str) -> None:
+        """Put a staged file in the report's place, at once. Raises ``ReportError``."""
+        try:
+            os.replace(temporary, self._path)
+        except OSError as e:
+            Path(temporary).unlink(missing_ok=True)
             raise ReportError(f"cannot write the report to {self._path}: {e}") from None
 
 

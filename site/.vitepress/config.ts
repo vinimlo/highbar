@@ -36,11 +36,14 @@ export default defineConfig({
           { text: 'Writing specs', link: '/guides/writing-specs' },
           { text: 'Connecting your agent', link: '/guides/connecting-your-agent' },
           { text: 'Attach mode and sessions', link: '/guides/attach-mode' },
+          { text: 'OpenTelemetry traces', link: '/guides/opentelemetry' },
           { text: 'Assertions', link: '/guides/assertions' },
           { text: 'Multi-turn tests', link: '/guides/multi-turn' },
           { text: 'Guardrails', link: '/guides/guardrails' },
           { text: 'Variations', link: '/guides/variations' },
           { text: 'Repetition and CI gates', link: '/guides/repetition' },
+          { text: 'Comparing two configurations', link: '/guides/comparing' },
+          { text: 'Exporting results', link: '/guides/exporting-results' },
           { text: 'Troubleshooting', link: '/guides/troubleshooting' },
         ],
       },
@@ -60,6 +63,7 @@ export default defineConfig({
         items: [
           { text: 'Quickstart agent', link: '/examples/quickstart' },
           { text: 'OpenAI-compatible agent', link: '/examples/openai-agent' },
+          { text: 'Prompt loop', link: '/examples/prompt-loop' },
         ],
       },
       {

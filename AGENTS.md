@@ -59,8 +59,10 @@ src/highbar/
 ├── adapters/              # subprocess_adapter.py, attached.py, http_client.py, file_collector.py, ports.py
 ├── assertions/            # function_calls.py, response.py, _match.py
 ├── variations/            # LLM paraphrases of a trigger, cached in a committed JSON file
+├── redteam.py             # highbar redteam: a spec of attacks, judged by a split code word
 ├── reporters/             # terminal.py, json_report.py, report.schema.json
-└── cli/main.py            # run, validate, init, variations
+├── export/                # braintrust.py: highbar export braintrust, a report over REST
+└── cli/main.py            # run, validate, init, variations, compare, redteam, export
 tests/
 ├── unit/                  # one directory per package
 ├── integration/           # the real CLI end to end; test_api.py drives highbar.run()

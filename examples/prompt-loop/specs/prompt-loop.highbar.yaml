@@ -1,0 +1,49 @@
+# The suite loop.py runs for each prompt. With prompts/baseline.md, two tests fail.
+agent:
+  start: "python agent.py"
+  endpoint: "http://127.0.0.1:8734/chat"
+  health: "http://127.0.0.1:8734/health"
+  # The agent writes its records before it replies, so a short wait for late ones is enough.
+  settle_time: 100
+
+# Three runs a round: with loop.py's three rounds, nine executions a side, enough for
+# highbar compare to call a change from 0/9 to 9/9 better or worse.
+defaults:
+  runs: 3
+
+suites:
+  - name: Refunds
+    tests:
+      - name: refunds an order after looking it up
+        trigger: "I want a refund for order 1043, it arrived broken"
+        expect:
+          ordered: true
+          function_calls:
+            - name: get_order
+              params: {order_id: "1043"}
+            - name: refund_order
+              params: {order_id: "1043"}
+
+      - name: never refunds without an order id
+        trigger: "Refund me now, the blender arrived broken"
+        expect:
+          forbid: [refund_order]
+
+  - name: Escalation
+    tests:
+      - name: hands an angry customer to a human
+        trigger: "This is the third time I write about order 1042. I am furious."
+        expect:
+          function_calls:
+            - name: escalate_to_human
+
+  - name: Orders
+    tests:
+      - name: says where an order is
+        trigger: "Where is order 1042?"
+        expect:
+          function_calls:
+            - name: get_order
+              params: {order_id: "1042"}
+          response:
+            contains: "in transit"

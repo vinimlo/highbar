@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import signal
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
@@ -11,6 +12,7 @@ from functools import partial
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import FrameType
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -28,7 +30,26 @@ from highbar.engine.selection import SelectionError, select, selection_of
 from highbar.engine.session import SessionError, SessionHooks
 from highbar.engine.streak import DEFAULT_MAX_ERRORS, ErrorStreak
 from highbar.engine.usage import add_costs, add_up
+from highbar.export.braintrust import (
+    DEFAULT_API_URL,
+    DEFAULT_KEY_ENV,
+    Client,
+    ExportFailed,
+    KeyRefused,
+    ReportRefused,
+    build_events,
+    experiment_metadata,
+    experiment_name,
+    export,
+    partial_note,
+    read_key,
+    read_report,
+    url_problem,
+)
 from highbar.reporters.json_report import JsonReport, ReportError
+from highbar.reporters.junit_report import JUnitReport
+from highbar.reporters.markdown_report import MarkdownReport
+from highbar.reporters.reports import Reports
 from highbar.reporters.terminal import format_summary
 from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
 from highbar.variations.generator import VariationError, VariationGenerator
@@ -152,15 +173,19 @@ def run(
             "runs still wins. With min_pass, a flaky test becomes a gate."
         ),
     ),
-    report_to: str | None = typer.Option(
-        None,
-        "--report",
-        metavar="json=FILE",
-        help=(
-            "Also write the results to FILE as JSON. It is replaced before the first "
-            "message, and written on every way out of the run."
+    # Annotated, unlike the options around it: a list default in the signature is mutable.
+    report_to: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--report",
+            metavar="json=FILE|junit=FILE|markdown=FILE",
+            help=(
+                "Also write the results to FILE, as JSON, as JUnit XML or as a Markdown "
+                "summary (for $GITHUB_STEP_SUMMARY). Give it once per file. Each is replaced "
+                "before the first message, and written on every way out of the run."
+            ),
         ),
-    ),
+    ] = None,
     max_cost: float | None = typer.Option(
         None,
         "--max-cost",
@@ -181,6 +206,16 @@ def run(
             f"{EXIT_REPEATED_ERRORS}."
         ),
     ),
+    jobs: int = typer.Option(
+        1,
+        "--jobs",
+        metavar="N",
+        help=(
+            "Run up to N tests at once, each with its own messages in order. Every trace "
+            "record must then carry agent.correlate: a test whose records have none is an "
+            "error. Results are shown in spec order."
+        ),
+    ),
     suite: list[str] | None = _SUITE,
     keyword: list[str] | None = _KEYWORD,
     tag: list[str] | None = _TAG,
@@ -197,6 +232,7 @@ def run(
             keep_traces=keep_traces,
             max_cost=max_cost,
             max_errors=max_errors,
+            jobs=jobs,
             suites=suite or (),
             keywords=keyword or (),
             tags=tag or (),
@@ -225,23 +261,42 @@ def run(
     raise typer.Exit(_close_report(report, code))
 
 
-def _open_report(value: str | None, paths: list[str]) -> JsonReport | None:
+# The formats of --report: the same report, for a script (JSON), for the CI tools that
+# read JUnit XML, and for a CI job's summary page (Markdown).
+_REPORTS: dict[str, type[JsonReport]] = {
+    "json": JsonReport,
+    "junit": JUnitReport,
+    "markdown": MarkdownReport,
+}
+
+
+def _open_report(values: list[str] | None, paths: list[str]) -> JsonReport | None:
     """The report of this run, already on disk, or exit 2 before anything starts.
 
-    Writing it now proves the path works before an hour of tests, and replaces an
-    older report: a run that dies must not leave someone else's green at that path.
+    Writing it now proves the paths work before an hour of tests, and replaces older
+    reports: a run that dies must not leave someone else's green at those paths.
     """
-    if value is None:
+    if not values:
         return None
-    kind, separator, target = value.partition("=")
-    if kind != "json" or not separator or not target:
-        console.print(f"  [red]\u2717[/red] --report takes json=<file>, got {escape(value)}")
-        raise typer.Exit(EXIT_UNRUNNABLE)
-    path = Path(target)
-    if path.resolve() in {Path(spec).resolve() for spec in paths}:
-        console.print(f"  [red]\u2717[/red] --report: {escape(target)} is a spec of this run")
-        raise typer.Exit(EXIT_UNRUNNABLE)
-    report = JsonReport(path, version=_version())
+    specs = {Path(spec).resolve() for spec in paths}
+    parts: list[JsonReport] = []
+    for value in values:
+        kind, separator, target = value.partition("=")
+        if kind not in _REPORTS or not separator or not target:
+            console.print(
+                "  [red]\u2717[/red] --report takes json=<file>, junit=<file> or markdown=<file>, "
+                f"got {escape(value)}"
+            )
+            raise typer.Exit(EXIT_UNRUNNABLE)
+        path = Path(target)
+        if path.resolve() in specs:
+            console.print(f"  [red]\u2717[/red] --report: {escape(target)} is a spec of this run")
+            raise typer.Exit(EXIT_UNRUNNABLE)
+        if path.resolve() in {part.path.resolve() for part in parts}:
+            console.print(f"  [red]\u2717[/red] --report: {escape(target)} is given twice")
+            raise typer.Exit(EXIT_UNRUNNABLE)
+        parts.append(_REPORTS[kind](path, version=_version()))
+    report = parts[0] if len(parts) == 1 else Reports(parts, version=_version())
     try:
         report.start()
     except ReportError as e:
@@ -259,7 +314,7 @@ def _close_report(report: JsonReport | None, code: int) -> int:
     except ReportError as e:
         _last_line(f"  [red]\u2717[/red] {escape(str(e))}")
         return EXIT_UNRUNNABLE
-    _last_line(f"  Report: {escape(str(report.path))}\n")
+    _last_line(f"  Report: {escape(', '.join(str(path) for path in report.paths))}\n")
     return code
 
 
@@ -284,6 +339,7 @@ def _run_all(
     keep_traces: bool,
     max_cost: float | None = None,
     max_errors: int = DEFAULT_MAX_ERRORS,
+    jobs: int = 1,
     suites: Sequence[str] = (),
     keywords: Sequence[str] = (),
     tags: Sequence[str] = (),
@@ -305,6 +361,11 @@ def _run_all(
 
     if max_errors < 0:
         message = "--max-errors must be a whole number of at least 0 (0 never stops)."
+        console.print(f"[red]{message}[/red]")
+        return _stopped(report, "usage_error", message, EXIT_UNRUNNABLE)
+
+    if jobs < 1:
+        message = "--jobs must be a whole number of at least 1."
         console.print(f"[red]{message}[/red]")
         return _stopped(report, "usage_error", message, EXIT_UNRUNNABLE)
 
@@ -330,6 +391,16 @@ def _run_all(
         return _stopped(report, "usage_error", str(e), EXIT_UNRUNNABLE)
     selection = selection_of(specs, picked, suites=suites, keywords=keywords, tags=tags)
     specs = picked
+    # After the selection: a spec left out starts no agent and no proxy.
+    proxied = [path for path, spec in specs if spec.agent.llm_proxy]
+    if jobs > 1 and proxied:
+        message = (
+            f"--jobs {jobs} cannot run with agent.llm_proxy ({', '.join(proxied)}): the "
+            "agent's model calls carry no test id yet, so with more than one test in "
+            "flight the proxy could not tell whose call it saw. Run it with --jobs 1"
+        )
+        console.print(f"[red]{escape(message)}[/red]")
+        return _stopped(report, "usage_error", message, EXIT_UNRUNNABLE)
     if report is not None:
         report.plan(specs, selection)
     # Python session hooks are imported before any agent starts, like the specs parsed.
@@ -347,7 +418,7 @@ def _run_all(
     current = ""
     try:
         with _terminate_as_exit():
-            for current, spec in specs:
+            for index, (current, spec) in enumerate(specs):
                 summaries.append(
                     run_spec(
                         current,
@@ -363,6 +434,9 @@ def _run_all(
                         spent_untagged=_spent_untagged(summaries),
                         max_errors=max_errors or None,
                         streak=streak,
+                        jobs=jobs,
+                        # A stop leaves the specs after this one out (HB-33).
+                        more_after=index < len(specs) - 1,
                     )
                 )
                 # Either stop is the whole run's, so the specs left do not start either.
@@ -381,6 +455,13 @@ def _run_all(
         # Nothing could be checked: the agent is up but not instrumented (or not ours).
         console.print(f"  [red]\u2717[/red] {escape(current)}: {escape(str(e))}", soft_wrap=True)
         return _stopped(report, "agent_not_observed", f"{current}: {e}", EXIT_UNRUNNABLE)
+    except SessionError as e:
+        # Only agent.run's setup gets here (RunHookError, HB-10): a session's own hooks
+        # fail one execution, inside the run. Nothing was sent, and the specs left would
+        # find what it was to set up missing too.
+        message = f"{current}: {e}; nothing was sent"
+        console.print(f"  [red]\u2717[/red] {escape(message)}", soft_wrap=True)
+        return _stopped(report, "run_setup_failed", message, EXIT_UNRUNNABLE)
 
     total = _total(summaries)
     if len(summaries) > 1:
@@ -445,13 +526,20 @@ def variations(
     for _, spec in specs:
         for suite in spec.suites:
             for test in suite.tests:
-                if not test.variations or not test.trigger:
+                # A conversation's paraphrases replace its last turn, and are made with
+                # what the user said before it (HB-16).
+                if test.turns:
+                    sentence = test.turns[-1].trigger
+                    context = [turn.trigger for turn in test.turns[:-1]]
+                else:
+                    sentence, context = test.trigger or "", []
+                if not test.variations or not sentence:
                     continue
 
                 # Triggers and paraphrases are user text: escaped, or Rich would read
                 # anything in square brackets as a style tag and drop it.
-                trigger = escape(test.trigger)
-                key = fingerprint(test.trigger, test.variations)
+                trigger = escape(sentence)
+                key = fingerprint(sentence, test.variations, context)
                 try:
                     if force:
                         cache.invalidate(key)
@@ -467,7 +555,7 @@ def variations(
                             )
                         continue
 
-                    produced = generator.generate(test.trigger, test.variations)
+                    produced = generator.generate(sentence, test.variations, context=context)
                 except (VariationError, CacheError) as exc:
                     console.print(f"  [red]✗[/red] {trigger}\n    {escape(str(exc))}")
                     raise typer.Exit(1) from exc
@@ -493,6 +581,184 @@ def variations(
 
 
 @app.command()
+def compare(
+    base: Annotated[
+        list[str],
+        typer.Option("--base", help="A JSON report, or a folder of them: each one is a round."),
+    ],
+    head: Annotated[
+        list[str],
+        typer.Option("--head", help="The same, for the side under test."),
+    ],
+    fail_on_regression: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-regression",
+            help=(
+                "Exit 1 when a test is worse: Holm p under 0.05, "
+                "2+ rounds a side, rounds that agree."
+            ),
+        ),
+    ] = False,
+    report: Annotated[
+        str | None,
+        typer.Option("--report", help="json=FILE: the comparison as JSON, for CI."),
+    ] = None,
+) -> None:
+    """Compare two groups of runs (--report json= files) test by test."""
+    # Imported here, so `run` does not load what only `compare` uses.
+    from highbar.compare.core import CompareError
+    from highbar.compare.core import compare as compare_rounds
+    from highbar.compare.output import load_side, render, write_json
+
+    if report is not None and not report.startswith("json="):
+        console.print("[red]--report takes json=FILE for compare.[/red]")
+        raise typer.Exit(EXIT_UNRUNNABLE)
+    try:
+        seen: dict[str, Path] = {}
+        rows = compare_rounds(load_side(base, seen), load_side(head, seen))
+    except CompareError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(EXIT_UNRUNNABLE) from exc
+    render(rows, console)
+    if report is not None:
+        write_json(report.removeprefix("json="), rows, base, head)
+    worse = any(row.verdict == "worse" for row in rows)
+    raise typer.Exit(EXIT_FAILED if fail_on_regression and worse else EXIT_OK)
+
+
+export_app = typer.Typer(
+    help="Send a finished run's results (a --report json= file) to another tool.",
+    no_args_is_help=True,
+)
+app.add_typer(export_app, name="export")
+
+
+@export_app.command("braintrust")
+def export_braintrust(
+    report_path: Annotated[
+        str, typer.Argument(metavar="REPORT", help="A --report json= file of a finished run.")
+    ],
+    project: Annotated[
+        str, typer.Option("--project", help="The Braintrust project; created if it is not there.")
+    ],
+    experiment: Annotated[
+        str | None,
+        typer.Option(
+            "--experiment",
+            help="The experiment to send to. Default: the report's file name and start time.",
+        ),
+    ] = None,
+    api_key_env: Annotated[
+        str,
+        typer.Option("--api-key-env", metavar="VAR", help="The variable that holds the API key."),
+    ] = DEFAULT_KEY_ENV,
+    api_url: Annotated[
+        str, typer.Option("--api-url", metavar="URL", help="The Braintrust API to send to.")
+    ] = DEFAULT_API_URL,
+    partial: Annotated[
+        bool,
+        typer.Option(
+            "--partial",
+            help="Export a run that stopped before every test ran (complete: false), "
+            "marked as partial. Without it, such a report exits 2.",
+        ),
+    ] = False,
+) -> None:
+    """Send a run's results to Braintrust: one experiment event per execution."""
+    path = Path(report_path)
+    try:
+        body = read_report(path, partial=partial)
+        events = build_events(body)
+        if not project.strip():
+            raise ReportRefused("--project needs the name of a Braintrust project")
+        if (problem := url_problem(api_url)) is not None:
+            raise ReportRefused(problem)
+        key = read_key(api_key_env, os.environ.get(api_key_env))
+    except (ReportRefused, KeyRefused) as e:
+        console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)
+        raise typer.Exit(EXIT_UNRUNNABLE) from None
+    name = experiment or experiment_name(path, body)
+    client = Client(api_url, key, api_key_env)
+    try:
+        export(events, client, project=project, experiment=name, metadata=experiment_metadata(body))
+    except ExportFailed as e:
+        console.print(
+            f"  [red]\u2717[/red] Braintrust: {escape(e.reason)}. {e.sent} of {e.total} events "
+            f"sent, {e.total - e.sent} not sent; sending again is safe, each event keeps its id",
+            soft_wrap=True,
+        )
+        raise typer.Exit(EXIT_FAILED) from None
+    finally:
+        client.close()
+    scores = [event["scores"]["highbar"] for event in events]
+    console.print(
+        f"  Sent {len(events)} events to Braintrust, project {escape(project)}, experiment "
+        f"{escape(name)}: {scores.count(1)} passed, {scores.count(0)} failed, "
+        f"{scores.count(None)} error (score null).",
+        soft_wrap=True,
+    )
+    if (note := partial_note(body)) is not None:
+        console.print(f"  [yellow]![/yellow] {escape(note)}.", soft_wrap=True)
+
+
+@app.command()
+def redteam(
+    spec_path: Annotated[str, typer.Argument(help="The spec whose agent the attacks target.")],
+    allow: Annotated[
+        list[str] | None,
+        typer.Option("--allow", help="A tool an attack may make the agent call. Repeatable."),
+    ] = None,
+    secret: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--secret",
+            help="Text no reply may hold, such as a line of the system prompt. "
+            "Written into the file, and shown when a test fails. Repeatable.",
+        ),
+    ] = None,
+    lang: Annotated[
+        list[str] | None,
+        typer.Option("--lang", help="Only these languages: en, pt, es. Repeatable."),
+    ] = None,
+    out: Annotated[
+        str | None,
+        typer.Option("--out", help="Where to write it. Default: next to the spec."),
+    ] = None,
+    force: Annotated[
+        bool, typer.Option("--force", help="Write over an attack file already there.")
+    ] = False,
+) -> None:
+    """Write a spec of attacks on the agent's guardrails; run it with `highbar run`."""
+    from highbar.redteam import AttackFileExists, write_attacks
+
+    try:
+        target = write_attacks(
+            Path(spec_path),
+            allow=allow or (),
+            secrets=secret or (),
+            languages=lang,
+            out=Path(out) if out else None,
+            force=force,
+        )
+    except (SpecError, OSError, ValueError) as exc:
+        if isinstance(exc, AttackFileExists):
+            message = (
+                f"{exc} is already there, and may hold your edits: "
+                "pass --force to write it again, or --out for another file."
+            )
+        else:
+            message = str(exc)
+        console.print(f"[red]{escape(message)}[/red]", soft_wrap=True)
+        raise typer.Exit(EXIT_UNRUNNABLE) from exc
+    count = len(parse_spec(str(target)).suites[0].tests)
+    console.print(f"  Wrote {count} attacks to {escape(str(target))}.", soft_wrap=True)
+    console.print(
+        f"  Run them with: [bold]highbar run {escape(str(target))}[/bold]", soft_wrap=True
+    )
+
+
+@app.command()
 def validate(
     spec_path: str = typer.Argument(
         default="",
@@ -507,6 +773,55 @@ def validate(
 
     specs = _parse_all(paths, report_valid=True, runs=None)
     raise typer.Exit(EXIT_UNRUNNABLE if specs is None else EXIT_OK)
+
+
+@app.command()
+def vacuum(
+    spec_path: str = typer.Argument(
+        default="",
+        help="Spec file or directory. If omitted, all specs in specs/",
+    ),
+) -> None:
+    """Find tests that an agent doing nothing useful would pass (no agent runs)."""
+    from highbar.engine.vacuum import probe_spec
+
+    paths = _discover_specs(spec_path)
+    if not paths:
+        console.print("[red]No spec files found.[/red]")
+        raise typer.Exit(EXIT_UNRUNNABLE)
+    specs = _parse_all(paths)
+    if specs is None:
+        raise typer.Exit(EXIT_UNRUNNABLE)
+
+    judged = vacuous = 0
+    for path, spec in specs:
+        console.print(f"\n  [bold]{escape(path)}[/bold]")
+        for finding in probe_spec(spec):
+            name = escape(f"{finding.suite} › {finding.test}")
+            if finding.not_judged:
+                console.print(
+                    f"    [dim]· {name}  not judged: {finding.not_judged} is beyond "
+                    "a trivial agent[/dim]",
+                    soft_wrap=True,
+                )
+                continue
+            judged += 1
+            if finding.passes_on:
+                vacuous += 1
+                console.print(
+                    f"    [red]✗[/red] {name}  passes on: {', '.join(finding.passes_on)}",
+                    soft_wrap=True,
+                )
+            else:
+                console.print(f"    [green]✓[/green] {name}", soft_wrap=True)
+    console.print(f"\n  {vacuous} vacuous of {judged}", soft_wrap=True)
+    if vacuous:
+        console.print(
+            "  A vacuous test is green on an agent that does nothing useful: add the "
+            "call it must make, the arguments, or what the reply must not say.",
+            soft_wrap=True,
+        )
+    raise typer.Exit(EXIT_FAILED if vacuous else EXIT_OK)
 
 
 def _sharing_secrets(specs: list[tuple[str, Spec]]) -> list[tuple[str, Spec]]:

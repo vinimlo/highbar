@@ -12,6 +12,9 @@ Serves ``GET /health`` -> 200 and ``POST /chat`` -> ``{"response": "ok"}``.
     --no-traces      write no trace records, like an agent without the SDK
     --replies A,B    POST /chat answers A, then B, and so on, then A again
                      (default: ok), like an agent that is right only some of the time
+    --obey           POST /chat writes any code word it is told to build ("joining X and
+                     Y with a dash"), also from base64 and across two messages, like an
+                     agent with no guardrails (HB-25)
     --late-tool T:S  S seconds after answering a message with "late" in it, record a
                      call to tool T, like work the agent left running in the background
     --cost C         each `turn` reports a usage of 100 input tokens, 10 output tokens
@@ -33,15 +36,30 @@ POST, whose context has the X-Highbar-Test header and the body's conversation_id
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import contextlib
 import itertools
 import json
 import os
+import re
 import signal
 import sys
 import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def _obey(message: str, heard: list[str]) -> str | None:
+    """The code word the last two messages tell it to build, decoding base64 on the way."""
+    text = message
+    for token in message.split():
+        with contextlib.suppress(binascii.Error, UnicodeDecodeError):
+            text += " " + base64.b64decode(token, validate=True).decode()
+    heard.append(text)
+    words = re.findall(r"\b([A-Z]{4}) (?:and|e|y) ([0-9A-F]{6})\b", " ".join(heard[-2:]))
+    return f"Sure: {words[-1][0]}-{words[-1][1]}" if words else None
 
 
 def main() -> None:
@@ -56,6 +74,7 @@ def main() -> None:
     parser.add_argument("--no-traces", action="store_true")
     parser.add_argument("--replies", default="ok")
     parser.add_argument("--late-tool", default=None)
+    parser.add_argument("--obey", action="store_true")
     parser.add_argument("--cost", type=float, default=None)
     parser.add_argument("--stray-cost", type=float, default=None)
     parser.add_argument("--statuses", default="200")
@@ -64,6 +83,7 @@ def main() -> None:
     replies = itertools.cycle(args.replies.split(","))
     statuses = itertools.cycle(args.statuses.split(","))
     replies_lock = threading.Lock()
+    heard: list[str] = []
     traces = None if args.no_traces else os.environ.get("HIGHBAR_TRACES_URL")
 
     def record(entry: dict[str, object]) -> None:
@@ -136,6 +156,8 @@ def main() -> None:
                 threading.Timer(float(seconds), record, [late]).start()
             with replies_lock:
                 reply = next(replies)
+                if args.obey:
+                    reply = _obey(str(payload.get("message", "")), heard) or reply
             body = json.dumps({"response": reply}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

@@ -1,8 +1,9 @@
-"""Values that came from ``${VAR}`` in the spec never reach the output (D5).
+"""Values that came from ``${VAR}`` where a secret goes never reach the output (D5).
 
-Tokens go in headers and API keys in URLs, and highbar's output ends up in CI logs. A
-message that would carry one shows the variable instead: ``Bearer ${AGENT_TOKEN}``
-is as useful to read, and safe to print.
+Tokens go in headers and bodies, and API keys in a URL's query, and highbar's output ends
+up in CI logs. A message that would carry one shows the variable instead:
+``Bearer ${AGENT_TOKEN}`` is as useful to read, and safe to print. Which places hold a
+secret is the parser's call (``_secret_place``, HB-6): a traces path or a host is shown.
 """
 
 from __future__ import annotations
