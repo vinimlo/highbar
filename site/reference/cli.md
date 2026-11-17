@@ -17,6 +17,8 @@ Runs the tests of a spec file, or of every `*.highbar.yaml` under a directory. W
 | `--max-cost AMOUNT` | A ceiling on what the whole run spends. Over it, the run stops at the end of the test in progress and exits with 3. |
 | `--max-errors N` | Stop the run once N executions in a row fail for the same cause of the agent's infrastructure, and exit with 4. 5 by default; 0 never stops. |
 | `--jobs N` | Run up to N tests at once (N ≥ 1, 1 by default). Every trace record must then carry `agent.correlate`. See [below](#jobs). |
+| `--suite NAME` | Run only the suites with this name. Repeat it for more suites. See [part of the tests](#part-of-the-tests). |
+| `-k TEXT` | Run only the tests whose `<suite>/<name>` or `id` contains TEXT, ignoring case. Repeat it for any of several. |
 
 All specs are parsed and validated before any agent starts. With several specs, each one prints its own summary, and a total follows at the end. When the turns report [usage](/reference/trace-contract#usage-tokens-and-cost), a summary ends with its tokens and cost, and says `incomplete`, with what is missing, when they are only part of the sum:
 
@@ -24,6 +26,33 @@ All specs are parsed and validated before any agent starts. With several specs, 
   2 passed | 1.31s | 3000 input tokens (800 cached) | 300 output tokens | 0.0123 USD | incomplete
   ! incomplete sum: 1 of 3 turns with no cost
 ```
+
+### Part of the tests
+
+`--suite` and `-k` run part of the tests, for a quick loop on the ones you are changing, or a short gate on each pull request with the whole suite at night:
+
+```console
+highbar run specs/ --suite Orders
+highbar run specs/ -k cancel -k refund
+```
+
+`--suite` takes a suite's name as written. `-k` takes a piece of `<suite>/<name>`, or of the test's `id`, and ignores case; it is not an expression. Given more than once, either of them picks any of its values, and given together, a test must be in one of the suites and match one of the pieces. Every spec is still parsed and validated whole, so a typo anywhere stops the run. A spec with no test picked is left out: its agent does not start, nor its [`agent.llm_proxy`](/reference/spec-format#usage-counted-at-the-source-agent-llm-proxy), so it does not hold `--jobs` back.
+
+A run of part of the tests can pass whole, so it says what it left out. Its last line counts the tests, with each value quoted as a shell reads it, so `-k "cancel it"` shows as one value and the options can be pasted back:
+
+```console
+  ! part of the tests: 2 of 7 picked by -k 'cancel it', 5 left out
+```
+
+Options that pick every test cut nothing, and print no line. When [`--max-cost`](#max-cost) or [`--max-errors`](#max-errors) stops the run, `left out` still counts only what the options cut, and the picked tests the stop did not let run are counted apart, before the stop's own message:
+
+```console
+  ! part of the tests: 2 of 4 picked by -k test1, 2 left out; of the 2 picked, 1 did not run: the run stopped
+```
+
+The [report](/reference/report) lists only the tests picked, and its `selection` holds the options and the same two numbers, also when nothing was left out. When tests were left out, the report's `complete` is `false`, even if every test picked ran, so a gate that runs `-k smoke` is not read as the whole suite: [`highbar export braintrust`](/guides/exporting-results) needs `--partial` for it. The exit code is about the tests picked.
+
+A selection that picks no test stops the run before any agent starts, with exit code 2, since a run that checks nothing must not pass. So does a `--suite` that no spec has, with the closest name.
 
 ### `--max-cost`
 
@@ -59,7 +88,7 @@ The message never shows the body of a reply, and a value from `${VAR}` in the en
 
 ### `--jobs`
 
-With `--jobs N`, up to N tests are in flight at once, started in spec order. A spec with [`agent.llm_proxy`](/reference/spec-format#usage-counted-at-the-source-agent-llm-proxy) runs only with `--jobs 1`: its model calls carry no test id yet, and `--jobs` above 1 exits with code 2 before anything runs. Most of a test's time is the agent thinking, so N in flight divides the wall time by close to N. A test's phrasings, runs and turns still run one after the other, in one place: <code v-pre>{{previous.*}}</code>, `min_pass` and a conversation's turns depend on that order. Only the send, the wait for the reply's `turn` record with [`agent.reply: turn`](/guides/connecting-your-agent#an-agent-that-answers-later), and the wait for `settle_time` run side by side; the reading of the trace file and every verdict happen one at a time.
+With `--jobs N`, up to N tests are in flight at once, started in spec order. A spec with [`agent.llm_proxy`](/reference/spec-format#usage-counted-at-the-source-agent-llm-proxy) runs only with `--jobs 1`: its model calls carry no test id yet, and `--jobs` above 1 exits with code 2 before anything runs, unless `--suite` or `-k` leaves that spec out. Most of a test's time is the agent thinking, so N in flight divides the wall time by close to N. A test's phrasings, runs and turns still run one after the other, in one place: <code v-pre>{{previous.*}}</code>, `min_pass` and a conversation's turns depend on that order. Only the send, the wait for the reply's `turn` record with [`agent.reply: turn`](/guides/connecting-your-agent#an-agent-that-answers-later), and the wait for `settle_time` run side by side; the reading of the trace file and every verdict happen one at a time.
 
 With several tests in flight, the window a record falls in says nothing about whose it is, so records are counted by their correlation alone:
 

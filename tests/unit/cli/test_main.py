@@ -73,6 +73,104 @@ def _summary(**counts: int) -> RunSummary:
     return RunSummary(duration_ms=10.0, **values)
 
 
+class TestSelection:
+    """HB-17: --suite and -k pick the tests before any agent starts."""
+
+    def test_hb17_only_the_picked_tests_run(self, project: Path) -> None:
+        other = project / "specs" / "menu" / "drinks.highbar.yaml"
+        other.write_text(textwrap.dedent(SPEC).replace("name: Menu", "name: Drinks"), "utf-8")
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--suite", "Drinks"])
+
+        assert result.exit_code == 0, result.output
+        (call,) = fake.return_value.run.call_args_list
+        assert [suite.name for suite in call.args[0].suites] == ["Drinks"]
+
+    def test_hb17_a_spec_left_out_still_lends_its_secrets(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An agent can echo another spec's token: it is masked in every spec of the run,
+        picked or not (the security review of 5a2e6bf)."""
+        monkeypatch.setenv("TOKEN_A", "secret-a-123")
+        endpoint = '  endpoint: "http://localhost:8000/chat"\n'
+        api = (
+            textwrap.dedent(SPEC)
+            .replace("name: Menu", "name: Api")
+            .replace(
+                endpoint, endpoint + '  request:\n    headers: {Authorization: "${TOKEN_A}"}\n'
+            )
+        )
+        (project / "specs" / "menu" / "api.highbar.yaml").write_text(api, "utf-8")
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--suite", "Menu"])
+
+        assert result.exit_code == 0, result.output
+        (call,) = fake.call_args_list
+        assert "secret-a-123" in call.kwargs["secrets"]
+
+    def test_hb17_a_suite_no_spec_has_exits_2(self, project: Path) -> None:
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            result = runner.invoke(app, ["run", "specs/", "--suite", "Menus"])
+
+        assert result.exit_code == 2, result.output
+        assert "--suite 'Menus': no spec has a suite with that name" in result.output
+        fake.assert_not_called()
+
+    def test_hb17_a_selection_of_nothing_exits_2(self, project: Path) -> None:
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            result = runner.invoke(app, ["run", "specs/", "-k", "zzz"])
+
+        assert result.exit_code == 2, result.output
+        assert "no test matches -k zzz: nothing would be checked" in result.output
+        fake.assert_not_called()
+
+
+class TestSelectionWithTheLlmProxy:
+    """HB-17 with HB-30: a spec with no test picked starts neither its agent nor its proxy,
+    and does not hold --jobs back."""
+
+    @staticmethod
+    def _proxied(project: Path) -> None:
+        proxied = (
+            textwrap.dedent(SPEC)
+            .replace("name: Menu", "name: Drinks")
+            .replace('  start: "true"\n', '  start: "drinks-agent"\n  llm_proxy: true\n')
+        )
+        (project / "specs" / "menu" / "drinks.highbar.yaml").write_text(proxied, "utf-8")
+
+    @pytest.mark.parametrize("jobs", ["1", "2"])
+    def test_hb17_a_proxied_spec_cut_whole_starts_no_agent_and_no_proxy(
+        self, project: Path, jobs: str
+    ) -> None:
+        self._proxied(project)
+
+        with (
+            patch("highbar.engine.run_spec.TestRunner") as fake,
+            patch("highbar.engine.run_spec.LlmProxy") as proxy,
+            patch("highbar.engine.run_spec.SubprocessAdapter") as adapter,
+        ):
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--suite", "Menu", "--jobs", jobs])
+
+        assert result.exit_code == 0, result.output
+        proxy.assert_not_called()
+        assert [call.kwargs["start_cmd"] for call in adapter.call_args_list] == ["true"]
+
+    def test_hb17_jobs_over_one_still_refuses_a_picked_proxied_spec(self, project: Path) -> None:
+        self._proxied(project)
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            result = runner.invoke(app, ["run", "specs/", "--suite", "Drinks", "--jobs", "2"])
+
+        assert result.exit_code == 2, result.output
+        assert "agent.llm_proxy" in result.output and "--jobs" in result.output
+        fake.assert_not_called()
+
+
 class TestExitCodes:
     def test_version_flag(self) -> None:
         result = runner.invoke(app, ["--version"])
