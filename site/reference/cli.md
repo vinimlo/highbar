@@ -36,7 +36,7 @@ highbar run specs/ --suite Orders
 highbar run specs/ -k cancel -k refund
 ```
 
-`--suite` takes a suite's name as written. `-k` takes a piece of `<suite>/<name>`, or of the test's `id`, and ignores case; it is not an expression. Given more than once, either of them picks any of its values, and given together, a test must be in one of the suites and match one of the pieces. Every spec is still parsed and validated whole, so a typo anywhere stops the run. A spec with no test picked is left out, and its agent does not start. The report lists only the tests picked.
+`--suite` takes a suite's name as written. `-k` takes a piece of `<suite>/<name>`, or of the test's `id`, and ignores case; it is not an expression. Given more than once, either of them picks any of its values, and given together, a test must be in one of the suites and match one of the pieces. Every spec is still parsed and validated whole, so a typo anywhere stops the run. A spec with no test picked is left out: its agent does not start, nor its [`agent.llm_proxy`](/reference/spec-format#usage-counted-at-the-source-agent-llm-proxy), so it does not hold `--jobs` back. The report lists only the tests picked.
 
 A selection that picks no test stops the run before any agent starts, with exit code 2, since a run that checks nothing must not pass. So does a `--suite` that no spec has, with the closest name.
 
@@ -74,7 +74,7 @@ The message never shows the body of a reply, and a value from `${VAR}` in the en
 
 ### `--jobs`
 
-With `--jobs N`, up to N tests are in flight at once, started in spec order. A spec with [`agent.llm_proxy`](/reference/spec-format#usage-counted-at-the-source-agent-llm-proxy) runs only with `--jobs 1`: its model calls carry no test id yet, and `--jobs` above 1 exits with code 2 before anything runs. Most of a test's time is the agent thinking, so N in flight divides the wall time by close to N. A test's phrasings, runs and turns still run one after the other, in one place: <code v-pre>{{previous.*}}</code>, `min_pass` and a conversation's turns depend on that order. Only the send, the wait for the reply's `turn` record with [`agent.reply: turn`](/guides/connecting-your-agent#an-agent-that-answers-later), and the wait for `settle_time` run side by side; the reading of the trace file and every verdict happen one at a time.
+With `--jobs N`, up to N tests are in flight at once, started in spec order. A spec with [`agent.llm_proxy`](/reference/spec-format#usage-counted-at-the-source-agent-llm-proxy) runs only with `--jobs 1`: its model calls carry no test id yet, and `--jobs` above 1 exits with code 2 before anything runs, unless `--suite` or `-k` leaves that spec out. Most of a test's time is the agent thinking, so N in flight divides the wall time by close to N. A test's phrasings, runs and turns still run one after the other, in one place: <code v-pre>{{previous.*}}</code>, `min_pass` and a conversation's turns depend on that order. Only the send, the wait for the reply's `turn` record with [`agent.reply: turn`](/guides/connecting-your-agent#an-agent-that-answers-later), and the wait for `settle_time` run side by side; the reading of the trace file and every verdict happen one at a time.
 
 With several tests in flight, the window a record falls in says nothing about whose it is, so records are counted by their correlation alone:
 
