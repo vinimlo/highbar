@@ -2886,6 +2886,9 @@ class TestRunner:
                 response = self._client.send(
                     resolved_trigger, values=replace(values, message=resolved_trigger)
                 )
+                # Before the lock is taken back: with --jobs, the wait for it is another
+                # test's read or judgement, not the agent's time (HB-18).
+                replied_at = time.monotonic()
         except AgentResponseError as e:
             # A failure of the transport or of HTTP is what --max-errors counts (HB-34).
             execution.cause = e.cause
@@ -2915,7 +2918,9 @@ class TestRunner:
                     "no text to check"
                 )
             response = reply or ""
-        log.response, log.response_ms = response, (time.monotonic() - sent_at) * 1000
+            # The reply is known when a read finds its turn record.
+            replied_at = time.monotonic()
+        log.response, log.response_ms = response, (replied_at - sent_at) * 1000
 
         with self._unlocked():
             time.sleep(self._settle_time)

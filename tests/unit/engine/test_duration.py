@@ -7,18 +7,21 @@ setup and no settle time in it.
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from highbar.domain.models import Expect, ResponseExpect, Status, Turn, Window
+from highbar.domain.models import Expect, ResponseExpect, Status, Turn, TurnRecord, Window
 from highbar.domain.models import Test as Case
 from highbar.engine.parser import parse_spec
 from highbar.engine.runner import _too_slow
 from highbar.engine.schema import SpecError
 from tests.unit.engine.fakes import FakeAgent, observed
 from tests.unit.engine.test_budget import _run
+from tests.unit.engine.test_jobs import _Agent, _runner, _turn
+from tests.unit.engine.test_jobs import _spec as _jobs_spec
 from tests.unit.engine.test_parser_agent import MANAGED, _spec
 
 SAYS_OK = ResponseExpect(matcher={"contains": "ok"})
@@ -185,3 +188,99 @@ class TestAfterTheReview:
         assert (
             whole.suites[0].tests[0].definition_sha256 == point.suites[0].tests[0].definition_sha256
         )
+
+
+class TestAfterTheMerge:
+    """What develop added since #25 and the tests above do not reach: --jobs (HB-8) and
+    a reply from the turn record (HB-14)."""
+
+    def test_hb18_with_jobs_the_wait_for_another_tests_lock_is_not_the_reply_time(
+        self,
+    ) -> None:
+        """With --jobs 2, "fast" answers in 0.1 s while "busy" holds the runner's lock for
+        0.6 s (a slow read of the trace file; an expect.check does the same). The agent
+        answered "fast" in time: the wait for the lock is highbar's, not the agent's."""
+        fast_sent = threading.Event()
+        held: list[str] = []
+
+        def script(agent: _Agent, message: str, test_id: str) -> None:
+            if message == "fast":
+                fast_sent.set()
+                time.sleep(0.1)
+            else:
+                assert fast_sent.wait(2), "fast was to be in flight"
+            agent.write(_turn(test_id))
+
+        agent = _Agent(script)
+
+        def before_read() -> None:
+            # busy's own read, under the lock, while fast's reply is on its way.
+            if agent.threads.get("busy") is threading.current_thread() and not held:
+                held.append("busy")
+                time.sleep(0.6)
+
+        agent.before_read = before_read
+
+        summary = _runner(agent, jobs=2).run(
+            _jobs_spec(
+                Case(trigger="busy", expect=Expect(response=SAYS_OK)),
+                Case(trigger="fast", expect=Expect(response=SAYS_OK, max_duration_ms=300)),
+            )
+        )
+
+        assert held, "busy was to hold the lock"
+        busy, fast = summary.tests
+        assert busy.status is Status.PASSED, busy.errors
+        assert fast.status is Status.PASSED, fast.errors
+
+    def test_hb18_with_jobs_a_slow_reply_still_fails(self) -> None:
+        def script(agent: _Agent, message: str, test_id: str) -> None:
+            time.sleep(0.3 if message == "slow" else 0.01)
+            agent.write(_turn(test_id))
+
+        timed = Expect(response=SAYS_OK, max_duration_ms=150)
+
+        summary = _runner(_Agent(script), jobs=2).run(
+            _jobs_spec(Case(trigger="slow", expect=timed), Case(trigger="quick", expect=timed))
+        )
+
+        slow, quick = summary.tests
+        assert slow.status is Status.FAILED
+        (error,) = slow.errors
+        assert error.startswith("the reply took ")
+        assert error.endswith(" ms, over max_duration_ms 150")
+        assert quick.status is Status.PASSED, quick.errors
+
+    @staticmethod
+    def _reply_after(seconds: float) -> _Agent:
+        """A webhook that answers 202 at once; the reply comes ``seconds`` later in the
+        turn record (agent.reply: turn)."""
+
+        def script(agent: _Agent, message: str, test_id: str) -> str:
+            reply = TurnRecord(ts=1.0, context={"test": test_id}, response="ok")
+            threading.Timer(seconds, agent.write, args=(Window(turns=[reply]),)).start()
+            return ""
+
+        return _Agent(script)
+
+    @pytest.mark.parametrize("jobs", [1, 2])
+    def test_hb18_with_reply_turn_the_time_runs_until_the_reply_is_known(self, jobs: int) -> None:
+        """The 202 comes at once; the reply, 0.3 s later. The reply is what is timed."""
+        test = Case(trigger="t", expect=Expect(response=SAYS_OK, max_duration_ms=150))
+        runner = _runner(self._reply_after(0.3), jobs=jobs, reply_within=2.0)
+
+        (outcome,) = runner.run(_jobs_spec(test)).tests
+
+        assert outcome.status is Status.FAILED, outcome.errors
+        (error,) = outcome.errors
+        took = int(error.removeprefix("the reply took ").split(" ")[0])
+        assert took >= 300
+
+    @pytest.mark.parametrize("jobs", [1, 2])
+    def test_hb18_with_reply_turn_a_reply_in_time_passes(self, jobs: int) -> None:
+        test = Case(trigger="t", expect=Expect(response=SAYS_OK, max_duration_ms=2000))
+        runner = _runner(self._reply_after(0.02), jobs=jobs, reply_within=2.0)
+
+        (outcome,) = runner.run(_jobs_spec(test)).tests
+
+        assert outcome.status is Status.PASSED, outcome.errors
