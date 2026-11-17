@@ -26,7 +26,7 @@ from highbar.engine.parser import parse_spec
 from highbar.engine.run_spec import load_session_hooks, run_spec
 from highbar.engine.runs import check_runs
 from highbar.engine.schema import SpecError
-from highbar.engine.selection import SelectionError, select
+from highbar.engine.selection import SelectionError, select, selection_of
 from highbar.engine.session import SessionError, SessionHooks
 from highbar.engine.streak import DEFAULT_MAX_ERRORS, ErrorStreak
 from highbar.engine.usage import add_costs, add_up
@@ -370,10 +370,12 @@ def _run_all(
     specs = _sharing_secrets(specs)
     # --suite and -k: the specs are whole above, so a typo anywhere still stops the run.
     try:
-        specs = select(specs, suites=suites, keywords=keywords)
+        picked = select(specs, suites=suites, keywords=keywords)
     except SelectionError as e:
         console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)
         return _stopped(report, "usage_error", str(e), EXIT_UNRUNNABLE)
+    selection = selection_of(specs, picked, suites=suites, keywords=keywords)
+    specs = picked
     # After the selection: a spec left out starts no agent and no proxy.
     proxied = [path for path, spec in specs if spec.agent.llm_proxy]
     if jobs > 1 and proxied:
@@ -385,7 +387,7 @@ def _run_all(
         console.print(f"[red]{escape(message)}[/red]")
         return _stopped(report, "usage_error", message, EXIT_UNRUNNABLE)
     if report is not None:
-        report.plan(specs)
+        report.plan(specs, selection)
     # Python session hooks are imported before any agent starts, like the specs parsed.
     hooks = _load_all_hooks(specs, failures)
     if hooks is None:
@@ -449,10 +451,17 @@ def _run_all(
     total = _total(summaries)
     if len(summaries) > 1:
         console.print(f"  Total: {format_summary(total, styled=True)}\n")
+    last = summaries[-1] if summaries else None
+    # A run of part of the tests can be all green: the last lines say the rest did not run.
+    # A stop's own unrun tests are counted apart: its message, below, says why.
+    if selection is not None:
+        stopped = last is not None and last.stopped is not None
+        line = selection.line(not_run=selection.picked - total.total if stopped else 0)
+        if line is not None:
+            console.print(f"  [yellow]![/yellow] {escape(line)}", soft_wrap=True)
 
     # Before the tests' verdict: a run that was cut short is not a verdict on the agent.
     # The message is the runner's, with every value from ${VAR} already masked.
-    last = summaries[-1] if summaries else None
     if last is not None and last.stopped is not None:
         console.print(f"  [red]✗[/red] {escape(last.stopped)}", soft_wrap=True)
         if last.stop_reason == REPEATED_ERRORS:

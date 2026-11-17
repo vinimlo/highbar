@@ -36,7 +36,21 @@ highbar run specs/ --suite Orders
 highbar run specs/ -k cancel -k refund
 ```
 
-`--suite` takes a suite's name as written. `-k` takes a piece of `<suite>/<name>`, or of the test's `id`, and ignores case; it is not an expression. Given more than once, either of them picks any of its values, and given together, a test must be in one of the suites and match one of the pieces. Every spec is still parsed and validated whole, so a typo anywhere stops the run. A spec with no test picked is left out: its agent does not start, nor its [`agent.llm_proxy`](/reference/spec-format#usage-counted-at-the-source-agent-llm-proxy), so it does not hold `--jobs` back. The report lists only the tests picked.
+`--suite` takes a suite's name as written. `-k` takes a piece of `<suite>/<name>`, or of the test's `id`, and ignores case; it is not an expression. Given more than once, either of them picks any of its values, and given together, a test must be in one of the suites and match one of the pieces. Every spec is still parsed and validated whole, so a typo anywhere stops the run. A spec with no test picked is left out: its agent does not start, nor its [`agent.llm_proxy`](/reference/spec-format#usage-counted-at-the-source-agent-llm-proxy), so it does not hold `--jobs` back.
+
+A run of part of the tests can pass whole, so it says what it left out. Its last line counts the tests, with each value quoted as a shell reads it, so `-k "cancel it"` shows as one value and the options can be pasted back:
+
+```console
+  ! part of the tests: 2 of 7 picked by -k 'cancel it', 5 left out
+```
+
+Options that pick every test cut nothing, and print no line. When [`--max-cost`](#max-cost) or [`--max-errors`](#max-errors) stops the run, `left out` still counts only what the options cut, and the picked tests the stop did not let run are counted apart, before the stop's own message:
+
+```console
+  ! part of the tests: 2 of 4 picked by -k test1, 2 left out; of the 2 picked, 1 did not run: the run stopped
+```
+
+The [report](/reference/report) lists only the tests picked, and its `selection` holds the options and the same two numbers, also when nothing was left out. When tests were left out, the report's `complete` is `false`, even if every test picked ran, so a gate that runs `-k smoke` is not read as the whole suite: [`highbar export braintrust`](/guides/exporting-results) needs `--partial` for it. The exit code is about the tests picked.
 
 A selection that picks no test stops the run before any agent starts, with exit code 2, since a run that checks nothing must not pass. So does a `--suite` that no spec has, with the closest name.
 

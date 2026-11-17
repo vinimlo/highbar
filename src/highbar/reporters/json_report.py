@@ -29,6 +29,7 @@ from highbar.domain.models import (
     iso_utc,
 )
 from highbar.engine.secrets import redact
+from highbar.engine.selection import Selection
 from highbar.engine.usage import add_up
 
 SCHEMA_VERSION = 1
@@ -56,6 +57,7 @@ class JsonReport:
         self._summaries: list[RunSummary] = []
         self._specs: list[dict[str, Any]] = []
         self._stopped: dict[str, str] | None = None
+        self._selection: dict[str, Any] | None = None
 
     @property
     def path(self) -> Path:
@@ -70,8 +72,13 @@ class JsonReport:
         """Write the unfinished report. Raises ``ReportError``, before any message goes."""
         self._write(self._body(exit_code=None, complete=False))
 
-    def plan(self, specs: list[tuple[str, Spec]]) -> None:
-        """The specs that will run. Hashed now: a file can change during a long run."""
+    def plan(self, specs: list[tuple[str, Spec]], selection: Selection | None = None) -> None:
+        """The specs that will run. Hashed now: a file can change during a long run.
+
+        ``selection`` is what --suite and -k picked, when they were given: the report of
+        part of the tests has to say so, and is not complete (HB-17).
+        """
+        self._selection = asdict(selection) if selection is not None else None
         for path, spec in specs:
             self._planned[path] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
             self._secrets.update(spec.agent.secrets)
@@ -104,10 +111,14 @@ class JsonReport:
         # A ceiling passed once every test ran left nothing out, and `stopped` says it was
         # passed (HB-32); so did repeated errors whose last was the last execution of the
         # last test (HB-34). Each spec says whether all of its tests ran all they had to.
-        # Any other reason ended the run halfway.
+        # Any other reason ended the run halfway. Tests that --suite or -k left out did
+        # not run either: a reader of `complete` (the export) must not take part of the
+        # tests for all of them (HB-17). Options that cut nothing leave the run whole.
         halfway = self._stopped is not None and self._stopped["reason"] not in CAN_END_COMPLETE
+        cut = self._selection is not None and self._selection["left_out"] > 0
         complete = (
             not halfway
+            and not cut
             and ran >= set(self._planned)
             and all(spec["complete"] for spec in self._specs)
         )
@@ -123,6 +134,7 @@ class JsonReport:
             "exit_code": exit_code,
             "complete": complete,
             "stopped": self._stopped,
+            "selection": self._selection,
             "git_sha": self._git_sha,
             "summary": _totals(self._summaries),
             "totals": _usage_totals(add_up(usages)),
