@@ -12,7 +12,7 @@ hb = highbar.Highbar()
 
 The object that writes the trace file.
 
-- `traces`: the file to append to. Without it, `HIGHBAR_TRACES_URL` is used, which highbar sets for an agent it starts. With neither, the SDK records nothing.
+- `traces`: the file to append to. Without it, `HIGHBAR_TRACES_URL` is used, which highbar sets for an agent it starts. With neither, the SDK records nothing. `{pid}` in the path is the id of the process that writes, so a server and its workers each write a file of their own, which `agent.traces` reads through a glob. When Python itself ends the process (the end of its main module, `sys.exit`, or Ctrl-C), the SDK writes a `bye` record in its file, and highbar stops counting the tools it declared there. A process stopped by SIGTERM (`kill`, `docker stop`, `docker compose down`, uvicorn included) writes none, so the `bye` is only an extra: clear the folder before each start of the agent, as [the guide](/guides/attach-mode#an-agent-with-several-processes) says.
 - `hb.enabled`: whether a trace file is set.
 - `hb.traces`: the file in use, or `None`.
 
@@ -33,13 +33,13 @@ Records each call as a `tool` record: the arguments bound to their names (defaul
 
 Decorating a function also declares it: the SDK writes a `tools` record with every tool it records, which highbar checks a spec's tool names against. When the trace file is emptied or replaced while the agent runs, the SDK writes its `hello` and the tools again.
 
-## `hb.record(fn, args=None, *, result=None, error=None, started_at=None, ended_at=None, **context)`
+## `hb.record(fn, args=None, *, result=..., error=None, started_at=None, ended_at=None, **context)`
 
 ```python
 hb.record("search_products", {"query": "dress"}, result=rows, conversation_id=cid)
 ```
 
-Records a call made where no function can be decorated, such as a dispatch funnel. Keyword arguments beyond the named ones go into the record's `context`, on top of the current message's context. A failure the tool returned as data belongs in `error`: highbar never reads `result` to decide whether a call failed. Times default to now.
+Records a call made where no function can be decorated, such as a dispatch funnel. Keyword arguments beyond the named ones go into the record's `context`, on top of the current message's context. A failure the tool returned as data belongs in `error`: highbar never reads `result` to decide whether a call failed. Without `result=` the record has no `result`, and a `returns` check on that call is not taken as "it returned null": the test is an `error` unless something else already failed it. `result=None` says the tool returned null. Times default to now.
 
 ## `hb.declare(*names)`
 

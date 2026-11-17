@@ -5,17 +5,24 @@ spec's ``agent`` block (D5). Every failure is an ``AgentResponseError`` whose
 message says what came back, never the request's headers: they carry tokens, and
 this output ends up in CI logs. A failure of the transport or of HTTP also carries its
 ``InfraCause``, which is what --max-errors counts (HB-34).
+
+When highbar reads OpenTelemetry traces (HB-48), each message also carries a W3C
+``traceparent`` whose trace id is the test execution's id: the agent's spans continue
+that trace, and their trace id says which test they belong to.
 """
 
 from __future__ import annotations
 
 import json
+import re
+import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import httpx
 
+from highbar._deadline import within
 from highbar._narrow import as_dict
 from highbar.assertions.response import truncate
 from highbar.domain.models import RequestConfig
@@ -29,9 +36,25 @@ MAX_REPLY_BYTES = 10_000_000
 REPLY_KEYS = ("response", "message", "content", "text", "reply")
 
 TEST_HEADER = "X-Highbar-Test"
+TRACEPARENT_HEADER = "traceparent"
+_TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
 
 
-CauseKind = Literal["http_status", "connect", "timeout", "transport", "empty_body"]
+def traceparent(trace_id: str) -> str:
+    """A W3C traceparent for ``trace_id``: version 00, a fresh parent id, sampled (01)."""
+    if not _TRACE_ID.match(trace_id) or trace_id == "0" * 32:
+        raise ValueError(
+            f"the test id {trace_id!r} is not a trace id (32 lower-case hex digits, not all 0)"
+        )
+    parent = "0" * 16
+    while parent == "0" * 16:
+        parent = secrets.token_hex(8)
+    return f"00-{trace_id}-{parent}-01"
+
+
+CauseKind = Literal[
+    "http_status", "connect", "timeout", "transport", "empty_body", "no_reply", "empty_reply"
+]
 
 
 @dataclass(frozen=True)
@@ -60,6 +83,15 @@ class InfraCause:
             return f"with no response from {self.endpoint} within agent.timeout{wait}"
         if self.kind == "empty_body":
             return f"with an empty body from {self.endpoint}"
+        if self.kind == "empty_reply":
+            return f"with an empty reply in the turn record, for messages to {self.endpoint}"
+        if self.kind == "no_reply":
+            # agent.reply: turn (HB-14): the message went, its reply never came.
+            wait = f" ({self.seconds:g}s)" if self.seconds is not None else ""
+            return (
+                f"with no turn record with a response, for messages to {self.endpoint}, "
+                f"within agent.timeout{wait}"
+            )
         return f"with a transport error from {self.endpoint}"
 
 
@@ -87,12 +119,16 @@ class HTTPClient:
         response_path: str | None = None,
         timeout_ms: int = 60000,
         transport: httpx.BaseTransport | None = None,
+        body_is_reply: bool = True,
+        traceparent: bool = False,
     ) -> None:
         self._endpoint = endpoint
+        self._traceparent = traceparent
         self._request = request or RequestConfig()
         self._response_path = response_path
         self._timeout_ms = timeout_ms
         self._transport = transport
+        self._body_is_reply = body_is_reply
 
     def send(self, message: str, *, values: Values) -> str:
         """Send ``message`` and return the reply text. Raises ``AgentResponseError``.
@@ -113,14 +149,23 @@ class HTTPClient:
         # httpx's timeout bounds each read, not the whole reply: a reply that keeps
         # trickling bytes would never end. The deadline bounds it.
         deadline = time.monotonic() + seconds
-        try:
+
+        def exchange() -> tuple[httpx.Response, bytes]:
             with (
                 httpx.Client(timeout=seconds, transport=self._transport) as client,
                 client.stream(
                     self._request.method, self._endpoint, headers=headers, **content
                 ) as reply,
             ):
-                raw = _read(reply, deadline, seconds, timeout)
+                return reply, _read(reply, deadline, seconds, timeout)
+
+        def late() -> AgentResponseError:
+            return AgentResponseError(f"no response in {seconds:g}s (agent.timeout)", timeout)
+
+        try:
+            # The status line and headers come before the first chunk of the body, where
+            # the deadline is checked: the whole exchange is waited for until then (HB-39).
+            reply, raw = within(exchange, seconds, late, name="highbar-agent-request")
         except httpx.TimeoutException:
             raise AgentResponseError(
                 f"no response in {seconds:g}s (agent.timeout)", timeout
@@ -157,6 +202,10 @@ class HTTPClient:
             raise AgentResponseError(
                 f"HTTP {status} from {self._endpoint}: {truncate(text)}", failed
             )
+        if not self._body_is_reply:
+            # agent.reply: turn (HB-14). The runner takes the reply from the turn record,
+            # and never checks this "".
+            return ""
         if not raw.strip():
             # Checked as "", it would pass every not_contains and every guardrail on text.
             raise AgentResponseError(
@@ -167,7 +216,11 @@ class HTTPClient:
         return self._reply_text(text, declared_json=_is_json(content_type))
 
     def _headers(self, values: Values) -> dict[str, str]:
-        """The spec's headers, then the session's (which win), then the test id."""
+        """The spec's headers, then the session's (which win), then the test id.
+
+        With ``traceparent``, the test id also goes as the trace id of a W3C
+        traceparent, which no header of the spec or the session can replace.
+        """
         headers: dict[str, str] = {}
 
         def put(name: str, value: Any) -> None:
@@ -182,6 +235,8 @@ class HTTPClient:
             for name, value in session_headers.items():
                 put(str(name), value)
         put(TEST_HEADER, values.test_id)
+        if self._traceparent:
+            put(TRACEPARENT_HEADER, traceparent(values.test_id))
         return headers
 
     def _reply_text(self, raw: str, *, declared_json: bool) -> str:

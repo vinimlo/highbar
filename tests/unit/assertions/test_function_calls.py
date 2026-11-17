@@ -357,3 +357,37 @@ class TestReviewFindings:
         failures = _failures([_call("a"), _call("b")], expect)
 
         assert failures == ["expected 3 calls to 'a' or 'b', got 2 that fit"]
+
+
+class TestHB37Returns:
+    """`returns` holds the whole return value, as `params` holds an argument (HB-37)."""
+
+    def test_hb37_a_list_return(self) -> None:
+        call = _make_trace("search_docs", result=["tr-7", "tr-2"])
+        assert satisfies(FunctionCallExpect(name="search_docs", returns={"len_lte": 3}), call)
+        assert not satisfies(FunctionCallExpect(name="search_docs", returns={"len_lte": 1}), call)
+        assert satisfies(FunctionCallExpect(name="search_docs", returns={"contains": "tr-7"}), call)
+
+    def test_hb37_a_text_or_number_return(self) -> None:
+        assert satisfies(
+            FunctionCallExpect(name="f", returns={"icontains": "done"}),
+            _make_trace("f", result="Done."),
+        )
+        assert satisfies(FunctionCallExpect(name="f", returns=3), _make_trace("f", result=3))
+        assert not satisfies(FunctionCallExpect(name="f", returns=3), _make_trace("f", result=4))
+
+    def test_hb37_an_object_return_is_matched_as_a_value(self) -> None:
+        call = _make_trace("f", result={"status": "ok", "n": 2})
+        assert satisfies(FunctionCallExpect(name="f", returns={"status": "ok"}), call)
+        assert not satisfies(
+            FunctionCallExpect(name="f", returns={"equals": {"status": "ok"}}), call
+        )
+
+    def test_hb37_a_mismatch_names_returns(self) -> None:
+        traces = [_make_trace("search_docs", result=["a", "b", "c", "d"])]
+        expect = Expect(
+            function_calls=[FunctionCallExpect(name="search_docs", returns={"len_lte": 3})]
+        )
+        results = FunctionCallsAssertion().evaluate(traces, "", expect)
+        assert not results[0].passed
+        assert "returns: expected {'len_lte': 3}, got ['a', 'b', 'c', 'd']" in results[0].message

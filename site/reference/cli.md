@@ -13,9 +13,10 @@ Runs the tests of a spec file, or of every `*.highbar.yaml` under a directory. W
 | `--runs N` | Run each phrasing N times (N ≥ 1), in place of the specs' `defaults.runs`. A test's own `runs` still wins. |
 | `--frozen` | Never generate variations: a phrasing missing from the committed cache fails. Use it in CI. |
 | `--keep-traces` | Keep the trace file of each spec whose agent highbar started, and print its path. |
-| `--report json=FILE` | Also write the results to FILE. See the [report](/reference/report). |
+| `--report json=FILE` | Also write the results to FILE. See the [report](/reference/report). `junit=FILE` writes them as JUnit XML, for CI tools that read it, and `markdown=FILE` as a summary for a CI job's page (`$GITHUB_STEP_SUMMARY`). Give it once per file to write more than one. |
 | `--max-cost AMOUNT` | A ceiling on what the whole run spends. Over it, the run stops at the end of the test in progress and exits with 3. |
 | `--max-errors N` | Stop the run once N executions in a row fail for the same cause of the agent's infrastructure, and exit with 4. 5 by default; 0 never stops. |
+| `--jobs N` | Run up to N tests at once (N ≥ 1, 1 by default). Every trace record must then carry `agent.correlate`. See [below](#jobs). |
 | `--suite NAME` | Run only the suites with this name. Repeat it for more suites. See [part of the tests](#part-of-the-tests). |
 | `-k TEXT` | Run only the tests whose `<suite>/<name>` or `id` contains TEXT, ignoring case. Repeat it for any of several. |
 
@@ -41,9 +42,11 @@ A selection that picks no test stops the run before any agent starts, with exit 
 
 ### `--max-cost`
 
-The accumulated cost is checked at the end of each test, across every spec of the run, so a test in progress always finishes, and the ceiling can be passed by what that test spends. Above the ceiling, not at it, the tests and specs left do not run. The agent highbar started is stopped, the results so far are kept, and the [report](/reference/report) says `stopped.reason: "budget_exceeded"`. The check also runs after the last test: a run that ended over its ceiling exits with 3, with every test in the report.
+The accumulated cost is checked at the end of each test, across every spec of the run, so a test in progress always finishes, and the ceiling can be passed by what that test spends. Above the ceiling, not at it, the tests and specs left do not run. The agent highbar started is stopped, the results so far are kept, and the [report](/reference/report) says `stopped.reason: "budget_exceeded"`. The check also runs after the last test: a run that ended over its ceiling exits with 3, with every test in the report. The message says which test the run stopped at and asks to raise the ceiling to run the rest. When nothing was left out, because the ceiling was passed only at the last test of the last spec or by what was read after it, it says only that the run went over its ceiling by the end of its last test.
 
 The ceiling has no currency of its own: each currency's sum is held against it separately, since costs in different currencies are not added. It sees only the costs it knows: a turn with no cost and currency cannot count, a run with one ends with a warning that it may have spent more, and an agent that reports no cost is never stopped.
+
+With [`agent.llm_proxy`](/reference/spec-format#usage-counted-at-the-source-agent-llm-proxy), the ceiling counts what the proxy read from each model call, at the provider's cost or the price table's, and an agent that reports `cost: 0` is stopped like any other. A model call it could not read makes the test an `error`, and the run ends with the warning that it may have spent more.
 
 A `turn` record with no test context, next to records that have one, belongs to no test, so it stays out of every total and budget. The ceiling depends on who started the agent. An agent highbar started can only be spending for this run, so the ceiling counts that cost, as it does a record tagged for no test of the run, and the message that stops the run says how much of the spend had no test context: that is why the totals can show less than what stopped it. An attached agent may be serving others, so the ceiling leaves that cost out, and the run ends with the same warning.
 
@@ -69,6 +72,36 @@ What ran stays as it ran: the executions before the stop keep their `error`, in 
 
 The message never shows the body of a reply, and a value from `${VAR}` in the endpoint is masked, as in every other message. `--max-errors 0` turns the stop off and runs every execution. When both stops apply, the first to come is the one reported: repeated errors stop the run in the middle of a test, and `--max-cost` is checked at its end.
 
+### `--jobs`
+
+With `--jobs N`, up to N tests are in flight at once, started in spec order. A spec with [`agent.llm_proxy`](/reference/spec-format#usage-counted-at-the-source-agent-llm-proxy) runs only with `--jobs 1`: its model calls carry no test id yet, and `--jobs` above 1 exits with code 2 before anything runs. Most of a test's time is the agent thinking, so N in flight divides the wall time by close to N. A test's phrasings, runs and turns still run one after the other, in one place: <code v-pre>{{previous.*}}</code>, `min_pass` and a conversation's turns depend on that order. Only the send, the wait for the reply's `turn` record with [`agent.reply: turn`](/guides/connecting-your-agent#an-agent-that-answers-later), and the wait for `settle_time` run side by side; the reading of the trace file and every verdict happen one at a time.
+
+With several tests in flight, the window a record falls in says nothing about whose it is, so records are counted by their correlation alone:
+
+- a record tagged for a test counts for that test, whichever read found it, and one that comes after its test's window closed is a late record, judged as with `--jobs 1`;
+- a record with no test context counts for no test. A test that checks what the agent recorded and has no record of its own is an `error`: `not observed: with --jobs, every record must carry agent.correlate (untagged records cannot be told apart)`. With `--jobs 1`, a window with nothing tagged counts for its test; with `--jobs N` it never does. An untagged call or usage also leaves unverified every test whose result it would change, in flight or already ended: tests end in any order, so a late one may be any of theirs. A test already reported is judged again, with a warning. Expect more `error`s than with `--jobs 1` from an agent that tags only some of its records.
+- a trace line that cannot be read leaves unverified every test in flight when it was read, since it may be any of theirs, and every test that ended with a budget, as `--jobs 1` does for the test before. Read after the last test, it leaves every test unverified.
+- a record that a test's session setup makes the agent write, tagged for that test, counts for it, though the test has sent nothing yet.
+
+So tag every record before using `--jobs`: `highbar.asgi.Middleware`, or `hb.turn(test=...)` around each message (see [connecting your agent](/guides/connecting-your-agent#tag-each-message-with-its-test)).
+
+The results reach the terminal and the [report](/reference/report) in spec order, as with `--jobs 1`, each once the tests before it are done. A warning can come before the result of the test it is about.
+
+Session hooks run in the test's own place, so up to N setups and teardowns can run at once, and the setup of one test can come before the teardown of another. A command or HTTP hook runs as N copies. Python hooks are called one at a time, but whatever they keep between calls must not assume one test at a time, and must be thread-safe. `agent.run`'s setup and teardown still run once, before and after all the tests.
+
+The stops start no more tests:
+
+- `--max-cost` is checked as each test ends. The tests already in flight finish, so a run can go past the ceiling by what up to N−1 tests spend. The message says how many tests were in flight and how much the run spent over the ceiling:
+
+  When every test of the run had already started, nothing was left out, and the message ends with `with no test left to run` instead of asking to raise the ceiling.
+
+  ```console
+    ✗ --max-cost 0.2: the run spent 0.25 USD by the end of 't1', so it started no more tests; the 2 tests in flight then finished, and the run spent 0.75 USD in all, 0.55 USD over the ceiling; raise the ceiling to run the rest
+  ```
+
+- `--max-errors` counts executions in the order they end. Once it stops the run, the tests in flight stop after their current execution, as the test in progress does with `--jobs 1`, and only the first stop's message is kept.
+- Ctrl-C (or SIGTERM) waits for the messages in flight, within `agent.timeout`, then stops the agent and runs `agent.run`'s teardown as with `--jobs 1`. The tests that ended are in the report; the ones it cut are not.
+
 ## `highbar validate [SPEC_PATH]`
 
 Parses and validates specs without running anything: unknown keys, wrong types, invalid regular expressions, tests that check nothing, and a `min_pass` above a test's runs, whether the test sets it or takes it from `defaults.min_pass`. One line per spec, `✓` or `✗` with the reason.
@@ -80,6 +113,43 @@ Writes the quickstart into the current directory: `agent.py` and `specs/quicksta
 ## `highbar variations [SPEC_PATH]`
 
 Generates the paraphrases that tests with `variations` ask for, and stores them in `.highbar/variations.json`. Only missing entries are generated; `--force` regenerates them all. See [variations](/guides/variations).
+
+## `highbar vacuum [SPEC_PATH]`
+
+Finds the tests that an agent doing nothing useful would pass: silent, echo, one that calls every tool the spec names (the test's own first, in its order), and one whose reply names every text the test's suite looks for. No agent runs. Exits 1 when a test is vacuous, 0 when none is, and 2 for an invalid spec. See [a guardrail an idle agent passes](/guides/guardrails#a-guardrail-an-idle-agent-passes).
+
+## `highbar compare --base PATH --head PATH`
+
+Compares two groups of runs test by test. Each `PATH` is a `--report json=` file or a folder of them, and `--base` and `--head` can repeat; each file is one round. A test gets `better` or `worse` only with a Holm-adjusted p under 0.05, at least 3 rounds a side, and a p that holds whether or not a round varies (Fisher on the counts and Welch on the rounds); otherwise the output says why there is no verdict. See [comparing two configurations](/guides/comparing).
+
+- `--fail-on-regression`: exit 1 when a test is `worse`. Without it, `compare` exits 0 whatever it found.
+- `--report json=FILE`: the comparison as JSON.
+
+It exits 2 when a report cannot be read, a folder holds no report, or no test is in every report with the same definition.
+
+## `highbar export braintrust REPORT --project NAME`
+
+Sends a finished run's `--report json=` file to Braintrust as an experiment, one event per execution, scored `highbar` (1 passed, 0 failed, `null` error) and `highbar_verified` (1 passed or failed, 0 error). The key is read from `BRAINTRUST_API_KEY`. See [exporting results](/guides/exporting-results).
+
+- `--project NAME`: the Braintrust project; created if it is not there.
+- `--experiment NAME`: the experiment. Default: the report file's name and the run's start, such as `run 2026-11-16T12:00:00.250Z`.
+- `--api-key-env VAR`: read the key from `VAR` instead.
+- `--api-url URL`: the Braintrust API. Default `https://api.braintrust.dev`.
+- `--partial`: send a run that stopped before every test ran (`complete: false`), marked as partial in the experiment's metadata.
+
+It exits 2, sending nothing, for a file that is not a highbar JSON report, an unknown `schema_version`, a run that did not finish (`exit_code: null`), a run that stopped before every test ran without `--partial`, or a key that is missing, empty, or not printable ASCII once trimmed. It exits 1 when Braintrust refuses a request after three retries of a `429` or a `5xx`, and says how many events were sent; sending again is safe.
+
+## `highbar redteam SPEC_PATH`
+
+Writes a spec of attacks on the agent's guardrails next to `SPEC_PATH` (`waiter.highbar.yaml` gives `waiter.redteam.highbar.yaml`), with the same `agent` and `defaults`. Nothing runs: run the file with `highbar run`. See [attacks written for you](/guides/guardrails#attacks-written-for-you).
+
+- `--allow TOOL`: a tool an attack may make the agent call; every other tool the spec names is forbidden. Repeatable.
+- `--secret TEXT`: text no reply may hold, such as a line of the system prompt. It is written into the file and shown when a test fails, and it cannot be empty. Repeatable.
+- `--lang en|pt|es`: only these languages. Repeatable.
+- `--out FILE`: write it there instead.
+- `--force`: write over the file. Without it, an existing file is never touched.
+
+It exits 2 for an invalid spec, an unknown language, an empty `--secret`, or a file already there.
 
 ## Exit codes
 

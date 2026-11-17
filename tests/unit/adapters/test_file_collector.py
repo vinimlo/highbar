@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ import pytest
 
 from highbar.adapters.file_collector import FileTraceCollector, TraceFormatError
 from highbar.domain.models import Hello, Trace, TurnRecord, Window
+from highbar.engine.observation import AgentNotObservedError
 
 
 def _line(record: dict[str, Any]) -> str:
@@ -365,6 +367,25 @@ class TestDeclaredScan:
     def test_no_file_is_none(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         assert FileTraceCollector(tmp_path / "missing.jsonl").declared() is None
 
+    def test_hb15_a_process_that_said_bye_declares_nothing(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """It ended: what it declared says nothing about the code running now (#52)."""
+        declared = self._declared(
+            tmp_path,
+            '{"v": 1, "type": "hello", "ts": 1, "pid": 3, "tools": ["refund"]}',
+            '{"v": 1, "type": "tools", "ts": 2, "names": ["get_order"]}',
+            '{"v": 1, "type": "bye", "ts": 3, "pid": 3}',
+        )
+        assert declared is None
+
+    def test_hb15_another_process_saying_bye_ends_nothing(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A forked child that ends: the process whose hello is last is still running."""
+        declared = self._declared(
+            tmp_path,
+            '{"v": 1, "type": "hello", "ts": 1, "pid": 3, "tools": ["refund"]}',
+            '{"v": 1, "type": "bye", "ts": 2, "pid": 4}',
+        )
+        assert declared == frozenset({"refund"})
+
 
 class TestMissingFile:
     """Attach mode checks the file before the first message (rehearsal FR3)."""
@@ -382,3 +403,42 @@ class TestMissingFile:
         from highbar.adapters.file_collector import NoTraceCollector
 
         assert not NoTraceCollector().missing()
+
+
+class TestUnreadablePath:
+    """HB-15: a trace path that cannot be read is named, never a traceback.
+
+    Docker makes a directory when a bind mount names a file that does not exist yet,
+    and highbar then read the directory as if it were the file.
+    """
+
+    def test_hb15_a_directory_is_not_a_trace_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "traces.jsonl"
+        path.mkdir()
+        collector = FileTraceCollector(path)
+        message = (
+            f"agent.traces {path.absolute()} is a directory, not a file, so no test can see "
+            "what the agent does. Docker makes one when a bind mount names a file that does "
+            "not exist yet: remove it, create the file and start the agent again"
+        )
+
+        for read in (collector.checkpoint, lambda: collector.collect(0), collector.declared):
+            with pytest.raises(AgentNotObservedError) as caught:
+                read()
+            assert str(caught.value) == message
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+    def test_hb15_a_file_it_cannot_read_is_named(self, tmp_path: Path) -> None:
+        path = tmp_path / "traces.jsonl"
+        path.write_text("", encoding="utf-8")
+        path.chmod(0)
+        try:
+            with pytest.raises(AgentNotObservedError) as caught:
+                FileTraceCollector(path).checkpoint()
+        finally:
+            path.chmod(0o600)
+
+        assert str(caught.value) == (
+            f"could not read agent.traces {path.absolute()}: Permission denied, so no test "
+            "can see what the agent does"
+        )

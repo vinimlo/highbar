@@ -10,7 +10,22 @@ of its output, so a setup that imports the application can log before it.
 
 A Python hook runs in a thread of its own, the same one that imported it, so a module
 that opens a connection at import time can use it; a call that outlives
-``agent.timeout`` is abandoned there, and the run goes on.
+``agent.timeout`` is abandoned there, and the run goes on. What that thread prints, and
+what the logging handlers its module made at import write, goes to
+``.highbar/logs/<spec>-hooks-<timestamp>.log``, not into the run's output (HB-22); a
+hook's failure names the file and ends with its last lines.
+
+An HTTP hook is a request with placeholders in its URL, headers and body (HB-13), so
+highbar can run from an image of its own, away from the agent's. A setup's reply must
+be a JSON object; any reply that is not 2xx is the hook's failure.
+
+``agent.run`` has the same three kinds of hook, run once per spec (HB-10): its setup
+before the agent starts, its teardown on every way out of a run whose setup finished.
+They belong to no test, so they read no placeholder, and a Python one is called with
+no argument.
+
+An ``expect.check`` is a Python function too (HB-12), imported and called in the same
+thread: it gets a ``CheckContext`` of the turn and returns its failures.
 """
 
 from __future__ import annotations
@@ -25,14 +40,29 @@ import subprocess
 import sys
 import tempfile
 import threading
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from typing import Any, cast
+import time
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, NoReturn, TextIO, cast
 
+import httpx
+
+from highbar._deadline import within
 from highbar._narrow import as_dict
 from highbar.assertions.response import truncate
-from highbar.domain.models import CommandHook, PythonHook, SessionConfig
-from highbar.engine.placeholders import PlaceholderError, Values, render
+from highbar.domain.models import (
+    CommandHook,
+    HttpHook,
+    PythonHook,
+    RunConfig,
+    SessionConfig,
+    Trace,
+    TurnRecord,
+)
+from highbar.engine.logs import log_path, make_folder
+from highbar.engine.placeholders import PlaceholderError, Values, render, render_url
+from highbar.engine.secrets import redact
 
 
 @dataclass(frozen=True)
@@ -42,23 +72,173 @@ class SessionContext:
     test_id: str
     test_name: str
     spec_path: str
+    # The test's own session.args (HB-9): the state this execution starts from.
+    args: Mapping[str, Any] = field(default_factory=dict[str, Any])
+    # The test's history (HB-24): the conversation the setup seeds before its message.
+    history: Sequence[Mapping[str, str]] = ()
+    # What agent.run.setup returned (HB-10), the same for every test: {{run.*}}.
+    run: Mapping[str, Any] = field(default_factory=dict[str, Any])
+
+
+@dataclass(frozen=True)
+class CheckContext:
+    """What an ``expect.check`` function gets of the turn it checks (HB-12).
+
+    ``tools`` and ``turns`` are the records highbar counted as this turn's, as its own
+    checks read them; a record written after the turn's window is not in them. Of a turn
+    highbar did not observe, they are ``Unobserved``: reading them is an error.
+    """
+
+    test_id: str
+    test_name: str
+    spec_path: str
+    message: str  # the trigger as sent, its templates resolved
+    response: str
+    session: Mapping[str, Any] = field(default_factory=dict[str, Any])
+    args: Mapping[str, Any] = field(default_factory=dict[str, Any])
+    history: Sequence[Mapping[str, str]] = ()
+    tools: Sequence[Trace] = ()
+    turns: Sequence[TurnRecord] = ()
 
 
 class SessionError(RuntimeError):
-    """A hook failed; the message starts with ``session.setup`` or ``session.teardown``."""
+    """A hook failed; the message starts with the hook: ``session.setup``, for one."""
+
+
+class Unobserved(Sequence[Any]):
+    """``ctx.tools`` or ``ctx.turns`` of a turn highbar has no record of.
+
+    An empty list would say the agent called nothing, and a guardrail of the author's
+    would pass against an agent nobody saw (review of #55). Reading it raises instead,
+    and ``read`` stays set when the check catches that, so the turn is still unverified.
+    """
+
+    def __init__(self, name: str, why: str) -> None:
+        why = why.removeprefix("not observed: ")
+        self.message = f"expect.check read ctx.{name} of a turn highbar did not observe: {why}"
+        self.read = False
+
+    def _refuse(self) -> NoReturn:
+        self.read = True
+        raise SessionError(self.message)
+
+    def __len__(self) -> NoReturn:
+        self._refuse()
+
+    def __getitem__(self, index: Any) -> NoReturn:
+        self._refuse()
+
+    def __iter__(self) -> NoReturn:
+        self._refuse()
+
+    def __contains__(self, value: object) -> NoReturn:
+        self._refuse()
+
+    def __bool__(self) -> NoReturn:
+        self._refuse()
+
+    def __eq__(self, other: object) -> NoReturn:
+        self._refuse()
+
+    __hash__ = None  # pyright: ignore[reportAssignmentType]
+
+    def __repr__(self) -> str:
+        return "<not observed>"
+
+
+class NoRunValues(Mapping[str, Any]):
+    """``ctx.run`` when ``agent.run.setup`` returned no JSON object (HB-10).
+
+    No ``{{run.*}}`` in the spec asked for one, so the setup may print what it likes. But
+    an empty mapping would let a hook's ``ctx.run.get("variant", "v1")`` open a session on
+    a variant the setup did not turn on, and the run would be green (review of #61).
+    Reading it raises instead, and ``read`` stays set when the hook catches that.
+    """
+
+    def __init__(self, why: str) -> None:
+        self.message = f"ctx.run: {why}"
+        self.read = False
+
+    def _refuse(self) -> NoReturn:
+        self.read = True
+        raise SessionError(self.message)
+
+    def __getitem__(self, key: str) -> NoReturn:
+        self._refuse()
+
+    def __iter__(self) -> NoReturn:
+        self._refuse()
+
+    def __len__(self) -> NoReturn:
+        self._refuse()
+
+    def __contains__(self, key: object) -> NoReturn:
+        self._refuse()
+
+    def __bool__(self) -> NoReturn:
+        self._refuse()
+
+    def __eq__(self, other: object) -> NoReturn:
+        self._refuse()
+
+    __hash__ = None  # pyright: ignore[reportAssignmentType]
+
+    def __repr__(self) -> str:
+        return "<no run values>"
+
+
+class RunHookError(SessionError):
+    """``agent.run.setup`` or ``agent.run.teardown`` failed (HB-10)."""
+
+
+# A setup's reply becomes the session, which goes into every request: past this, it is
+# not a session object.
+MAX_HOOK_REPLY_BYTES = 10_000_000
 
 
 class SessionHooks:
-    def __init__(self, config: SessionConfig, *, spec_path: str, timeout_ms: int) -> None:
+    def __init__(
+        self,
+        config: SessionConfig,
+        *,
+        spec_path: str,
+        timeout_ms: int,
+        transport: httpx.BaseTransport | None = None,
+        secrets: Mapping[str, str] | None = None,
+        run: RunConfig | None = None,
+        checks: Sequence[str] = (),
+    ) -> None:
         self._config = config
+        self._run_config = run
+        self._check_targets = tuple(checks)
+        self._checks: dict[str, Callable[..., Any]] = {}
+        self._transport = transport
         self._spec_path = spec_path
         self._timeout_s = timeout_ms / 1000
         self._functions: dict[str, Callable[..., Any]] = {}
         self._worker: _Worker | None = None
+        # Python hooks are called one at a time (HB-8): with --jobs, several tests open
+        # and close sessions at once, and the output of the run is routed around each call.
+        self._python = threading.RLock()
+        # The lines a failure shows go to the terminal: masked like any message.
+        self._secrets = dict(secrets or {})
+        self._log = _HookLog(spec_path)
+        # What agent.run.setup returned, for its teardown's {{run.*}} and ctx.run.
+        self._run_values: Mapping[str, Any] = {}
 
     def load(self) -> None:
         """Import the Python hooks, once, before any agent starts. Raises ``SessionError``."""
-        for what, hook in (("setup", self._config.setup), ("teardown", self._config.teardown)):
+        hooks = [("session.setup", self._config.setup), ("session.teardown", self._config.teardown)]
+        if self._run_config is not None:
+            hooks += [
+                ("agent.run.setup", self._run_config.setup),
+                ("agent.run.teardown", self._run_config.teardown),
+            ]
+        for target in self._check_targets:
+            self._checks[target] = self._in_worker(
+                "expect.check", "import", lambda target=target: _load(target, "expect.check")
+            )
+        for what, hook in hooks:
             if isinstance(hook, PythonHook):
                 self._functions[what] = self._in_worker(
                     what, "import", lambda target=hook.target, what=what: _load(target, what)
@@ -69,26 +249,9 @@ class SessionHooks:
         hook = self._config.setup
         if hook is None:
             return {}
-        if isinstance(hook, PythonHook):
-            result = self._call("setup", ctx)
-            if not isinstance(result, Mapping):
-                raise SessionError(
-                    f"session.setup must return a mapping, got {type(result).__name__}"
-                )
-            session: dict[str, Any] = dict(cast("Mapping[str, Any]", result))
-        else:
-            session = _last_json_object(self._run(hook, "setup", ctx, {}))
+        session = _values("session.setup", hook, self._setup_output("session.setup", hook, ctx))
         if "headers" in session and not isinstance(session["headers"], Mapping):
             raise SessionError("session.setup returned 'headers' that is not an object")
-        for key, value in session.items():
-            # It goes into requests and commands as JSON; an ORM object would crash there.
-            try:
-                json.dumps(value)
-            except (TypeError, ValueError):
-                raise SessionError(
-                    f"session.setup returned a value that is not JSON: {key} is "
-                    f"{type(value).__name__}"
-                ) from None
         return session
 
     def teardown(self, ctx: SessionContext, session: Mapping[str, Any]) -> None:
@@ -97,39 +260,162 @@ class SessionHooks:
         if hook is None:
             return
         if isinstance(hook, PythonHook):
-            self._call("teardown", ctx, session)
+            self._call("session.teardown", ctx, session)
+        elif isinstance(hook, HttpHook):
+            self._send(hook, "session.teardown", ctx, session)
         else:
-            self._run(hook, "teardown", ctx, session)
+            self._run(hook, "session.teardown", ctx, session)
+
+    def before_run(self) -> Mapping[str, Any]:
+        """``agent.run.setup``, once, before the agent starts, and what it returned: the
+        run's values, ``{{run.*}}`` and ``ctx.run``. Raises ``RunHookError``.
+
+        When the spec reads ``{{run.*}}``, the setup must return a JSON object. When it
+        does not, a setup may print what it likes (v0), and a ``ctx.run`` read of one that
+        returned no object is an error then (``NoRunValues``).
+        """
+        config = self._run_config
+        if config is None or config.setup is None:
+            return {}
+        what = "agent.run.setup"
+        try:
+            output = self._setup_output(what, config.setup, None)
+            try:
+                self._run_values = _values(what, config.setup, output)
+            except SessionError as e:
+                if config.read_result:
+                    raise
+                self._run_values = NoRunValues(redact(str(e), self._secrets))
+        except SessionError as e:
+            # It leaves the run, past the runner that masks a test's errors.
+            raise RunHookError(redact(str(e), self._secrets)) from None
+        return self._run_values
+
+    def after_run(self) -> None:
+        """``agent.run.teardown``, once the run is over. Raises ``RunHookError``."""
+        hook = self._run_config.teardown if self._run_config else None
+        if hook is None:
+            return
+        try:
+            self._run_hook("agent.run.teardown", hook)
+        except SessionError as e:
+            raise RunHookError(redact(str(e), self._secrets)) from None
+
+    def _run_hook(self, what: str, hook: CommandHook | PythonHook | HttpHook) -> None:
+        # A run hook reads no test's placeholder (the parser refuses them), only {{run.*}}.
+        no_test = SessionContext(
+            test_id="", test_name="", spec_path=self._spec_path, run=self._run_values
+        )
+        if isinstance(hook, PythonHook):
+            self._call(what)
+        elif isinstance(hook, HttpHook):
+            self._send(hook, what, no_test, {})
+        else:
+            self._run(hook, what, no_test, {})
+
+    def _setup_output(
+        self, what: str, hook: CommandHook | PythonHook | HttpHook, ctx: SessionContext | None
+    ) -> Any:
+        """Run a setup: what a Python one returned, a command's output, an HTTP reply.
+
+        ``ctx`` is the test's; a run's setup has none, and its Python function gets nothing.
+        """
+        if isinstance(hook, PythonHook):
+            return self._call(what, ctx) if ctx is not None else self._call(what)
+        values_ctx = ctx or SessionContext(test_id="", test_name="", spec_path=self._spec_path)
+        if isinstance(hook, HttpHook):
+            return self._send(hook, what, values_ctx, {})
+        return self._run(hook, what, values_ctx, {})
+
+    def check(self, target: str, ctx: CheckContext) -> list[str]:
+        """The failures ``expect.check`` found; none is a pass. Raises ``SessionError``.
+
+        Anything but a list of messages (``None`` from a function that forgot its
+        ``return`` included) is an error, never a pass.
+        """
+        function = self._checks[target]
+        found = self._in_worker("expect.check", "call", lambda: function(ctx))
+        messages = cast("list[Any]", found) if isinstance(found, (list, tuple)) else None
+        if messages is None or not all(isinstance(m, str) for m in messages):
+            raise SessionError(
+                "expect.check must return a list of failure messages (empty when the turn "
+                f"passes), got {_shape(found)}"
+            )
+        return [str(message) for message in messages]
 
     def _call(self, what: str, *args: Any) -> Any:
+        with self._python:
+            return self._call_one(what, *args)
+
+    def _call_one(self, what: str, *args: Any) -> Any:
         function = self._functions[what]
-        return self._in_worker(what, "call", lambda: function(*args))
+        unread = [
+            arg.run
+            for arg in args
+            if isinstance(arg, SessionContext) and isinstance(arg.run, NoRunValues)
+        ]
+        for run in unread:
+            run.read = False  # the same object serves every test: only this call's read counts
+        result = self._in_worker(what, "call", lambda: function(*args))
+        if (refused := next((run for run in unread if run.read), None)) is not None:
+            # The hook caught the refusal: what it did instead is not what the setup did.
+            raise SessionError(refused.message)
+        return result
 
     def _in_worker(self, what: str, action: str, task: Callable[[], Any]) -> Any:
+        with self._python:
+            return self._in_worker_one(what, action, task)
+
+    def _in_worker_one(self, what: str, action: str, task: Callable[[], Any]) -> Any:
         if self._worker is None:
-            self._worker = _Worker()
-        finished, outcome = self._worker.run(task, self._timeout_s)
+            self._worker = _Worker(self._log)
+        mark = self._log.mark()
+        with _routed(self._log):
+            finished, outcome = self._worker.run(task, self._timeout_s)
         if not finished:
             # The thread stays stuck in the hook; the next hook gets a new one.
             self._worker = None
             raise SessionError(
-                f"session.{what} did not finish in {self._timeout_s:g}s (agent.timeout)"
+                self._with_output(
+                    f"{what} did not finish in {self._timeout_s:g}s (agent.timeout)",
+                    mark,
+                )
             )
         if "error" in outcome:
             error = outcome["error"]
-            if isinstance(error, SessionError):
-                raise error
-            raise SessionError(f"session.{what} raised {_describe(error)}") from None
+            message = (
+                str(error)
+                if isinstance(error, SessionError)
+                else f"{what} raised {_describe(error)}"
+            )
+            raise SessionError(self._with_output(message, mark)) from None
         return outcome.get("result")
+
+    def _with_output(self, message: str, mark: int) -> str:
+        """``message``, and when the hook wrote anything in this call, where and its end."""
+        lines = [line for line in self._log.since(mark).splitlines() if line.strip()]
+        if not lines:
+            return message
+        tail = "\n".join(lines[-TAIL_LINES:])
+        shown = f"{message}; its output is in {self._log.path}, ending with:\n{tail}"
+        return redact(shown, self._secrets)
 
     def _run(
         self, hook: CommandHook, what: str, ctx: SessionContext, session: Mapping[str, Any]
     ) -> str:
-        values = Values(message=None, test_id=ctx.test_id, test_name=ctx.test_name, session=session)
+        values = Values(
+            message=None,
+            test_id=ctx.test_id,
+            test_name=ctx.test_name,
+            session=session,
+            args=ctx.args,
+            history=ctx.history,
+            run=ctx.run,
+        )
         try:
             argv = [_as_argument(render(token, values)) for token in hook.argv]
         except PlaceholderError as e:
-            raise SessionError(f"session.{what}: {e}") from None
+            raise SessionError(f"{what}: {e}") from None
 
         # Output goes to files, not pipes: a daemon the hook leaves behind may hold a
         # pipe open forever, and waiting for its end would hang the run.
@@ -144,7 +430,7 @@ class SessionHooks:
                 )
             except OSError as e:
                 raise SessionError(
-                    f"session.{what}: could not run '{argv[0]}': {e.strerror or e}"
+                    f"{what}: could not run '{argv[0]}': {e.strerror or e}"
                 ) from None
 
             try:
@@ -152,7 +438,7 @@ class SessionHooks:
             except subprocess.TimeoutExpired:
                 _kill_group(process)
                 raise SessionError(
-                    f"session.{what} did not finish in {self._timeout_s:g}s (agent.timeout)"
+                    f"{what} did not finish in {self._timeout_s:g}s (agent.timeout)"
                 ) from None
             except BaseException:
                 _kill_group(process)
@@ -162,16 +448,199 @@ class SessionHooks:
         if process.returncode != 0:
             tail = "\n".join(stderr.splitlines()[-10:])
             raise SessionError(
-                f"session.{what} exited with code {process.returncode}"
-                + (f":\n{tail}" if tail else "")
+                f"{what} exited with code {process.returncode}" + (f":\n{tail}" if tail else "")
             )
         return stdout
+
+    def _send(
+        self, hook: HttpHook, what: str, ctx: SessionContext, session: Mapping[str, Any]
+    ) -> str:
+        """Send the hook's request and return the reply's text. Raises ``SessionError``."""
+        values = Values(
+            message=None,
+            test_id=ctx.test_id,
+            test_name=ctx.test_name,
+            session=session,
+            args=ctx.args,
+            history=ctx.history,
+            run=ctx.run,
+        )
+        try:
+            url = render_url(hook.url, values)
+            headers = {name: _as_argument(render(v, values)) for name, v in hook.headers.items()}
+            body = render(hook.body, values)
+        except PlaceholderError as e:
+            raise SessionError(f"{what}: {e}") from None
+        for name, value in headers.items():
+            if value != value.strip() or any(ord(c) < 32 or ord(c) == 127 for c in value):
+                # Usually a token read with its newline, from the session or a ${VAR}.
+                raise SessionError(
+                    f"{what}: the header {name} has a control character or leading "
+                    "or trailing whitespace (often a secret read with its newline); not shown"
+                )
+            if not value.isascii():
+                # An accented test name, usually. The value is not shown either.
+                raise SessionError(
+                    f"{what}: the header {name} has characters outside ASCII, which "
+                    "a header cannot carry; send the value in the body or the URL instead"
+                )
+
+        content: dict[str, Any] = {}
+        if isinstance(body, str):
+            content["content"] = body.encode("utf-8")
+            if not any(name.lower() == "content-type" for name in headers):
+                headers["Content-Type"] = "text/plain; charset=utf-8"
+        elif body is not None:
+            content["json"] = body
+
+        seconds = self._timeout_s
+        late = f"{what} did not finish in {seconds:g}s (agent.timeout)"
+        # httpx's timeout bounds each read, not the whole reply: the deadline bounds it.
+        deadline = time.monotonic() + seconds
+
+        def exchange() -> tuple[httpx.Response, bytes]:
+            try:
+                with (
+                    httpx.Client(timeout=seconds, transport=self._transport) as client,
+                    client.stream(hook.method, url, headers=headers, **content) as reply,
+                ):
+                    raw = bytearray()
+                    for chunk in reply.iter_bytes():
+                        raw += chunk
+                        if len(raw) > MAX_HOOK_REPLY_BYTES:
+                            raise SessionError(
+                                f"{what}: the reply from {url} is larger than "
+                                f"{MAX_HOOK_REPLY_BYTES // 1_000_000} MB"
+                            )
+                        if time.monotonic() > deadline:
+                            raise SessionError(late)
+            except httpx.TimeoutException:
+                raise SessionError(late) from None
+            except httpx.ConnectError as e:
+                raise SessionError(f"{what}: cannot reach {url}: {e}") from None
+            except httpx.LocalProtocolError:
+                # The library quotes the offending value whole: say which problem, never it.
+                raise SessionError(
+                    f"{what}: the request to {url} could not be sent: a header value "
+                    "is not valid; the value is not shown"
+                ) from None
+            except (httpx.HTTPError, httpx.InvalidURL) as e:
+                raise SessionError(f"{what}: {hook.method} {url} failed: {e}") from None
+
+            return reply, bytes(raw)
+
+        # The status line and headers come before the first chunk of the body, where the
+        # deadline is checked: the whole exchange is waited for until then (HB-39).
+        reply, raw = within(exchange, seconds, lambda: SessionError(late), name="highbar-http-hook")
+        text = raw.decode(reply.charset_encoding or "utf-8", errors="replace")
+        status = reply.status_code
+        if 300 <= status < 400:
+            where = reply.headers.get("Location", "an unnamed location")
+            raise SessionError(
+                f"{what}: {hook.method} {url} returned HTTP {status}, redirected to "
+                f"{where}; point the hook at that URL"
+            )
+        if not reply.is_success:
+            raise SessionError(
+                f"{what}: {hook.method} {url} returned HTTP {status}: {truncate(text, 200)}"
+            )
+        return text
+
+
+# How many of a failed hook's last lines its message shows.
+TAIL_LINES = 10
+
+# Set in a hook's thread: where what it writes goes.
+_HOOK_THREAD = threading.local()
+
+
+class _HookLog:
+    """The file a spec's Python hooks write to, made at their first write (HB-22)."""
+
+    def __init__(self, spec_path: str) -> None:
+        self._spec_path = spec_path
+        self.path: Path | None = None
+        self._written = 0
+        self._lock = threading.Lock()
+
+    def write(self, text: str) -> int:
+        with self._lock:
+            if self.path is None:
+                self.path = log_path(self._spec_path, "hooks")
+                make_folder(self.path)
+            # Opened for each write: a hook abandoned at its timeout may write at any time.
+            with self.path.open("a", encoding="utf-8", errors="replace") as file:
+                file.write(text)
+            self._written += len(text)
+        return len(text)
+
+    def mark(self) -> int:
+        """Where the next write starts, to tell what one call wrote."""
+        with self._lock:
+            return self._written
+
+    def since(self, mark: int) -> str:
+        with self._lock:
+            if self.path is None:
+                return ""
+            return self.path.read_text(encoding="utf-8", errors="replace")[mark:]
+
+
+class _Routed:
+    """``sys.stdout`` or ``sys.stderr`` while a Python hook runs: what a hook's thread
+    writes goes to its log, and the rest goes on unchanged.
+
+    Once the call is over, only what the hook kept writes here: a logging handler its
+    module made at import, as ``logging.basicConfig`` does. That handler also catches
+    the run's own logging, an HTTP client's included, so all it writes goes to the log.
+    """
+
+    def __init__(self, original: TextIO, log: _HookLog) -> None:
+        self._original = original
+        self._log = log
+        self.installed = True
+
+    def _target(self) -> _HookLog | None:
+        log: _HookLog | None = getattr(_HOOK_THREAD, "log", None)
+        return log if log is not None or self.installed else self._log
+
+    def write(self, text: str) -> int:
+        log = self._target()
+        return self._original.write(text) if log is None else log.write(text)
+
+    def writelines(self, lines: Iterator[str]) -> None:
+        for line in lines:
+            self.write(line)
+
+    def flush(self) -> None:
+        if self._target() is None:
+            self._original.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._original, name)
+
+
+@contextlib.contextmanager
+def _routed(log: _HookLog) -> Iterator[None]:
+    """Route the hook's thread's output while the run waits for it, then put it back."""
+    saved = sys.stdout, sys.stderr
+    routed = _Routed(saved[0], log), _Routed(saved[1], log)
+    sys.stdout, sys.stderr = cast("TextIO", routed[0]), cast("TextIO", routed[1])
+    try:
+        yield
+    finally:
+        for stream in routed:
+            stream.installed = False
+        # The run's own streams, even over a wrapper the hook put on ours (colorama.init()
+        # does when the output is not a terminal, as in CI): what follows is the run's.
+        sys.stdout, sys.stderr = saved
 
 
 class _Worker:
     """A daemon thread that runs Python hooks, imports and calls alike, one at a time."""
 
-    def __init__(self) -> None:
+    def __init__(self, log: _HookLog) -> None:
+        self._log = log
         self._tasks: queue.Queue[tuple[Callable[[], Any], dict[str, Any], threading.Event]] = (
             queue.Queue()
         )
@@ -184,6 +653,7 @@ class _Worker:
         return done.wait(timeout), outcome
 
     def _serve(self) -> None:
+        _HOOK_THREAD.log = self._log
         while True:
             task, outcome, done = self._tasks.get()
             try:
@@ -191,6 +661,15 @@ class _Worker:
             except BaseException as e:  # SystemExit from a hook too: it is the hook's failure
                 outcome["error"] = e
             done.set()
+
+
+def _shape(value: Any) -> str:
+    """What a check returned, by kind: its values may be the agent's data."""
+    kind = type(value).__name__
+    if isinstance(value, (list, tuple)):
+        items = cast("list[Any]", value)
+        return f"a {kind} of {', '.join(sorted({type(item).__name__ for item in items}))}"
+    return kind
 
 
 def _describe(error: BaseException) -> str:
@@ -215,17 +694,17 @@ def _load(target: str, what: str) -> Callable[..., Any]:
         module = importlib.import_module(module_name)
     except Exception as e:
         raise SessionError(
-            f"session.{what}: cannot import '{module_name}': {type(e).__name__}: {e}"
+            f"{what}: cannot import '{module_name}': {type(e).__name__}: {e}"
         ) from None
     function = getattr(module, function_name, None)
     if function is None:
-        raise SessionError(f"session.{what}: '{module_name}' has no '{function_name}'")
+        raise SessionError(f"{what}: '{module_name}' has no '{function_name}'")
     if not callable(function):
-        raise SessionError(f"session.{what}: '{target}' is not a function")
+        raise SessionError(f"{what}: '{target}' is not a function")
     return function
 
 
-def _last_json_object(stdout: str) -> dict[str, Any]:
+def _last_json_object(stdout: str, what: str) -> dict[str, Any]:
     lines = [line for line in stdout.splitlines() if line.strip()]
     last = lines[-1] if lines else ""
     try:
@@ -235,9 +714,20 @@ def _last_json_object(stdout: str) -> dict[str, Any]:
     mapping = as_dict(value)
     if mapping is None:
         raise SessionError(
-            "session.setup must print a JSON object as its last line of output, "
+            f"{what} must print a JSON object as its last line of output, "
             f"got {truncate(last, 200)!r}"
         )
+    return mapping
+
+
+def _json_object(text: str, what: str) -> dict[str, Any]:
+    try:
+        value = json.loads(text)
+    except ValueError:
+        value = None
+    mapping = as_dict(value)
+    if mapping is None:
+        raise SessionError(f"{what} must return a JSON object, got {truncate(text.strip(), 200)!r}")
     return mapping
 
 
@@ -254,3 +744,24 @@ def _kill_group(process: subprocess.Popen[bytes]) -> None:
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(process.pid, signal.SIGKILL)
     process.wait()
+
+
+def _values(what: str, hook: CommandHook | PythonHook | HttpHook, output: Any) -> dict[str, Any]:
+    """The JSON object a setup returned: a session's values, or the run's."""
+    if isinstance(hook, PythonHook):
+        if not isinstance(output, Mapping):
+            raise SessionError(f"{what} must return a mapping, got {type(output).__name__}")
+        values: dict[str, Any] = dict(cast("Mapping[str, Any]", output))
+    elif isinstance(hook, HttpHook):
+        values = _json_object(output, what)
+    else:
+        values = _last_json_object(output, what)
+    for key, value in values.items():
+        # It goes into requests and commands as JSON; an ORM object would crash there.
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError):
+            raise SessionError(
+                f"{what} returned a value that is not JSON: {key} is {type(value).__name__}"
+            ) from None
+    return values

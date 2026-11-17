@@ -69,3 +69,23 @@ def phrasing_status(statuses: Sequence[Status], min_pass: int) -> Status:
     if passed + errored >= min_pass:
         return Status.ERROR
     return Status.FAILED
+
+
+def against_expected(observed: Status, expected: Status | None) -> tuple[Status, str | None]:
+    """A test's status judged against its ``expect_status`` (HB-21), and why it fails.
+
+    A negative control passes when it ends exactly as it expects. Ending passed is a
+    failure (a strict xpass): the control no longer catches what it was written for.
+    Ending in the other state is a failure too: the control did not fail the way it
+    should. Without ``expect_status`` the status stays what it was.
+    """
+    if expected is None:
+        return observed, None
+    if observed is expected:
+        return Status.PASSED, None
+    if observed is Status.PASSED:
+        return Status.FAILED, (
+            f"passed, but expect_status is {expected}: this negative control no longer "
+            "catches what it was written for"
+        )
+    return Status.FAILED, f"ended {observed}, but expect_status is {expected}"

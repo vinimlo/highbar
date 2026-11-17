@@ -32,6 +32,37 @@ class TestMarks:
         assert "HTTP error: refused" in output
         assert "✗" not in output
 
+    def test_hb21_a_negative_control_shows_what_it_expected(
+        self, reporter: TerminalReporter, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        result = Result(
+            status=Status.PASSED,
+            errors=["response does not contain 'ok'"],
+            duration_ms=3.0,
+            expected=Status.FAILED,
+        )
+
+        reporter.on_test_result("a tool that fails", result)
+
+        output = capsys.readouterr().out
+        assert "✓ a tool that fails (expected failed)" in output
+        # What made it fail is in the report; the terminal keeps one line for a control.
+        assert "does not contain" not in output
+
+    def test_hb21_a_control_that_did_not_fail_shows_why(
+        self, reporter: TerminalReporter, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        mismatch = "passed, but expect_status is failed"
+        result = Result(
+            status=Status.FAILED, errors=[mismatch], duration_ms=3.0, expected=Status.FAILED
+        )
+
+        reporter.on_test_result("a tool that fails", result)
+
+        output = capsys.readouterr().out
+        assert "✗ a tool that fails (expected failed)" in output
+        assert mismatch in output
+
 
 class TestSummary:
     def test_counts_the_three_outcomes_separately(self) -> None:
@@ -110,3 +141,55 @@ class TestUsage:
         reporter.on_run_end(_with(usage))
 
         assert "1.0 [red]" in capsys.readouterr().out
+
+
+class _Writes:
+    """A file that keeps each write apart: a pipe sees them apart too."""
+
+    def __init__(self) -> None:
+        self.writes: list[str] = []
+
+    def write(self, text: str) -> int:
+        self.writes.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
+class TestTheSummaryIsTheLastWrite:
+    """HB-35: a reader that leaves at the summary line must not turn a 0 into a 1.
+
+    rich exits 1 when a write finds the pipe closed. Anything written after the line
+    with `passed`, in a write of its own, races the reader leaving: test_i2 failed in
+    4 of 30 runs on develop, always on the blank line after the summary.
+    """
+
+    @pytest.mark.parametrize(
+        "usages",
+        [(TestUsage.COUNTED,), (TestUsage.COUNTED, None)],
+        ids=["complete", "with-warnings"],
+    )
+    def test_hb35_nothing_is_written_after_the_summary_line(
+        self, usages: tuple[Usage | None, ...]
+    ) -> None:
+        file = _Writes()
+        reporter = TerminalReporter()
+        reporter._console = Console(file=file, width=200, force_terminal=False)  # type: ignore[arg-type]
+
+        reporter.on_run_end(_with(*usages))
+
+        writes = [text for text in file.writes if text]
+        summary = next(i for i, text in enumerate(writes) if "passed" in text)
+        assert summary == len(writes) - 1, writes
+        assert writes[-1].endswith("\n\n")
+
+    def test_hb35_the_warnings_still_follow_the_summary(self) -> None:
+        file = _Writes()
+        reporter = TerminalReporter()
+        reporter._console = Console(file=file, width=200, force_terminal=False)  # type: ignore[arg-type]
+
+        reporter.on_run_end(_with(TestUsage.COUNTED, None))
+
+        text = "".join(file.writes)
+        assert text.index("1 passed") < text.index("! incomplete sum: 1 of 2 turns with no usage")
