@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import math
 import threading
 import time
 import uuid
@@ -370,6 +371,22 @@ def _tokens(usage: Usage) -> str:
 def _cost_of(usages: Iterable[Usage | None]) -> dict[str, float]:
     totals = add_up(usages)
     return totals.cost if totals is not None else {}
+
+
+def _too_slow(limit: float | None, took: float | None) -> list[str]:
+    """``expect.max_duration_ms`` against the time from the request to the reply (HB-18).
+
+    A failure, as a budget's is: it does not depend on a record, so it is never unknown.
+    """
+    if limit is None or took is None or took <= limit:
+        return []
+    # Rounded up, so a time over the limit never reads as the limit itself.
+    return [f"the reply took {math.ceil(took)} ms, over max_duration_ms {_as_written(limit)}"]
+
+
+def _as_written(number: float) -> str:
+    """``1500000`` and ``1234.5678`` as the spec has them, not as ``1.5e+06`` or ``1234.57``."""
+    return str(int(number)) if float(number).is_integer() else repr(float(number))
 
 
 def _amounts(costs: Mapping[str, float]) -> str:
@@ -2861,12 +2878,17 @@ class TestRunner:
                 "give each test execution its own value"
             )
 
-        sent_at = time.time()
+        # The monotonic clock: a wall clock moved back during the request would make a
+        # slow reply look fast, and max_duration_ms decides a verdict (HB-18).
+        sent_at = time.monotonic()
         try:
             with self._unlocked():
                 response = self._client.send(
                     resolved_trigger, values=replace(values, message=resolved_trigger)
                 )
+                # Before the lock is taken back: with --jobs, the wait for it is another
+                # test's read or judgement, not the agent's time (HB-18).
+                replied_at = time.monotonic()
         except AgentResponseError as e:
             # A failure of the transport or of HTTP is what --max-errors counts (HB-34).
             execution.cause = e.cause
@@ -2896,7 +2918,9 @@ class TestRunner:
                     "no text to check"
                 )
             response = reply or ""
-        log.response, log.response_ms = response, (time.time() - sent_at) * 1000
+            # The reply is known when a read finds its turn record.
+            replied_at = time.monotonic()
+        log.response, log.response_ms = response, (replied_at - sent_at) * 1000
 
         with self._unlocked():
             time.sleep(self._settle_time)
@@ -3074,16 +3098,17 @@ class TestRunner:
         if log.proxy:
             self._use_proxy(log, execution)
         budget = self._budget_check(expect.budget, log.usage)
+        slow = _too_slow(expect.max_duration_ms, log.response_ms)
         if (unseen := self._unobservable(expect)) is not None:
             # A name highbar cannot see leaves the test unverified, unless the part of
             # the spec it can see fails on its own: a failure is a failure (combine()).
             message, observable = unseen
-            real = [*self._check(traces, response, observable), *budget.exceeded]
+            real = [*self._check(traces, response, observable), *budget.exceeded, *slow]
             if not real:
                 return unverified(message)
             errors = [*real, message]
         else:
-            errors = [*errors, *budget.exceeded]
+            errors = [*errors, *budget.exceeded, *slow]
 
         # The same for a budget: without usage nothing is known about it, and that only
         # leaves the test unverified when nothing else already failed it. So does a model

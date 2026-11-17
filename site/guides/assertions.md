@@ -140,6 +140,20 @@ expect:
 
 Each condition that fails gets its own line in the output, ending with what the agent said, cut at 300 characters.
 
+## How long the reply takes: `max_duration_ms`
+
+`max_duration_ms` fails a test whose reply takes longer than that, so a slower search or a slower model shows up as a red test:
+
+```yaml test
+trigger: "Where is order 1042?"
+expect:
+  response:
+    contains: "1042"
+  max_duration_ms: 3000
+```
+
+The time is the one from the request highbar sends to the reply it reads. The session's setup, the settle time and the reading of the trace file are not in it, and with `--jobs` neither is the wait for another test's read. With `agent.reply: turn`, the reply is the turn record's, so the time runs until a read of the trace file finds it: highbar reads every 0.1 s, and with `--jobs` that read may wait for another test's, so the time can be a little more than the agent took. Over the limit, the test fails with `the reply took 4210 ms, over max_duration_ms 3000`. With `runs` and `min_pass`, a slow run counts as any other failed run. In a conversation, each turn's `expect` holds its own limit.
+
 ## Calls to the model: `llm`
 
 An agent that falls back from one model to another, or that must end every prompt with its own system message, says so in an [`llm` record](/reference/trace-contract#llm-one-call-to-the-model) per call. `expect.llm` checks them:
