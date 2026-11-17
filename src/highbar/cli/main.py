@@ -118,7 +118,19 @@ _SUITE = typer.Option(
     None,
     "--suite",
     metavar="NAME",
-    help="Run only the suites with this name. Give it more than once for more suites.",
+    help=(
+        "Run only the suites with this name. Given more than once, any of them; with -k "
+        "or --tag, a test must match each."
+    ),
+)
+_TAG = typer.Option(
+    None,
+    "--tag",
+    metavar="NAME",
+    help=(
+        "Run only the tests with this tag, their suite's or their own. Given more than "
+        "once, any of them; with --suite or -k, a test must match each."
+    ),
 )
 _KEYWORD = typer.Option(
     None,
@@ -126,7 +138,7 @@ _KEYWORD = typer.Option(
     metavar="TEXT",
     help=(
         "Run only the tests whose <suite>/<name> or id contains TEXT, ignoring case. "
-        "Give it more than once for any of them."
+        "Given more than once, any of them; with --suite or --tag, a test must match each."
     ),
 )
 
@@ -206,6 +218,7 @@ def run(
     ),
     suite: list[str] | None = _SUITE,
     keyword: list[str] | None = _KEYWORD,
+    tag: list[str] | None = _TAG,
 ) -> None:
     """Run behavior tests against your agent."""
     paths = _discover_specs(spec_path)
@@ -222,6 +235,7 @@ def run(
             jobs=jobs,
             suites=suite or (),
             keywords=keyword or (),
+            tags=tag or (),
         )
     except KeyboardInterrupt:
         # Anywhere in the run, parsing and hooks included. If an agent was up, the
@@ -328,6 +342,7 @@ def _run_all(
     jobs: int = 1,
     suites: Sequence[str] = (),
     keywords: Sequence[str] = (),
+    tags: Sequence[str] = (),
 ) -> int:
     """Run every spec and return the exit code.
 
@@ -368,13 +383,13 @@ def _run_all(
         return _stopped(report, "spec_invalid", "; ".join(failures), EXIT_UNRUNNABLE)
     # Before the selection: a spec left out still lends its ${VAR} values to the masks.
     specs = _sharing_secrets(specs)
-    # --suite and -k: the specs are whole above, so a typo anywhere still stops the run.
+    # --suite, -k and --tag: the specs are whole above, so a typo anywhere still stops it.
     try:
-        picked = select(specs, suites=suites, keywords=keywords)
+        picked = select(specs, suites=suites, keywords=keywords, tags=tags)
     except SelectionError as e:
         console.print(f"  [red]\u2717[/red] {escape(str(e))}", soft_wrap=True)
         return _stopped(report, "usage_error", str(e), EXIT_UNRUNNABLE)
-    selection = selection_of(specs, picked, suites=suites, keywords=keywords)
+    selection = selection_of(specs, picked, suites=suites, keywords=keywords, tags=tags)
     specs = picked
     # After the selection: a spec left out starts no agent and no proxy.
     proxied = [path for path, spec in specs if spec.agent.llm_proxy]

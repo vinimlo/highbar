@@ -473,6 +473,8 @@ class Test:
     # The state a negative control must end in (HB-21): ``failed`` or ``error``. The test
     # passes when it ends exactly there; None: it must pass, as every test.
     expect_status: Status | None = None
+    # Labels for --tag, its suite's and its own (HB-17). Like name and id, out of the hash.
+    tags: tuple[str, ...] = ()
 
     @property
     def requires_observation(self) -> bool:

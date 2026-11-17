@@ -112,6 +112,114 @@ class TestSelection:
         (call,) = fake.call_args_list
         assert "secret-a-123" in call.kwargs["secrets"]
 
+    def test_hb17_a_tag_picks_its_tests(self, project: Path) -> None:
+        tagged = textwrap.dedent(SPEC).replace("name: Menu", "name: Drinks\n    tags: [smoke]")
+        (project / "specs" / "menu" / "drinks.highbar.yaml").write_text(tagged, "utf-8")
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--tag", "smoke"])
+
+        assert result.exit_code == 0, result.output
+        (call,) = fake.return_value.run.call_args_list
+        assert [suite.name for suite in call.args[0].suites] == ["Drinks"]
+
+    def test_hb17_a_cut_run_says_what_it_left_out(self, project: Path) -> None:
+        other = project / "specs" / "menu" / "drinks.highbar.yaml"
+        other.write_text(textwrap.dedent(SPEC).replace("name: Menu", "name: Drinks"), "utf-8")
+        report = project / "report.json"
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            fake.return_value.snapshot.return_value = _summary(passed=1)
+            result = runner.invoke(
+                app, ["run", "specs/", "--suite", "Drinks", "--report", f"json={report}"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "! part of the tests: 1 of 2 picked by --suite Drinks, 1 left out" in result.output
+        selection = json.loads(report.read_text(encoding="utf-8"))["selection"]
+        assert selection == {
+            "suites": ["Drinks"],
+            "keywords": [],
+            "tags": [],
+            "picked": 1,
+            "left_out": 1,
+        }
+
+    def test_hb17_options_that_pick_every_test_print_no_line(self, project: Path) -> None:
+        """-k that matches every test cuts nothing: no "part of the tests" line, and the
+        report keeps the selection, with left_out 0 (the review of 4fb326f)."""
+        report = project / "report.json"
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            fake.return_value.snapshot.return_value = _summary(passed=1)
+            result = runner.invoke(
+                app, ["run", "specs/", "-k", "menu", "--report", f"json={report}"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "part of the tests" not in result.output
+        selection = json.loads(report.read_text(encoding="utf-8"))["selection"]
+        assert selection == {
+            "suites": [],
+            "keywords": ["menu"],
+            "tags": [],
+            "picked": 1,
+            "left_out": 0,
+        }
+
+    def test_hb17_the_line_quotes_what_it_was_given(self, project: Path) -> None:
+        other = project / "specs" / "menu" / "drinks.highbar.yaml"
+        other.write_text(textwrap.dedent(SPEC).replace("name: Menu", "name: Drinks"), "utf-8")
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "-k", "menu/me mostra"])
+
+        assert result.exit_code == 0, result.output
+        assert "! part of the tests: 1 of 2 picked by -k 'menu/me mostra', 1 left out" in (
+            result.output
+        )
+
+    @pytest.mark.parametrize(("reason", "code"), [(REPEATED_ERRORS, 4), (BUDGET_EXCEEDED, 3)])
+    def test_hb17_a_stop_tells_its_unrun_tests_from_the_ones_left_out(
+        self, project: Path, reason: str, code: int
+    ) -> None:
+        """Three specs, --suite Menu picks two; the first stops the run, so one picked
+        test did not run, and one was left out by the option (the review of 4fb326f)."""
+        menu = project / "specs" / "menu"
+        (menu / "other.highbar.yaml").write_text(textwrap.dedent(SPEC), "utf-8")
+        drinks = textwrap.dedent(SPEC).replace("name: Menu", "name: Drinks")
+        (menu / "drinks.highbar.yaml").write_text(drinks, "utf-8")
+        stop = "the run stopped here"
+        stopped = replace(_summary(errored=1), stopped=stop, stop_reason=reason)
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.side_effect = [stopped, _summary(passed=1)]
+            result = runner.invoke(app, ["run", "specs/", "--suite", "Menu"])
+
+        assert result.exit_code == code, result.output
+        line = (
+            "! part of the tests: 2 of 3 picked by --suite Menu, 1 left out; "
+            "of the 2 picked, 1 did not run: the run stopped"
+        )
+        assert line in result.output
+        assert result.output.index(line) < result.output.index(stop)
+
+    def test_hb17_a_whole_run_says_nothing_of_the_kind(self, project: Path) -> None:
+        report = project / "report.json"
+
+        with patch("highbar.engine.run_spec.TestRunner") as fake:
+            fake.return_value.run.return_value = _summary(passed=1)
+            fake.return_value.snapshot.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--report", f"json={report}"])
+
+        assert result.exit_code == 0, result.output
+        assert "part of the tests" not in result.output
+        assert json.loads(report.read_text(encoding="utf-8"))["selection"] is None
+
     def test_hb17_a_suite_no_spec_has_exits_2(self, project: Path) -> None:
         with patch("highbar.engine.run_spec.TestRunner") as fake:
             result = runner.invoke(app, ["run", "specs/", "--suite", "Menus"])
@@ -127,6 +235,22 @@ class TestSelection:
         assert result.exit_code == 2, result.output
         assert "no test matches -k zzz: nothing would be checked" in result.output
         fake.assert_not_called()
+
+
+class TestSelectionHelp:
+    def test_hb17_the_help_says_how_the_options_combine(self) -> None:
+        """Any value within an option, every option given (the review of #46)."""
+        result = runner.invoke(app, ["run", "--help"], env={"COLUMNS": "200"})
+
+        text = " ".join(result.output.replace("\u2502", " ").split())
+        for option, others in (
+            ("--suite", "-k or --tag"),
+            ("-k", "--suite or --tag"),
+            ("--tag", "--suite or -k"),
+        ):
+            assert (
+                f"Given more than once, any of them; with {others}, a test must match each." in text
+            ), option
 
 
 class TestSelectionWithTheLlmProxy:
@@ -155,6 +279,26 @@ class TestSelectionWithTheLlmProxy:
         ):
             fake.return_value.run.return_value = _summary(passed=1)
             result = runner.invoke(app, ["run", "specs/", "--suite", "Menu", "--jobs", jobs])
+
+        assert result.exit_code == 0, result.output
+        proxy.assert_not_called()
+        assert [call.kwargs["start_cmd"] for call in adapter.call_args_list] == ["true"]
+
+    @pytest.mark.parametrize("jobs", ["1", "2"])
+    def test_hb17_a_proxied_spec_cut_by_tag_starts_no_agent_and_no_proxy(
+        self, project: Path, jobs: str
+    ) -> None:
+        self._proxied(project)
+        tagged = textwrap.dedent(SPEC).replace("name: Menu", "name: Menu\n    tags: [fast]")
+        (project / "specs" / "menu.highbar.yaml").write_text(tagged, "utf-8")
+
+        with (
+            patch("highbar.engine.run_spec.TestRunner") as fake,
+            patch("highbar.engine.run_spec.LlmProxy") as proxy,
+            patch("highbar.engine.run_spec.SubprocessAdapter") as adapter,
+        ):
+            fake.return_value.run.return_value = _summary(passed=1)
+            result = runner.invoke(app, ["run", "specs/", "--tag", "fast", "--jobs", jobs])
 
         assert result.exit_code == 0, result.output
         proxy.assert_not_called()

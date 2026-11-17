@@ -99,3 +99,44 @@ def test_hb14_a_reply_that_never_comes_is_an_error(tmp_path: Path) -> None:
     assert result.returncode == 1, result.stdout + result.stderr
     assert "agent.reply: turn: no turn record of this test with a response in 3s" in result.stdout
     assert "1 error" in result.stdout, result.stdout
+
+
+@pytest.mark.timeout(40)
+def test_hb17_tag_picks_a_test_whose_reply_comes_from_its_turn(tmp_path: Path) -> None:
+    """Tags need nothing of agent.reply: turn: the test left out is never sent."""
+    (tmp_path / "agent.py").write_text(QUEUE_AGENT, encoding="utf-8")
+    port = _free_port()
+    spec = tmp_path / "queue.highbar.yaml"
+    spec.write_text(
+        textwrap.dedent(f"""\
+            agent:
+              start: "{sys.executable} agent.py {port} 'you have 7 days'"
+              endpoint: "http://127.0.0.1:{port}/webhook"
+              health: "http://127.0.0.1:{port}/health"
+              settle_time: 50
+              timeout: 3000
+              reply: turn
+            suites:
+              - name: WhatsApp
+                tests:
+                  - trigger: "and the deadline?"
+                    tags: [smoke]
+                    expect: {{response: {{contains: "days"}}}}
+                  - trigger: "in weeks?"
+                    expect: {{response: {{contains: "weeks"}}}}
+            """),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "highbar.cli.main", "run", spec.name, "--tag", "smoke"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout, result.stdout
+    assert "in weeks?" not in result.stdout
+    assert "part of the tests: 1 of 2 picked by --tag smoke, 1 left out" in result.stdout

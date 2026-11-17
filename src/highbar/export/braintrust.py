@@ -128,7 +128,7 @@ def _why_stopped(body: dict[str, Any]) -> str:
     if stopped is None:
         cut = _selection_line(body)
         if cut is not None:
-            # --suite or -k left tests out (HB-17): nothing stopped it, it ran part.
+            # --suite, -k or --tag left tests out (HB-17): nothing stopped it, it ran part.
             return f"{cut} (exit code {code})"
         return f"with no reason recorded (exit code {code})"
     message = str(stopped.get("message"))
@@ -147,7 +147,9 @@ def _selection_line(body: dict[str, Any]) -> str | None:
         return None
     words = [str(word) for word in as_list(selection.get("keywords")) or []]
     suites = [str(name) for name in as_list(selection.get("suites")) or []]
-    return Selection(tuple(suites), tuple(words), picked, left_out).line()
+    # A report from before --tag has no tags (HB-17 v1).
+    tags = [str(tag) for tag in as_list(selection.get("tags")) or []]
+    return Selection(tuple(suites), tuple(words), tuple(tags), picked, left_out).line()
 
 
 def partial_note(body: dict[str, Any]) -> str | None:

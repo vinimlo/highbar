@@ -60,7 +60,7 @@ class _OtlpAgent:
             self.server.wait()
 
     def run(
-        self, tests: str, tools: str | None = "[get_order, refund]"
+        self, tests: str, tools: str | None = "[get_order, refund]", *args: str
     ) -> subprocess.CompletedProcess[str]:
         listed = f"\n    tools: {tools}" if tools is not None else ""
         (self.root / "otel.highbar.yaml").write_text(
@@ -78,7 +78,7 @@ suites:
             encoding="utf-8",
         )
         return subprocess.run(
-            [sys.executable, "-m", "highbar.cli.main", "run", "otel.highbar.yaml"],
+            [sys.executable, "-m", "highbar.cli.main", "run", "otel.highbar.yaml", *args],
             cwd=self.root,
             env={**os.environ, "COLUMNS": "200"},
             capture_output=True,
@@ -202,3 +202,23 @@ def test_tools_without_the_list_a_guardrail_is_an_error(otlp_agent: _OtlpAgent) 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "agent.traces.tools" in result.stdout
     assert "1 passed" not in result.stdout
+
+
+@pytest.mark.timeout(40)
+def test_hb17_tag_picks_a_test_read_from_otlp_spans(otlp_agent: _OtlpAgent) -> None:
+    """Tags need nothing of OTLP: the forbidden refund below is never sent."""
+    otlp_agent.start()
+    tagged = PASSING.replace("        runs: 2\n", "        runs: 2\n        tags: [smoke]\n")
+    refund = """\
+      - name: never refunds
+        trigger: "please refund A1"
+        expect:
+          forbid: [refund]
+"""
+
+    result = otlp_agent.run(tagged + refund, "[get_order, refund]", "--tag", "smoke")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+    assert "never refunds" not in result.stdout
+    assert "part of the tests: 1 of 2 picked by --tag smoke, 1 left out" in result.stdout

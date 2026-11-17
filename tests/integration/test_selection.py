@@ -1,4 +1,4 @@
-"""HB-17 end to end: --suite and -k with what develop added after them.
+"""HB-17 end to end: --suite, -k and --tag with what develop added after them.
 
 `--max-cost` names "the rest" only when a picked test was left, under `--jobs 1` and
 `--jobs 2`; a spec with no test picked starts no agent; and a run of part of the tests is
@@ -28,9 +28,17 @@ from tests.unit.reporters.test_json_report import _closed, _schema
 REST = "raise the ceiling to run the rest"
 
 
-def _spec(suites: dict[str, list[str]], failing: tuple[str, ...] = ()) -> str:
+def _spec(
+    suites: dict[str, list[str]],
+    failing: tuple[str, ...] = (),
+    *,
+    tags: dict[str, list[str]] | None = None,
+    server: tuple[str, ...] = ("--cost", "0.01"),
+) -> str:
+    """``failing`` tests expect a reply they never get; ``tags`` are a test's own, by its
+    trigger; ``server`` the fixture server's switches."""
     port = _free_port()
-    start = " ".join([sys.executable, str(SERVER), "--port", str(port), "--cost", "0.01"])
+    start = " ".join([sys.executable, str(SERVER), "--port", str(port), *server])
     lines = [
         "agent:",
         f'  start: "{start}"',
@@ -46,6 +54,8 @@ def _spec(suites: dict[str, list[str]], failing: tuple[str, ...] = ()) -> str:
             reply = "absent" if test in failing else "ok"
             expect = f'        expect: {{response: {{contains: "{reply}"}}}}'
             lines += [f'      - trigger: "{test}"', expect]
+            if (tags or {}).get(test):
+                lines += [f"        tags: [{', '.join((tags or {})[test])}]"]
     return "\n".join(lines) + "\n"
 
 
@@ -66,13 +76,19 @@ class _Run:
         return "" if stopped is None else stopped["message"]
 
     def picked(
-        self, keywords: list[str], picked: int, left_out: int, suites: tuple[str, ...] = ()
+        self,
+        keywords: list[str],
+        picked: int,
+        left_out: int,
+        suites: tuple[str, ...] = (),
+        tags: tuple[str, ...] = (),
     ) -> bool:
         """Whether the report and the terminal say the run was this part of the tests."""
         line = f"! part of the tests: {picked} of {picked + left_out} picked by"
         return self.report["selection"] == {
             "suites": list(suites),
             "keywords": keywords,
+            "tags": list(tags),
             "picked": picked,
             "left_out": left_out,
         } and (line in self.output) == (left_out > 0)
@@ -153,6 +169,7 @@ def test_hb17_k1_a_spec_cut_whole_is_not_the_rest(two_specs: Path, jobs: str) ->
     assert "over its ceiling, by the end of its last test" in run.message
     assert REST not in run.message
     assert run.started("s1") and not run.started("s2")
+    assert "! part of the tests: 2 of 4 picked by -k spec1, 2 left out\n" in run.output
 
 
 @pytest.mark.timeout(60)
@@ -168,6 +185,12 @@ def test_hb17_k2_a_picked_test_in_the_next_spec_is_the_rest(two_specs: Path, job
     assert f"picked by -k test1, {stop}" in run.output
     assert run.message.endswith(f"by the end of 'spec1 test1', so it stopped there; {REST}")
     assert not run.started("s2")
+    # 2 left out by -k, and 1 picked that the ceiling did not let run: said apart.
+    assert (
+        "! part of the tests: 2 of 4 picked by -k test1, 2 left out; "
+        "of the 2 picked, 1 did not run: the run stopped"
+    ) in run.output
+    assert run.output.index("! part of the tests") < run.output.index(REST)
 
 
 @pytest.mark.timeout(60)
@@ -259,6 +282,81 @@ def test_hb17_every_picked_test_ran_is_still_not_complete(two_specs: Path, jobs:
     assert run.report["complete"] is False
     assert run.picked(["spec2 test2"], 1, 3)
     assert run.started("s2") and not run.started("s1")
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("jobs", ["1", "2"])
+def test_hb17_max_errors_tells_its_unrun_tests_from_the_ones_left_out(
+    tmp_path: Path, jobs: str
+) -> None:
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    for n in (1, 2):
+        tests = [f"spec{n} test1", f"spec{n} test2"]
+        spec = _spec({"S": tests}, server=("--statuses", "500"))
+        (specs / f"s{n}.highbar.yaml").write_text(spec, encoding="utf-8")
+
+    run = _run(tmp_path, "specs", "-k", "test1", "--max-errors", "1", "--jobs", jobs)
+
+    assert run.code == 4, run.output
+    assert run.ran == ["S/spec1 test1"]
+    assert run.report["stopped"]["reason"] == "repeated_errors"
+    assert (
+        "! part of the tests: 2 of 4 picked by -k test1, 2 left out; "
+        "of the 2 picked, 1 did not run: the run stopped"
+    ) in run.output
+
+
+# --tag, the same way (HB-17 v1).
+
+
+@pytest.mark.timeout(60)
+def test_hb17_tag_with_jobs_2_runs_only_the_tagged_tests_in_spec_order(tmp_path: Path) -> None:
+    tests = ["t1 one", "t2 two", "t3 three", "t4 four", "t5 five"]
+    tags = {"t1 one": ["smoke"], "t3 three": ["smoke", "slow"], "t4 four": ["smoke"]}
+    (tmp_path / "s6.highbar.yaml").write_text(_spec({"S": tests}, tags=tags), encoding="utf-8")
+
+    run = _run(tmp_path, "s6.highbar.yaml", "--tag", "smoke", "--jobs", "2")
+
+    assert run.code == 0, run.output
+    assert run.ran == ["S/t1 one", "S/t3 three", "S/t4 four"]
+    shown = [run.output.index(name) for name in ("t1 one", "t3 three", "t4 four")]
+    assert shown == sorted(shown), run.output
+    assert "two" not in run.output and "five" not in run.output
+    # Every tagged test ran, and two were left out: part of the tests is not complete.
+    assert run.report["complete"] is False
+    assert run.picked([], 3, 2, tags=("smoke",))
+    assert "! part of the tests: 3 of 5 picked by --tag smoke, 2 left out" in run.output
+    jsonschema.Draft202012Validator(_closed(_schema())).validate(run.report)
+
+
+@pytest.mark.timeout(60)
+def test_hb17_a_tag_that_picks_every_test_keeps_the_run_complete(tmp_path: Path) -> None:
+    tests = ["t1 one", "t2 two"]
+    tags = {"t1 one": ["smoke"], "t2 two": ["smoke"]}
+    (tmp_path / "s8.highbar.yaml").write_text(_spec({"S": tests}, tags=tags), encoding="utf-8")
+
+    run = _run(tmp_path, "s8.highbar.yaml", "--tag", "smoke")
+
+    assert run.code == 0, run.output
+    assert run.report["complete"] is True
+    assert run.picked([], 2, 0, tags=("smoke",))
+    assert "part of the tests" not in run.output
+
+
+@pytest.mark.timeout(60)
+def test_hb17_tag_and_k_together_pick_the_tests_with_both(tmp_path: Path) -> None:
+    tests = ["cancel it", "cancel it now", "refund it"]
+    tags = {"cancel it": ["smoke"], "refund it": ["smoke"]}
+    (tmp_path / "s7.highbar.yaml").write_text(_spec({"S": tests}, tags=tags), encoding="utf-8")
+
+    run = _run(tmp_path, "s7.highbar.yaml", "--tag", "smoke", "-k", "cancel it")
+
+    assert run.code == 0, run.output
+    assert run.ran == ["S/cancel it"]
+    assert "! part of the tests: 1 of 3 picked by -k 'cancel it' --tag smoke, 2 left out" in (
+        run.output
+    )
 
 
 # A run of part of the tests reads as part wherever its report goes (review of 6902b51).
@@ -365,3 +463,23 @@ def test_hb17_no_test_matches_quotes_its_values(shop: Path) -> None:
 
     assert run.code == 2, run.output
     assert "no test matches -k 'no such': nothing would be checked" in run.output
+
+
+@pytest.mark.timeout(60)
+def test_hb17_export_names_a_tag_selection(tmp_path: Path) -> None:
+    """The export's refusal says the run was part of the tests, --tag included."""
+    tags = {"looks up": ["smoke"]}
+    text = _spec({"Orders": ["looks up", "refunds"]}, failing=("refunds",), tags=tags)
+    (tmp_path / "shop.highbar.yaml").write_text(text, encoding="utf-8")
+    _run(tmp_path, "shop.highbar.yaml", "--tag", "smoke")
+
+    with fake_braintrust() as fake:
+        refused = _export(tmp_path / "report.json", fake.url)
+        assert fake.requests == []
+    with fake_braintrust() as fake:
+        partial = _export(tmp_path / "report.json", fake.url, "--partial")
+
+    assert refused.exit_code == 2, refused.output
+    assert "part of the tests: 1 of 2 picked by --tag smoke, 1 left out" in refused.output
+    assert partial.exit_code == 0, partial.output
+    assert "A partial run, part of the tests: 1 of 2 picked by --tag smoke" in partial.output

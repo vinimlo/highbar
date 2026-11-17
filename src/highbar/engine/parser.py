@@ -1034,7 +1034,29 @@ def _parse_suite(raw: Any, where: str) -> Suite:
         raise SpecError(f"{where}: has no tests")
     require_type(tests_raw, list, where, "tests must be a list")
     tests = [_parse_test(t, f"{where}.tests[{j}]") for j, t in enumerate(tests_raw)]
+    own = _parse_tags(raw, where)
+    if own:
+        # A test has its suite's tags and its own, each once, in that order (HB-17).
+        tests = [replace(test, tags=tuple(dict.fromkeys([*own, *test.tags]))) for test in tests]
     return Suite(name=name, tests=tests)
+
+
+def _parse_tags(raw: dict[str, Any], where: str) -> tuple[str, ...]:
+    """A suite's or a test's ``tags``: names that ``--tag`` picks (HB-17)."""
+    if "tags" not in raw:
+        return ()
+    names = as_list(raw["tags"])
+    if not names:
+        raise SpecError(f"{where}: tags must be a list of names, got {raw['tags']!r}")
+    for k, name in enumerate(names):
+        if not isinstance(name, str) or not name.strip():
+            raise SpecError(f"{where}: tags[{k}] must be a name, got {name!r}")
+        if name != name.strip():
+            # --tag smoke would never pick it, and nothing would say why.
+            raise SpecError(
+                f"{where}: tags[{k}] must be a name without spaces around it, got {name!r}"
+            )
+    return tuple(dict.fromkeys(str(name) for name in names))
 
 
 def _optional_name(raw: dict[str, Any], where: str) -> str | None:
@@ -1097,6 +1119,7 @@ def _parse_test(raw: Any, where: str) -> Test:
             id=_optional_id(raw, where),
             session_args=_parse_session_args(raw, where),
             history=_parse_history(raw, where),
+            tags=_parse_tags(raw, where),
             **_parse_repetition(raw, where),
         )
 
@@ -1116,6 +1139,7 @@ def _parse_test(raw: Any, where: str) -> Test:
         id=_optional_id(raw, where),
         session_args=_parse_session_args(raw, where),
         history=_parse_history(raw, where),
+        tags=_parse_tags(raw, where),
         **_parse_repetition(raw, where),
     )
 

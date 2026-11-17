@@ -76,7 +76,7 @@ The export exits 2, and sends nothing, for a file that is not a highbar JSON rep
 
 A run that ended before every test ran (`complete: false`) is refused the same way, with what stopped it: `--max-errors` when the agent's infrastructure failed, `--max-cost`, Ctrl-C. The tests that never ran are missing from the experiment, and the ones that ended in `error` are out of its `highbar` average, so a run where the agent went down after its first test would read as 100%. `--partial` sends it anyway, with `complete: false` and `stopped` in the experiment's metadata and `run_complete: false` on each event, and the summary line says it is partial. A run that did not finish is refused even with `--partial`.
 
-A run of part of the tests, whose [`--suite` or `-k`](/reference/cli#part-of-the-tests) left tests out, is `complete: false` too, and is refused the same way, with the report's `selection`: `part of the tests: 1 of 3 picked by -k looks, 2 left out`. Its experiment would show the tests picked as the whole suite. `--partial` sends it, and the summary line says it was part of the tests.
+A run of part of the tests, whose [`--suite`, `-k` or `--tag`](/reference/cli#part-of-the-tests) left tests out, is `complete: false` too, and is refused the same way, with the report's `selection`: `part of the tests: 1 of 3 picked by -k looks, 2 left out`. Its experiment would show the tests picked as the whole suite. `--partial` sends it, and the summary line says it was part of the tests.
 
 A missing key, or one that is empty or not printable ASCII once the whitespace around it is dropped, is exit 2 too, with the variable's name. The key never appears in any message, and nothing the export does ends in a traceback.
 

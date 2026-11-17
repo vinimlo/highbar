@@ -40,6 +40,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `name` | text | Required. |
 | `tests` | list | Required, not empty. |
 | `session` | mapping | `{args: {...}}` for every test of the suite. A test's own args win, key by key. |
+| `tags` | list of texts | Labels for [`--tag`](/reference/cli#part-of-the-tests), each without spaces around it. Each of the suite's tests has them, before its own. |
 
 ## `tests[]`
 
@@ -56,6 +57,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `session` | mapping | `{args: {...}}`: a JSON object for this test's session hooks and <code v-pre>{{test.args.&lt;path&gt;}}</code>. See [a state of its own](/guides/attach-mode#a-state-of-its-own). |
 | `history` | list | The conversation before the test's first message, each `{role, content}` with `role` user or assistant, for the session's setup to seed. Needs `agent.session` with a `setup`: a Python one, or a command or HTTP one that uses <code v-pre>{{test.history}}</code>. In a single-turn test, <code v-pre>{{test.history}}</code> in `agent.request` hands it on too, for an agent with no state of its own. See [starting in the middle of a conversation](/guides/attach-mode#starting-in-the-middle-of-a-conversation). |
 | `expect_status` | `failed` or `error` | The state this test must end in: a negative control. It passes when it ends exactly there, and fails when it passes or ends in the other state. See [a test that must fail](/guides/assertions#a-test-that-must-fail-expect-status). |
+| `tags` | list of texts | Labels for [`--tag`](/reference/cli#part-of-the-tests), added to its suite's. Like `name` and `id`, they are not part of what the test measures. |
 
 Each test's key is unique in a spec. Two tests with the same key are a spec error: give one an `id` or a different `name`.
 

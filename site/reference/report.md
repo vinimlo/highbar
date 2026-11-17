@@ -24,9 +24,9 @@ Responses and tool arguments go in whole, so treat it like a trace file from `--
 | `highbar_version` | |
 | `started_at`, `duration_ms` | UTC with milliseconds; wall time of the run. |
 | `exit_code` | The code the process returned. `null` means the run did not finish: it is still going, or it was killed. |
-| `complete` | Every test of every spec ran all of its executions. A run whose `--suite` or `-k` left tests out is not complete, even when every test picked ran: `selection` says what was picked. A run that `--max-cost` stopped after its last test is complete: `stopped` says the ceiling was passed. So is a run that `--max-errors` stopped at the last execution of its last test. |
+| `complete` | Every test of every spec ran all of its executions. A run whose `--suite`, `-k` or `--tag` left tests out is not complete, even when every test picked ran: `selection` says what was picked. A run that `--max-cost` stopped after its last test is complete: `stopped` says the ceiling was passed. So is a run that `--max-errors` stopped at the last execution of its last test. |
 | `stopped` | Why the run ended early, or `null`: `{"reason": ..., "message": ...}`. |
-| `selection` | What [`--suite` and `-k`](/reference/cli#part-of-the-tests) picked, or `null` when neither was given: `{"suites": [...], "keywords": [...], "picked": 2, "left_out": 5}`, counted in tests. Options that pick every test still give a `selection`, with `left_out: 0`: they were given, and cut nothing, and the run can be `complete`. `left_out` never counts the tests a stop did not let run: `complete` and `stopped` say those. |
+| `selection` | What [`--suite`, `-k` and `--tag`](/reference/cli#part-of-the-tests) picked, or `null` when none was given: `{"suites": [...], "keywords": [...], "tags": [...], "picked": 2, "left_out": 5}`, counted in tests. Options that pick every test still give a `selection`, with `left_out: 0`: they were given, and cut nothing, and the run can be `complete`. `left_out` never counts the tests a stop did not let run: `complete` and `stopped` say those. |
 | `git_sha` | `HEAD` where highbar ran, which is not always the agent's version. `null` outside a repository. |
 | `summary` | `total`, `passed`, `failed`, `errored` and `variations` of the whole run. |
 | `totals` | [Tokens and cost](#tokens-and-cost) of the whole run. |

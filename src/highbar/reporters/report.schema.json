@@ -26,7 +26,7 @@
       "type": ["integer", "null"]
     },
     "complete": {
-      "description": "Every test of every spec ran all of its executions. A run of part of the tests (--suite or -k left tests out, see selection) is not complete, even when every test picked ran. A run that --max-cost stopped after its last test is complete: stopped says the ceiling was passed. So is a run that --max-errors stopped at the last execution of its last test.",
+      "description": "Every test of every spec ran all of its executions. A run of part of the tests (--suite, -k or --tag left tests out, see selection) is not complete, even when every test picked ran. A run that --max-cost stopped after its last test is complete: stopped says the ceiling was passed. So is a run that --max-errors stopped at the last execution of its last test.",
       "type": "boolean"
     },
     "stopped": {
@@ -58,15 +58,16 @@
       ]
     },
     "selection": {
-      "description": "What --suite and -k picked, or null when neither was given. When they left tests out, complete is false even if every test picked ran, and the exit code follows the tests picked. Options that pick every test still give a selection, with left_out 0.",
+      "description": "What --suite, -k and --tag picked, or null when none was given. When they left tests out, complete is false even if every test picked ran, and the exit code follows the tests picked. Options that pick every test still give a selection, with left_out 0.",
       "oneOf": [
         { "type": "null" },
         {
           "type": "object",
-          "required": ["suites", "keywords", "picked", "left_out"],
+          "required": ["suites", "keywords", "tags", "picked", "left_out"],
           "properties": {
             "suites": { "type": "array", "items": { "type": "string" } },
             "keywords": { "type": "array", "items": { "type": "string" } },
+            "tags": { "type": "array", "items": { "type": "string" } },
             "picked": { "description": "Tests, not executions.", "type": "integer", "minimum": 1 },
             "left_out": { "description": "Tests the options cut; 0 when they picked every test. Never the tests a stop did not let run.", "type": "integer", "minimum": 0 }
           }

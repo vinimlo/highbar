@@ -46,7 +46,7 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "run": frozenset({"setup", "teardown"}),
     "hook": frozenset({"python", "http"}),
     "http_hook": frozenset({"url", "method", "headers", "body"}),
-    "suite": frozenset({"name", "tests", "session"}),
+    "suite": frozenset({"name", "tests", "session", "tags"}),
     "test": frozenset(
         {
             "id",
@@ -60,6 +60,7 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
             "session",
             "history",
             "expect_status",
+            "tags",
         }
     ),
     "test_session": frozenset({"args"}),
