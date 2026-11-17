@@ -357,7 +357,8 @@ class TestStoppedRuns:
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("BRAINTRUST_API_KEY", KEY)
         path = tmp_path / "stopped.json"
-        stop = ("repeated_errors", "5 executions in a row failed, so the run stopped. Exits with 4.")
+        message = "5 executions in a row failed, so the run stopped. Exits with 4."
+        stop = ("repeated_errors", message)
         write_report(path, code=4, stopped=stop, complete=False)
 
         result = _export(path, fake)
