@@ -63,6 +63,18 @@ class TestTheSpec:
         ):
             parse_spec(_spec(tmp_path, MANAGED, _suites(f"{{max_duration_ms: {value}}}")))
 
+    def test_hb18_an_integer_too_large_for_a_float_is_a_spec_error(self, tmp_path: Path) -> None:
+        """Review of fbbf029: 309 digits or more crashed the parse with an OverflowError
+        from ``float()``, and ``highbar validate`` exited 1 with a traceback."""
+        huge = "1" + "0" * 400
+
+        with pytest.raises(
+            SpecError,
+            match=r"suites\[0\]\.tests\[0\]\.expect: max_duration_ms must be a number of "
+            r"milliseconds above 0, got an integer of more than 308 digits$",
+        ):
+            parse_spec(_spec(tmp_path, MANAGED, _suites(f"{{max_duration_ms: {huge}}}")))
+
     def test_hb18_a_conversation_sets_it_per_turn(self, tmp_path: Path) -> None:
         suites = (
             "suites:\n  - name: S\n    tests:\n      - expect: {max_duration_ms: 800}\n"

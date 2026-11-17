@@ -1269,13 +1269,18 @@ def _parse_expect(raw: Any, where: str) -> Expect:
 
 def _parse_max_duration(raw: Any, where: str) -> float:
     """How long the agent may take to answer, in milliseconds (HB-18)."""
-    number = isinstance(raw, (int, float)) and not isinstance(raw, bool)
+    wrong = f"{where}: max_duration_ms must be a number of milliseconds above 0"
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        raise SpecError(f"{wrong}, got {raw!r}")
+    try:
+        limit = float(raw)
+    except OverflowError:
+        # An integer of 309 digits or more fits no float (review of fbbf029).
+        raise SpecError(f"{wrong}, got an integer of more than 308 digits") from None
     # YAML reads `.inf` and `.nan` as numbers, and neither is a limit.
-    if not number or not 0 < raw < math.inf:
-        raise SpecError(
-            f"{where}: max_duration_ms must be a number of milliseconds above 0, got {raw!r}"
-        )
-    return raw
+    if not 0 < limit < math.inf:
+        raise SpecError(f"{wrong}, got {raw!r}")
+    return limit
 
 
 def _parse_llm(raw: Any, where: str) -> LlmExpect:
