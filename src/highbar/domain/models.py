@@ -407,6 +407,13 @@ class Expect:
     check: str | None = None  # "module:function" of the author's own check (HB-12)
     llm: LlmExpect | None = None  # the calls to the model (HB-11)
     retrieval: RetrievalExpect | None = None  # what entered the prompt (HB-3)
+    # How long the agent may take to answer the message, from request to reply (HB-18).
+    max_duration_ms: float | None = None
+
+    def __post_init__(self) -> None:
+        # 1000 and 1000.0 are one limit, and one definition_sha256.
+        if self.max_duration_ms is not None:
+            object.__setattr__(self, "max_duration_ms", float(self.max_duration_ms))
 
     @property
     def requires_observation(self) -> bool:
