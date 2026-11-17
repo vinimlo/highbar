@@ -126,7 +126,10 @@ def _why_stopped(body: dict[str, Any]) -> str:
     code = body.get("exit_code")
     if stopped is None:
         return f"with no reason recorded (exit code {code})"
-    return f"{stopped.get('reason')}: {stopped.get('message')} (exit code {code})"
+    message = str(stopped.get("message"))
+    # highbar's own stop messages already end with "Exits with N." (review of #99).
+    named = message.rstrip().endswith(f"Exits with {code}.")
+    return f"{stopped.get('reason')}: {message}" + ("" if named else f" (exit code {code})")
 
 
 def partial_note(body: dict[str, Any]) -> str | None:

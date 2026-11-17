@@ -347,7 +347,25 @@ class TestStoppedRuns:
         assert "did not run every test" in result.output
         assert "repeated_errors: 3 executions in a row failed" in result.output
         assert "--partial" in result.output
+        assert "(exit code 4)" in result.output
         assert fake.requests == []
+
+    def test_a_stop_message_that_names_its_exit_code_is_not_given_it_twice(
+        self, tmp_path: Path, fake: FakeBraintrust, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review of #99: highbar's own stop messages end with "Exits with 4."."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("BRAINTRUST_API_KEY", KEY)
+        path = tmp_path / "stopped.json"
+        message = "5 executions in a row failed, so the run stopped. Exits with 4."
+        stop = ("repeated_errors", message)
+        write_report(path, code=4, stopped=stop, complete=False)
+
+        result = _export(path, fake)
+
+        assert result.exit_code == 2, result.output
+        assert "Exits with 4." in result.output
+        assert "(exit code 4)" not in result.output
 
     def test_f1_partial_exports_it_and_marks_it(
         self, tmp_path: Path, fake: FakeBraintrust, monkeypatch: pytest.MonkeyPatch
