@@ -197,10 +197,12 @@ class TestInParallel:
             Case(trigger="b", expect=Expect(forbid=("delete",))),
             Case(trigger="c", expect=Expect(function_calls=CALLS_LOOKUP.function_calls)),
         ]
-        one = _runner(_Agent(script), jobs=1).run(_spec(*tests))
+        # watch=0: the test that forbids "delete" would hold the end of the run for
+        # agent.watch (HB-53), and this measures only the sends in flight together.
+        one = _runner(_Agent(script), jobs=1, watch=0).run(_spec(*tests))
 
         started = time.monotonic()
-        three = _runner(_Agent(script), jobs=3).run(_spec(*tests))
+        three = _runner(_Agent(script), jobs=3, watch=0).run(_spec(*tests))
         elapsed = time.monotonic() - started
 
         assert elapsed < 1.0, f"3 tests of 0.5 s each took {elapsed:.2f} s at --jobs 3"
