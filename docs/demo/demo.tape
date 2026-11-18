@@ -4,10 +4,10 @@
 Output docs/assets/demo.gif
 
 Set Shell "bash"
-Set FontSize 16
-Set Width 1280
-Set Height 760
-Set Padding 24
+Set FontSize 18
+Set Width 960
+Set Height 700
+Set Padding 20
 Set TypingSpeed 35ms
 
 Hide
@@ -29,9 +29,7 @@ Type "clear"
 Enter
 Show
 
-Type "# turn the guardrails off"
-Enter
-Type "sed -i 's/GUARDRAILS = True/GUARDRAILS = False/' agent.py"
+Type "sed -i 's/GUARDRAILS = True/GUARDRAILS = False/' agent.py  # guardrails off"
 Sleep 300ms
 Enter
 Type "highbar run"
@@ -41,4 +39,4 @@ Sleep 6s
 Type "echo $?"
 Sleep 300ms
 Enter
-Sleep 3s
+Sleep 5s
