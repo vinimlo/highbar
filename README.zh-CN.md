@@ -1,6 +1,6 @@
-<!-- source: README.md sha256=123c1fa035e0 commit=e91b4c3 -->
+<!-- source: README.md sha256=123c1fa035e0 commit=3744466 -->
 
-> 本文译自英文 [README.md](README.md) 在提交 e91b4c3 时的版本，两者如有出入，以英文版为准。
+> 本文译自英文 [README.md](README.md) 在提交 3744466 时的版本，两者如有出入，以英文版为准。
 
 <div align="center">
 

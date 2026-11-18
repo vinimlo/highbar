@@ -1,6 +1,6 @@
-<!-- source: README.md sha256=123c1fa035e0 commit=e91b4c3 -->
+<!-- source: README.md sha256=123c1fa035e0 commit=3744466 -->
 
-> Dies ist eine Übersetzung der englischen README auf dem Stand von Commit `e91b4c3`, und wenn sich die beiden unterscheiden, gilt die englische [README.md](README.md).
+> Dies ist eine Übersetzung der englischen README auf dem Stand von Commit `3744466`, und wenn sich die beiden unterscheiden, gilt die englische [README.md](README.md).
 
 <div align="center">
 

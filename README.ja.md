@@ -1,6 +1,6 @@
-<!-- source: README.md sha256=123c1fa035e0 commit=e91b4c3 -->
+<!-- source: README.md sha256=123c1fa035e0 commit=3744466 -->
 
-> このドキュメントはコミット e91b4c3 時点の英語版 README の翻訳であり、内容に違いがある場合は英語版の [README.md](README.md) が正となります。
+> このドキュメントはコミット 3744466 時点の英語版 README の翻訳であり、内容に違いがある場合は英語版の [README.md](README.md) が正となります。
 
 <div align="center">
 
