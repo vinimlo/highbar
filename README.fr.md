@@ -1,6 +1,6 @@
-<!-- source: README.md sha256=123c1fa035e0 commit=2e518f6 -->
+<!-- source: README.md sha256=dce894c1f452 commit=3f174f6 -->
 
-> Ceci est une traduction du README anglais au commit `2e518f6`, et en cas de différence, c'est le [README.md](README.md) anglais qui fait foi.
+> Ceci est une traduction du README anglais au commit `3f174f6`, et en cas de différence, c'est le [README.md](README.md) anglais qui fait foi.
 
 <div align="center">
 
@@ -37,7 +37,8 @@ pip install "highbar[quickstart]" && highbar init && highbar run
 ## Pourquoi highbar
 
 - **« Impossible à vérifier » n'est jamais une réussite.** Un test est `passed`, `failed` ou
-  `error`. Un agent qui n'a écrit aucune trace pour un message obtient `error`, et l'exécution se
+  `error`. Un test qui vérifie ce que l'agent a enregistré, comme ses appels
+  d'outils, obtient `error` quand l'agent n'a écrit aucune trace pour ce message, et l'exécution se
   termine avec le code 1.
 - **Même comportement, même verdict.** Aucun LLM ne note le résultat, donc un build rouge signifie
   que l'agent a changé, pas le juge.

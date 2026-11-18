@@ -1,6 +1,6 @@
-<!-- source: README.md sha256=123c1fa035e0 commit=2e518f6 -->
+<!-- source: README.md sha256=dce894c1f452 commit=3f174f6 -->
 
-> Esta é uma tradução do README em inglês no commit `2e518f6`, e se as duas versões divergirem vale o [README.md](README.md) em inglês.
+> Esta é uma tradução do README em inglês no commit `3f174f6`, e se as duas versões divergirem vale o [README.md](README.md) em inglês.
 
 <div align="center">
 
@@ -37,7 +37,8 @@ pip install "highbar[quickstart]" && highbar init && highbar run
 ## Por que o highbar
 
 - **"Não deu para verificar" nunca é aprovação.** Um teste termina como `passed`, `failed` ou `error`.
-  Um agente que não escreveu nenhum trace para uma mensagem recebe `error`, e a execução sai com 1.
+  Um teste que confere o que o agente registrou, como as chamadas de ferramenta, recebe `error`
+  quando o agente não escreveu nenhum trace para aquela mensagem, e a execução sai com 1.
 - **Mesmo comportamento, mesmo veredito.** Nenhum LLM avalia o resultado, então um build vermelho
   quer dizer que o agente mudou, não o juiz.
 - **Testa o agente que você coloca no ar.** Mensagens reais vão por HTTP até o serviço em execução,

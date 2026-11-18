@@ -1,6 +1,6 @@
-<!-- source: README.md sha256=123c1fa035e0 commit=2e518f6 -->
+<!-- source: README.md sha256=dce894c1f452 commit=3f174f6 -->
 
-> Esta es una traducción del README en inglés en el commit `2e518f6`, y si las dos versiones difieren, vale el [README.md](README.md) en inglés.
+> Esta es una traducción del README en inglés en el commit `3f174f6`, y si las dos versiones difieren, vale el [README.md](README.md) en inglés.
 
 <div align="center">
 
@@ -37,8 +37,9 @@ pip install "highbar[quickstart]" && highbar init && highbar run
 ## Por qué highbar
 
 - **"No se pudo verificar" nunca es un aprobado.** Una prueba termina en `passed`, `failed` o
-  `error`. Un agente que no escribió ningún trace para un mensaje recibe `error`, y la ejecución
-  sale con 1.
+  `error`. Una prueba que revisa lo que el agente registró, como sus llamadas a
+  herramientas, recibe `error` cuando el agente no escribió ningún trace para ese mensaje, y la
+  ejecución sale con 1.
 - **Mismo comportamiento, mismo veredicto.** Ningún LLM califica el resultado, así que un build en
   rojo significa que cambió el agente, no el juez.
 - **Prueba el agente que despliegas.** Mensajes reales van por HTTP al servicio en ejecución, en tu

@@ -1,6 +1,6 @@
-<!-- source: README.md sha256=123c1fa035e0 commit=2e518f6 -->
+<!-- source: README.md sha256=dce894c1f452 commit=3f174f6 -->
 
-> 本文译自英文 [README.md](README.md) 在提交 2e518f6 时的版本，两者如有出入，以英文版为准。
+> 本文译自英文 [README.md](README.md) 在提交 3f174f6 时的版本，两者如有出入，以英文版为准。
 
 <div align="center">
 
@@ -34,7 +34,7 @@ pip install "highbar[quickstart]" && highbar init && highbar run
 
 ## 为什么选择 highbar
 
-- **“无法验证”永远不算通过**。测试结果只有 `passed`、`failed` 和 `error` 三种。如果 Agent 处理某条消息时没有写 trace，结果就是 `error`，运行以退出码 1 结束。
+- **“无法验证”永远不算通过**。测试结果只有 `passed`、`failed` 和 `error` 三种。检查 Agent 记录内容（例如工具调用）的测试，如果 Agent 处理该消息时没有写 trace，结果就是 `error`，运行以退出码 1 结束。
 - **行为相同，判定就相同**。没有 LLM 给结果打分，所以构建变红说明变的是 Agent，而不是裁判。
 - **测的就是你部署的 Agent**。真实消息通过 HTTP 发给正在运行的服务（在你的机器上或预发环境中），highbar 检查 Agent 记录下的工具调用。
 - **Agent 不稳定，数字依然可信**。每个测试都可以设置 `runs` 和 `min_pass`，`highbar compare` 能分辨真正的回归和噪声。

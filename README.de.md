@@ -1,6 +1,6 @@
-<!-- source: README.md sha256=123c1fa035e0 commit=2e518f6 -->
+<!-- source: README.md sha256=dce894c1f452 commit=3f174f6 -->
 
-> Dies ist eine Übersetzung der englischen README auf dem Stand von Commit `2e518f6`, und wenn sich die beiden unterscheiden, gilt die englische [README.md](README.md).
+> Dies ist eine Übersetzung der englischen README auf dem Stand von Commit `3f174f6`, und wenn sich die beiden unterscheiden, gilt die englische [README.md](README.md).
 
 <div align="center">
 
@@ -37,8 +37,8 @@ pip install "highbar[quickstart]" && highbar init && highbar run
 ## Warum highbar
 
 - **„Nicht prüfbar“ gilt nie als bestanden.** Ein Test ist `passed`, `failed` oder `error`. Ein
-  Agent, der für eine Nachricht keinen Trace geschrieben hat, bekommt `error`, und der Lauf endet
-  mit 1.
+  Test, der prüft, was der Agent aufgezeichnet hat, etwa seine Tool-Aufrufe, bekommt `error`, wenn
+  der Agent für diese Nachricht keinen Trace geschrieben hat, und der Lauf endet mit 1.
 - **Gleiches Verhalten, gleiches Urteil.** Kein LLM bewertet das Ergebnis, ein roter Build heißt
   also, dass sich der Agent geändert hat, nicht der Richter.
 - **Testet den Agenten, den du deployst.** Echte Nachrichten gehen per HTTP an den laufenden
