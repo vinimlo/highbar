@@ -260,6 +260,7 @@ def _runner(
         assertions=[FunctionCallsAssertion(), ResponseAssertion()],
         reporter=reporter,
         settle_time=spec.agent.settle_time / 1000.0,
+        watch=spec.agent.watch / 1000.0,
         variations=generator,
         managed=managed,
         session=session,

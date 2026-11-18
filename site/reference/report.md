@@ -128,6 +128,7 @@ The one exception is a command line that highbar cannot read: an unknown option,
 | `tools[].late` | Recorded after the test's window closed. |
 | `turns[].usage` | What the turn consumed, or `null` when it reported nothing. See below. |
 | `turns[].agent_usage` | With [`agent.llm_proxy`](/reference/spec-format#usage-counted-at-the-source-agent-llm-proxy): what the agent's own `turn` records said, when the proxy's count took its place in `usage`. Shown, not added. `null` otherwise. |
+| `watched_ms` | For a test that forbids a call: how long after its last reply highbar kept reading the trace, at least `agent.watch`. A call later than that was not seen. `null` for other tests, and when the run stopped before its last read. |
 | `turns[].budget` | The turn's own limit, or `null`. |
 | `budget` | What each execution of the test could spend, or `null`: its own budget, else `defaults.budget`. |
 | `totals` | On each test and each execution, its [tokens and cost](#tokens-and-cost). |
