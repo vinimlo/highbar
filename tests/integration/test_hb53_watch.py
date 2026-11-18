@@ -99,7 +99,7 @@ def test_hb53_the_report_and_the_terminal_say_how_long_it_was_watched(
     assert result.returncode == 0, result.stdout + result.stderr
     guardrail = _guardrail(project)
     assert guardrail["watched_ms"] >= 2000, guardrail
-    assert "Forbidden calls watched for 2." in result.stdout
+    assert "Forbidden calls watched 2." in result.stdout
 
 
 @pytest.mark.timeout(40)

@@ -9,7 +9,7 @@
 ### Added
 
 - `agent.watch` (ms, 2000 by default): how long after its reply a test that forbids a call is watched. A call later than that is not seen.
-- `watched_ms` on each test of the report that forbids a call, and one line under the summary with the shortest of them: `Forbidden calls watched for 2.0s or more after each reply (agent.watch); a later one is not seen.`
+- `watched_ms` on each test of the report that forbids a call, and one line under the summary with the shortest of them: `Forbidden calls watched 2.0s after each reply (agent.watch), not later.`
 
 ### Changed
 

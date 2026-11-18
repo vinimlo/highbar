@@ -59,10 +59,8 @@ def format_summary(summary: RunSummary, *, styled: bool = False) -> str:
 
 def format_watched(watched_ms: float) -> str:
     """How long the calls the tests forbid were watched for, the shortest of them."""
-    return (
-        f"Forbidden calls watched for {watched_ms / 1000:.1f}s or more after each reply "
-        "(agent.watch); a later one is not seen."
-    )
+    seconds = watched_ms / 1000
+    return f"Forbidden calls watched {seconds:.1f}s after each reply (agent.watch), not later."
 
 
 class TerminalReporter:
