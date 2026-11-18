@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from rich.console import Console
 from rich.markup import escape
+from rich.text import Text
 
 from highbar.domain.models import RunSummary, Status, Suite, TestResult, UsageTotals
 from highbar.engine.usage import amount
@@ -15,6 +18,19 @@ _MARKS = {
     Status.FAILED: ("red", "✗"),
     Status.ERROR: ("yellow", "!"),
 }
+
+
+# A detail line under a test: what failed, wrapped under its own text, not at column 0.
+_DETAIL = "      → "
+
+
+def new_console(**options: Any) -> Console:
+    """A console that colors only what highbar marks up.
+
+    Rich's highlighter colors every number, path and quoted string it finds, so a version,
+    a duration or a log's timestamp came out half white and half cyan.
+    """
+    return Console(highlight=False, **options)
 
 
 def _usage_parts(totals: UsageTotals) -> list[str]:
@@ -67,7 +83,7 @@ class TerminalReporter:
     """Formats test results for terminal output using rich."""
 
     def __init__(self) -> None:
-        self._console = Console()
+        self._console = new_console()
 
     def on_suite_start(self, suite: Suite) -> None:
         self._console.print(f"\n  [bold]{escape(suite.name)}[/bold]")
@@ -90,7 +106,17 @@ class TerminalReporter:
             # expected part, and it stays in the report.
             return
         for error in result.errors:
-            self._console.print(f"      [{color}]→ {escape(error)}[/{color}]")
+            self._detail(error, color)
+
+    def _detail(self, error: str, color: str) -> None:
+        """``→ error``, each line past the first indented under the text, to fit the width."""
+        width = max(self._console.width - len(_DETAIL), 20)
+        # A Text, not markup: the error is the agent's text, square brackets included.
+        lines = Text(error, style=color).wrap(self._console, width)
+        for index, line in enumerate(lines):
+            lead = _DETAIL if index == 0 else " " * len(_DETAIL)
+            line.rstrip()  # the space the line was broken at
+            self._console.print(Text.assemble(Text(lead, style=color), line), soft_wrap=True)
 
     def on_warning(self, message: str) -> None:
         self._console.print(f"  [yellow]! {escape(message)}[/yellow]", soft_wrap=True)

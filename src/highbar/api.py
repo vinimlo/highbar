@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import os
 
-from rich.console import Console
-
 from highbar.domain.models import RunSummary
 from highbar.domain.protocols import Reporter
 from highbar.engine.parser import parse_spec
 from highbar.engine.run_spec import load_session_hooks, run_spec
 from highbar.engine.runs import check_runs
 from highbar.engine.schema import SpecError
+from highbar.reporters.terminal import new_console
 from highbar.variations.cache import VariationCache, find_cache_path
 from highbar.variations.generator import VariationGenerator
 
@@ -53,7 +52,7 @@ def run(
         parsed,
         generator=generator,
         keep_traces=keep_traces,
-        console=Console(),
+        console=new_console(),
         session=load_session_hooks(path, parsed),
         default_runs=runs,
         reporter=reporter,
