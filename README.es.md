@@ -70,7 +70,7 @@ highbar run
 <!-- output: quickstart -->
 ```text
 
-  Highbar v0.2.1
+  Highbar v0.2.2
   Running specs/quickstart.highbar.yaml
 
   Orders
@@ -156,7 +156,7 @@ repite el número de tarjeta en su respuesta.
 <!-- output: quickstart-broken -->
 ```text
 
-  Highbar v0.2.1
+  Highbar v0.2.2
   Running specs/quickstart.highbar.yaml
 
   Orders
