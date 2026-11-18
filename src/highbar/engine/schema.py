@@ -28,6 +28,7 @@ ALLOWED_KEYS: dict[str, frozenset[str]] = {
             "health",
             "startup_timeout",
             "settle_time",
+            "watch",
             "timeout",
             "request",
             "response",

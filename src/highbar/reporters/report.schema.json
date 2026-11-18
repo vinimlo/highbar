@@ -257,6 +257,10 @@
         "expect_status": {
           "description": "The state this negative control must end in (expect_status in the spec), or null. status is already judged against it: passed when the test ended exactly there. Its phrasings and executions keep what happened.",
           "enum": ["failed", "error", null]
+        },
+        "watched_ms": {
+          "description": "For a test that forbids a call (forbid, function_calls: [] or exclusive): how long after its last reply highbar kept reading the trace, at least agent.watch. A call later than that was not seen. null for other tests, and when the run stopped before its last read.",
+          "type": ["number", "null"]
         }
       }
     },

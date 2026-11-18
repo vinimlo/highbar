@@ -19,6 +19,7 @@ Every key highbar accepts, by level. Any other key is an error, except keys that
 | `health` | URL | none | Must answer before tests start. Without it, highbar waits for the endpoint's port. |
 | `startup_timeout` | ms | 15000 | How long a started agent has to become ready. |
 | `settle_time` | ms | 500 | How long after a reply highbar waits before reading the trace file. |
+| `watch` | ms | 2000 | How long after its reply a test that forbids a call (`forbid`, `function_calls: []`, `exclusive`) is watched: the run reads the trace file until this long after the last reply, and an agent highbar started is stopped only then. A call later than that is not seen. A spec with no such test does not wait. |
 | `timeout` | ms | 60000 | Each reply, and each session hook. |
 | `traces` | path or glob | none | The trace file of an attached agent, or a glob of files, one per process (`var/traces/*.jsonl`), read together in time order. A path that names a file is that file, even with a `[` in it. See [several processes](/guides/attach-mode#an-agent-with-several-processes). Required when a test checks tool calls in attach mode. |
 | `request` | mapping | <code v-pre>POST {"message": "{{message}}"}</code> | `method`, `headers`, `body`. |
