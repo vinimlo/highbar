@@ -1,6 +1,6 @@
-<!-- source: README.md sha256=dce894c1f452 commit=3f174f6 -->
+<!-- source: README.md sha256=8dc8f4cf21bb commit=6ef4ffc -->
 
-> 이 문서는 커밋 3f174f6 시점의 영어 README를 번역한 것이며, 내용이 다를 경우 영어 원문인 [README.md](README.md)가 기준입니다.
+> 이 문서는 커밋 6ef4ffc 시점의 영어 README를 번역한 것이며, 내용이 다를 경우 영어 원문인 [README.md](README.md)가 기준입니다.
 
 <div align="center">
 
@@ -60,7 +60,7 @@ highbar run
 <!-- output: quickstart -->
 ```text
 
-  Highbar v0.2.1
+  Highbar v0.2.2
   Running specs/quickstart.highbar.yaml
 
   Orders
@@ -139,7 +139,7 @@ suites:
 <!-- output: quickstart-broken -->
 ```text
 
-  Highbar v0.2.1
+  Highbar v0.2.2
   Running specs/quickstart.highbar.yaml
 
   Orders

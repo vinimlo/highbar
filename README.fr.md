@@ -1,6 +1,6 @@
-<!-- source: README.md sha256=dce894c1f452 commit=3f174f6 -->
+<!-- source: README.md sha256=8dc8f4cf21bb commit=6ef4ffc -->
 
-> Ceci est une traduction du README anglais au commit `3f174f6`, et en cas de différence, c'est le [README.md](README.md) anglais qui fait foi.
+> Ceci est une traduction du README anglais au commit `6ef4ffc`, et en cas de différence, c'est le [README.md](README.md) anglais qui fait foi.
 
 <div align="center">
 
@@ -71,7 +71,7 @@ highbar run
 <!-- output: quickstart -->
 ```text
 
-  Highbar v0.2.1
+  Highbar v0.2.2
   Running specs/quickstart.highbar.yaml
 
   Orders
@@ -157,7 +157,7 @@ répète le numéro de carte dans sa réponse.
 <!-- output: quickstart-broken -->
 ```text
 
-  Highbar v0.2.1
+  Highbar v0.2.2
   Running specs/quickstart.highbar.yaml
 
   Orders
