@@ -32,8 +32,9 @@ pip install "highbar[quickstart]" && highbar init && highbar run
 
 ## Why highbar
 
-- **"Couldn't verify" is never a pass.** A test is passed, failed or error. An agent that
-  wrote no trace for a message gets error, and the run exits with 1.
+- **"Couldn't verify" is never a pass.** A test is passed, failed or error. A test that checks
+  what the agent recorded, such as its tool calls, gets error when the agent wrote no trace for
+  that message, and the run exits with 1.
 - **Same behavior, same verdict.** No LLM grades the result, so a red build means the agent
   changed, not the judge.
 - **Tests the agent you deploy.** Real messages go over HTTP to the running service, on your
