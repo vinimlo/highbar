@@ -27,6 +27,8 @@ from tests.fixtures.quickstart import move_to_a_free_port
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = [
     ROOT / "README.md",
+    # The translations' blocks are the README's (test_translations.py), checked here too.
+    *sorted(ROOT.glob("README.*.md")),
     *sorted(p for p in (ROOT / "site").rglob("*.md") if "node_modules" not in p.parts),
 ]
 
@@ -198,7 +200,7 @@ def test_site_prose_has_no_bare_placeholders() -> None:
     """
     found: list[str] = []
     for page in SOURCES:
-        if page.name == "README.md":
+        if page.name.startswith("README"):
             continue
         in_fence = in_vpre = False
         for number, line in enumerate(page.read_text(encoding="utf-8").splitlines(), start=1):
