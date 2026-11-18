@@ -19,7 +19,8 @@ docker run --rm -v "$PWD:/vhs" --entrypoint sh highbar-demo -c '
   cp /tmp/demo.gif demo.gif
   # The GIF opens on its last screen, or the paused GIF shows something else (review of #105).
   frames=$(ffmpeg -hide_banner -loglevel error -i demo.gif -f framemd5 - | grep -v "^#" | awk "{print \$6}")
-  if [ "$(echo "$frames" | head -n 1)" != "$(echo "$frames" | tail -n 1)" ]; then
+  # sh has no pipefail, so a failed ffmpeg would leave no hashes and pass the comparison.
+  if [ -z "$frames" ] || [ "$(echo "$frames" | head -n 1)" != "$(echo "$frames" | tail -n 1)" ]; then
     echo "demo.gif does not open on its last screen" >&2
     exit 1
   fi
