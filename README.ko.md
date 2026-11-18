@@ -1,6 +1,6 @@
-<!-- source: README.md sha256=123c1fa035e0 commit=3744466 -->
+<!-- source: README.md sha256=123c1fa035e0 commit=2e518f6 -->
 
-> 이 문서는 커밋 3744466 시점의 영어 README를 번역한 것이며, 내용이 다를 경우 영어 원문인 [README.md](README.md)가 기준입니다.
+> 이 문서는 커밋 2e518f6 시점의 영어 README를 번역한 것이며, 내용이 다를 경우 영어 원문인 [README.md](README.md)가 기준입니다.
 
 <div align="center">
 
