@@ -193,3 +193,45 @@ class TestTheSummaryIsTheLastWrite:
 
         text = "".join(file.writes)
         assert text.index("1 passed") < text.index("! incomplete sum: 1 of 2 turns with no usage")
+
+
+class TestDetails:
+    def test_a_long_detail_wraps_under_its_own_text(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Wrapped at column 0, a long `Got: '...'` broke the indentation of the list."""
+        reporter = TerminalReporter()
+        reporter._console = Console(width=60, force_terminal=False)
+        error = (
+            "Response matches forbidden pattern '\\b4[0-9]{3}([ -]?[0-9]{4}){3}\\b' (found "
+            "'4111 1111 1111 1111'). Got: 'Saved your card 4111 1111 1111 1111 for next time.'"
+        )
+
+        reporter.on_test_result("never repeats a card number", Result(Status.FAILED, [error], 5.0))
+
+        lines = capsys.readouterr().out.splitlines()[1:]
+        assert len(lines) > 1
+        assert lines[0].startswith("      → Response matches")
+        assert all(line.startswith(" " * 8) and line[8] != " " for line in lines[1:]), lines
+        assert all(len(line) <= 60 and not line.endswith(" ") for line in lines), lines
+        assert " ".join(line.strip().removeprefix("→ ") for line in lines) == error
+
+    def test_square_brackets_in_a_detail_are_kept(
+        self, reporter: TerminalReporter, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        reporter.on_test_result("t", Result(Status.FAILED, ["Got: '[red]x[/red]'"], 5.0))
+
+        assert "→ Got: '[red]x[/red]'" in capsys.readouterr().out
+
+
+class TestColors:
+    def test_numbers_and_paths_are_not_colored_by_rich(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Rich's highlighter colored half of "v0.2.1", a duration and a log's timestamp."""
+        monkeypatch.setenv("FORCE_COLOR", "1")
+        reporter = TerminalReporter()
+
+        reporter.on_test_result("order 1042 at /tmp/a-20261118.log", Result(Status.PASSED, [], 5.0))
+
+        assert "order 1042 at /tmp/a-20261118.log" in capsys.readouterr().out

@@ -19,6 +19,8 @@
 
 ### Fixed
 
+- A failure's detail longer than the terminal wraps under its own text, not at column 0, so the list of tests keeps its shape in a narrow terminal or a CI log of 80 columns.
+- The terminal no longer colors parts of numbers, paths and quoted text by itself. Rich's highlighter colored "2.1" in "v0.2.1", the first digit of a duration and the timestamp in a log's name. Only the marks and the counts highbar colors on purpose are colored.
 - A message to the agent stops at `agent.timeout` when the agent sends its status line and headers slowly, as HTTP hooks do since 0.2.0. httpx's timeout holds for each read, so an agent that sent a byte every 0.1 s kept a message of 1 s waiting for 12 s. A message cut this way is a timeout, as any other, and counts for `--max-errors`.
 
 ## 0.2.1
