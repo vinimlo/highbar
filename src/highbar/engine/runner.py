@@ -484,6 +484,7 @@ class TestRunner:
         settle_time: float = 0.5,
         variations: VariationGenerator | None = None,
         *,
+        watch: float = 2.0,
         managed: bool = True,
         session: SessionHooks | None = None,
         spec_path: str = "",
@@ -505,6 +506,10 @@ class TestRunner:
         self._reporter = _Masking(reporter, secrets) if secrets else reporter
         self._secrets: Mapping[str, str] = secrets or {}
         self._settle_time = settle_time
+        self._watch = watch
+        # HB-53: when each test last got a reply, and when the run last read the trace
+        self._replied_at: dict[int, float] = {}
+        self._final_read_at: float | None = None
         self._variations = variations
         self._managed = managed
         self._session = session
@@ -572,6 +577,8 @@ class TestRunner:
         self._inventory, self._seen, self._undeclared = None, set(), {}
         self._executions, self._findings, self._test_index = [], [], 0
         self._gates, self._reported, self._warnings = {}, {}, []
+        self._replied_at, self._final_read_at = {}, None
+        forbids = any(test.forbids_calls for suite in spec.suites for test in suite.tests)
         observes = spec.default_budget is not None or any(
             test.requires_observation for suite in spec.suites for test in suite.tests
         )
@@ -633,8 +640,16 @@ class TestRunner:
             if self._executions:
                 # The last test has no next one whose read would show its late calls, and
                 # one that checks only the reply still spent what a late `turn` reports.
-                time.sleep(self._settle_time)
+                # A call a test forbids is watched for agent.watch after its reply, the
+                # last test's too (HB-53): before, it was watched for settle_time alone.
+                time.sleep(self._tail_wait(forbids))
                 self._read_after_last_test()
+                if self._managed:
+                    # What the agent finishes before it exits counts too (HB-53): it was
+                    # stopped after this read, and its last writes were never read.
+                    self._adapter.stop()
+                    self._read_after_last_test()
+                self._final_read_at = time.monotonic()
                 self._report_late(self._findings)
                 # That read can add to what the run spent: it may have ended over its ceiling.
                 if self._stopped is None:
@@ -678,6 +693,9 @@ class TestRunner:
             stopped=self._mask(self._stopped),
             untagged_cost=_cost_of(self._masked_parts(stray) for stray in self._strays),
             stop_reason=self._stop_reason,
+            watched_ms=min(
+                (test.watched_ms for test in tests if test.watched_ms is not None), default=None
+            ),
         )
 
     @property
@@ -740,8 +758,27 @@ class TestRunner:
             phrasings=tuple(phrasings),
             budget=self._budget_of(test),
             expect_status=test.expect_status,
+            watched_ms=self._watched_ms(index, test),
         )
         return replace(outcome, totals=add_up(outcome.usages))
+
+    def _tail_wait(self, forbids: bool) -> float:
+        """How long to wait after the last test before the run's last read.
+
+        A spec with a test that forbids a call waits until agent.watch after the last
+        reply, so the last test is watched as long as every other one (HB-53).
+        """
+        last = max(self._replied_at.values(), default=None)
+        if not forbids or last is None:
+            return self._settle_time
+        return max(self._settle_time, self._watch - (time.monotonic() - last))
+
+    def _watched_ms(self, index: int, test: Test) -> float | None:
+        """How long after the test's last reply highbar kept reading, if it forbids a call."""
+        replied = self._replied_at.get(index)
+        if not test.forbids_calls or replied is None or self._final_read_at is None:
+            return None
+        return round((self._final_read_at - replied) * 1000, 1)
 
     def _execution_outcome(self, execution: _Execution, status: Status) -> ExecutionOutcome:
         turns = tuple(
@@ -1792,6 +1829,7 @@ class TestRunner:
             # The message never reached the agent, so its behavior was not checked.
             return unverified(f"HTTP error: {e}")
         log.response, log.response_ms = response, (time.time() - sent_at) * 1000
+        self._replied_at[self._test_index] = time.monotonic()
 
         time.sleep(self._settle_time)
         window, unreadable = self._read()

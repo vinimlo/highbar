@@ -533,6 +533,7 @@ def _parse_expanded_agent(raw: dict[str, Any]) -> AgentConfig:
         health=raw.get("health"),
         startup_timeout=_milliseconds(raw, "startup_timeout", 15000, minimum=1),
         settle_time=_milliseconds(raw, "settle_time", 500, minimum=0),
+        watch=_milliseconds(raw, "watch", 2000, minimum=0),
         timeout=_milliseconds(raw, "timeout", 60000, minimum=1),
         request=_parse_request(raw.get("request"), has_session, has_run),
         response=_parse_response_path(raw["response"]) if "response" in raw else None,

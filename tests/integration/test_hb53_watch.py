@@ -78,3 +78,56 @@ def test_hb53_a_late_call_in_the_last_test_fails_it_managed(project: _Project) -
     guardrail = _guardrail(project)
     assert guardrail["status"] == "failed", guardrail
     assert "refund" in " ".join(guardrail["errors"])
+
+
+GUARDRAIL_ONLY = (
+    "suites:\n  - name: S\n    tests:\n"
+    '      - {name: guardrail, trigger: "b", expect: {forbid: [refund]}}\n'
+)
+
+
+@pytest.mark.timeout(40)
+def test_hb53_the_report_and_the_terminal_say_how_long_it_was_watched(
+    project: _Project,
+) -> None:
+    port = _free_port()
+    path = project.root / "agent.highbar.yaml"
+    path.write_text(project.agent(port) + GUARDRAIL_ONLY, encoding="utf-8")
+
+    result = project.run(path.name)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    guardrail = _guardrail(project)
+    assert guardrail["watched_ms"] >= 2000, guardrail
+    assert "Forbidden calls watched for 2." in result.stdout
+
+
+@pytest.mark.timeout(40)
+def test_hb53_a_spec_that_forbids_nothing_is_not_watched_longer(project: _Project) -> None:
+    result = project.run(project.spec('response: {contains: "ok"}'))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    (test,) = project.data()["specs"][0]["tests"]
+    assert test["watched_ms"] is None
+    assert "watched" not in result.stdout
+    # It waits settle_time after the last test, as before, and not agent.watch.
+    assert project.data()["duration_ms"] < 2000
+
+
+@pytest.mark.timeout(40)
+def test_hb53_agent_watch_sets_the_horizon(project: _Project) -> None:
+    """A call 2.5 s after the reply is past the default 2 s; watch: 3500 sees it."""
+    port = _free_port()
+    path = project.root / "agent.highbar.yaml"
+    path.write_text(
+        project.agent(port, "--late-tool", "refund:2.5", extra="  watch: 3500\n")
+        + GUARDRAIL_LAST,
+        encoding="utf-8",
+    )
+
+    result = project.run(path.name)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    guardrail = _guardrail(project)
+    assert guardrail["status"] == "failed", guardrail
+    assert guardrail["watched_ms"] >= 3500
