@@ -53,15 +53,17 @@ def test_the_code_blocks_are_the_english_ones(path: Path) -> None:
 def _structure(path: Path) -> list[str]:
     """The shape of the text outside code, which a translation keeps.
 
-    Headings with their level, list items, table rows and the target of every link and
-    image, in order. The note a translation adds and the links between the READMEs are
+    Headings with their level, list items, table rows, paragraphs and the target of every
+    link and image, in order. The note a translation adds and the links between the READMEs are
     left out, since they differ by language. A hash alone would pass a translation that
     lost a section or a bullet once its first line was replaced (review of #105).
     """
     shape: list[str] = []
     in_fence = False
+    previous = ""
     for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
+        stripped, after_blank = line.strip(), not previous
+        previous = stripped
         if stripped.startswith(("```", "~~~")):
             in_fence = not in_fence
             continue
@@ -73,6 +75,10 @@ def _structure(path: Path) -> list[str]:
             shape.append("li")
         elif stripped.startswith("|"):
             shape.append("tr")
+        elif stripped and after_blank and not stripped.startswith("<"):
+            # A paragraph is counted where it starts, so a translation may wrap it
+            # differently but cannot drop or merge one.
+            shape.append("p")
         for target in re.findall(r"\]\(([^)]*)\)|src=\"([^\"]*)\"", line):
             link = target[0] or target[1]
             if not re.fullmatch(r"README(\.[\w-]+)?\.md", link):
@@ -88,7 +94,8 @@ def test_the_structure_is_the_english_one(path: Path) -> None:
         min(len(english), len(translated)),
     )
     assert translated == english, (
-        f"{path.name} differs from README.md in its headings, list items, table rows or links, "
+        f"{path.name} differs from README.md in its headings, list items, table rows, "
+        f"paragraphs or links, "
         f"first at item {first}: {english[first : first + 1]} in English, "
         f"{translated[first : first + 1]} in the translation"
     )
