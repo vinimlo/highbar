@@ -21,6 +21,21 @@
 
 - A message to the agent stops at `agent.timeout` when the agent sends its status line and headers slowly, as HTTP hooks do since 0.2.0. httpx's timeout holds for each read, so an agent that sent a byte every 0.1 s kept a message of 1 s waiting for 12 s. A message cut this way is a timeout, as any other, and counts for `--max-errors`.
 
+## 0.2.1
+
+### Fixed
+
+- A forbidden call that landed shortly after the last test's reply passed (HB-53). The last test has no next test whose read would show its late calls: it was watched for `agent.settle_time` (500 ms) after its reply, and an agent highbar started was stopped right then. A guardrail passed with the forbidden call one second away. Now a spec with a test that forbids a call (`forbid`, `function_calls: []` or `exclusive`) reads the trace file until `agent.watch` after the last reply, so every such test is watched at least that long, and an agent highbar started is read once more after it exits.
+
+### Added
+
+- `agent.watch` (ms, 2000 by default): how long after its reply a test that forbids a call is watched. A call later than that is not seen.
+- `watched_ms` on each test of the report that forbids a call, and one line under the summary with the shortest of them: `Forbidden calls watched 2.0s after each reply (agent.watch), not later.`
+
+### Changed
+
+- A run whose spec has a test that forbids a call ends up to `agent.watch` after its last reply, about 1.5 s later than in 0.2.0 by default. A spec with no such test ends as before.
+
 ## 0.2.0
 
 The second release. It breaks a few specs that 0.1.0 loaded or passed: read "Upgrading from 0.1.0" at the end of this section before you move.

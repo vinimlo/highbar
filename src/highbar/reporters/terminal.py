@@ -57,6 +57,12 @@ def format_summary(summary: RunSummary, *, styled: bool = False) -> str:
     return " | ".join(f"[{style}]{text}[/{style}]" if style else text for text, style in parts)
 
 
+def format_watched(watched_ms: float) -> str:
+    """How long the calls the tests forbid were watched for, the shortest of them."""
+    seconds = watched_ms / 1000
+    return f"Forbidden calls watched {seconds:.1f}s after each reply (agent.watch), not later."
+
+
 class TerminalReporter:
     """Formats test results for terminal output using rich."""
 
@@ -96,6 +102,9 @@ class TerminalReporter:
         # summary must find nothing after it in a write of its own (HB-35).
         with self._console:
             self._console.print(f"  {format_summary(summary, styled=True)}")
+            if summary.watched_ms is not None:
+                # HB-53: a call a test forbids is seen only while highbar reads the trace.
+                self._console.print(f"  [dim]{format_watched(summary.watched_ms)}[/dim]")
             for warning in summary.totals.warnings if summary.totals is not None else ():
                 self.on_warning(f"incomplete sum: {warning}")
             self._console.print()

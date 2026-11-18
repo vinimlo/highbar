@@ -276,6 +276,8 @@ class AgentConfig:
     health: str | None = None
     startup_timeout: int = 15000
     settle_time: int = 500
+    # How long after its reply a test that says a call must not happen is watched (HB-53)
+    watch: int = 2000
     timeout: int = 60000
     request: RequestConfig = field(default_factory=RequestConfig)
     response: str | None = None
@@ -416,6 +418,15 @@ class Expect:
             object.__setattr__(self, "max_duration_ms", float(self.max_duration_ms))
 
     @property
+    def forbids_calls(self) -> bool:
+        """Says a call must not happen: ``forbid``, ``function_calls: []`` or ``exclusive``.
+
+        Only a read can show such a call, so it holds as long as highbar kept reading:
+        ``agent.watch`` after the reply (HB-53).
+        """
+        return bool(self.forbid) or self.function_calls == [] or self.exclusive
+
+    @property
     def requires_observation(self) -> bool:
         """Checks what the agent recorded, so it needs proof that it saw the message.
 
@@ -475,6 +486,11 @@ class Test:
     expect_status: Status | None = None
     # Labels for --tag, its suite's and its own (HB-17). Like name and id, out of the hash.
     tags: tuple[str, ...] = ()
+
+    @property
+    def forbids_calls(self) -> bool:
+        own = self.expect is not None and self.expect.forbids_calls
+        return own or any(turn.expect.forbids_calls for turn in self.turns or [])
 
     @property
     def requires_observation(self) -> bool:
@@ -715,6 +731,9 @@ class TestOutcome:
     # The state the test expects to end in (HB-21); ``status`` is judged against it, and
     # its phrasings and executions keep what happened.
     expect_status: Status | None = None
+    # A test that forbids a call: how long after its last reply highbar kept reading
+    # (HB-53). None for other tests, and for a run that stopped before its last read.
+    watched_ms: float | None = None
 
     @property
     def usages(self) -> list[Usage | None]:
@@ -774,3 +793,5 @@ class RunSummary:
     stopped: str | None = None
     untagged_cost: dict[str, float] = field(default_factory=dict[str, float])
     stop_reason: str | None = None
+    # The least of the tests' watched_ms: how long every call they forbid was watched for
+    watched_ms: float | None = None
