@@ -17,4 +17,10 @@ docker run --rm -v "$PWD:/vhs" --entrypoint sh highbar-demo -c '
     -filter_complex "[0:v]format=rgb24,fps=25[a];[1:v]format=rgb24,fps=25[b];[a][b]concat=n=2:v=1:a=0,split[x][y];[x]palettegen=max_colors=64:stats_mode=full[p];[y][p]paletteuse=dither=none:diff_mode=rectangle" \
     -loop 0 /tmp/demo.gif
   cp /tmp/demo.gif demo.gif
+  # The GIF opens on its last screen, or the paused GIF shows something else (review of #105).
+  frames=$(ffmpeg -hide_banner -loglevel error -i demo.gif -f framemd5 - | grep -v "^#" | awk "{print \$6}")
+  if [ "$(echo "$frames" | head -n 1)" != "$(echo "$frames" | tail -n 1)" ]; then
+    echo "demo.gif does not open on its last screen" >&2
+    exit 1
+  fi
 '
