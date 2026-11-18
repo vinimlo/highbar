@@ -14,7 +14,6 @@ from types import FrameType
 from typing import Annotated
 
 import typer
-from rich.console import Console
 from rich.markup import escape
 
 from highbar.adapters.subprocess_adapter import AgentStartError
@@ -32,7 +31,7 @@ from highbar.reporters.json_report import JsonReport, ReportError
 from highbar.reporters.junit_report import JUnitReport
 from highbar.reporters.markdown_report import MarkdownReport
 from highbar.reporters.reports import Reports
-from highbar.reporters.terminal import format_summary
+from highbar.reporters.terminal import format_summary, new_console
 from highbar.variations.cache import CacheError, VariationCache, find_cache_path, fingerprint
 from highbar.variations.generator import VariationError, VariationGenerator
 
@@ -53,7 +52,7 @@ app = typer.Typer(
     help="Behavior testing framework for AI agents.",
     no_args_is_help=True,
 )
-console = Console()
+console = new_console()
 
 
 def _version() -> str:
