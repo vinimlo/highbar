@@ -120,8 +120,7 @@ def test_hb53_agent_watch_sets_the_horizon(project: _Project) -> None:
     port = _free_port()
     path = project.root / "agent.highbar.yaml"
     path.write_text(
-        project.agent(port, "--late-tool", "refund:2.5", extra="  watch: 3500\n")
-        + GUARDRAIL_LAST,
+        project.agent(port, "--late-tool", "refund:2.5", extra="  watch: 3500\n") + GUARDRAIL_LAST,
         encoding="utf-8",
     )
 

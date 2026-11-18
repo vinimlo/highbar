@@ -94,6 +94,8 @@ These warnings name the keys of `agent.correlate`. See [connecting your agent](/
 
 highbar reads the trace file `settle_time` milliseconds (500 by default) after the reply arrives. A tool call that ends later, such as a background task, is still found when the next test reads the file: it fails the run it belongs to, with a message that says it was recorded after the window closed. Raise `agent.settle_time` when the agent legitimately finishes work after it replies.
 
+The last test has no next test to read for it. When a test forbids a call (`forbid`, `function_calls: []` or `exclusive`), the run keeps reading the trace file until `agent.watch` (2000 ms by default) after the last reply, and an agent highbar started is stopped only after that, with one more read once it exits. The summary says how long the calls were watched, and the report has `watched_ms` for each such test. A call later than `agent.watch` is not seen: raise it for an agent whose background work takes longer.
+
 ## Looking at the trace file
 
 `highbar run --keep-traces` keeps the file highbar created for a started agent and prints its path. Each line is one record of the [trace contract](/reference/trace-contract).

@@ -126,6 +126,7 @@ The one exception is a command line that highbar cannot read: an unknown option,
 | `turns[].correlate` | The values of `agent.correlate` for this turn: what finds its records in the trace file. |
 | `tools[].late` | Recorded after the test's window closed. |
 | `turns[].usage` | What the turn consumed, or `null` when it reported nothing. See below. |
+| `watched_ms` | For a test that forbids a call: how long after its last reply highbar kept reading the trace, at least `agent.watch`. A call later than that was not seen. `null` for other tests, and when the run stopped before its last read. |
 | `turns[].budget` | The turn's own limit, or `null`. |
 | `budget` | What each execution of the test could spend, or `null`: its own budget, else `defaults.budget`. |
 | `totals` | On each test and each execution, its [tokens and cost](#tokens-and-cost). |
