@@ -1,7 +1,6 @@
 # The image that records docs/assets/demo.gif from docs/demo/demo.tape.
 #
-#   docker build -f docs/demo/Dockerfile -t highbar-demo .
-#   docker run --rm -v "$PWD:/vhs" highbar-demo docs/demo/demo.tape
+#   sh docs/demo/record.sh
 #
 # It installs this checkout, so the demo shows the code in the tree.
 FROM ghcr.io/charmbracelet/vhs:v0.9.0
