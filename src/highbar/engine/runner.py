@@ -583,8 +583,8 @@ class TestRunner:
             test.requires_observation for suite in spec.suites for test in suite.tests
         )
         self._run_start = time.time()
-        # Stopped once at the end, so its last writes can be read (HB-53); on any other
-        # way out, the finally below stops it.
+        # Stopped once: at the end, so its last writes can be read (HB-53), or on any
+        # other way out by the finally below.
         agent_stopped = False
 
         # agent.run (HB-10): its setup before the agent starts, and its teardown on every
@@ -650,8 +650,10 @@ class TestRunner:
                 if self._managed:
                     # What the agent finishes before it exits counts too (HB-53): it was
                     # stopped after this read, and its last writes were never read.
-                    self._adapter.stop()
+                    # Set first: a Ctrl-C during the stop leaves the run, as it did when
+                    # only the finally stopped the agent (review of #54).
                     agent_stopped = True
+                    self._adapter.stop()
                     self._read_after_last_test()
                 self._final_read_at = time.monotonic()
                 self._report_late(self._findings)
